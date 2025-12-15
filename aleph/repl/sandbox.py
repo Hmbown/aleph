@@ -137,6 +137,7 @@ def _safe_builtins(allowed_imports: list[str]) -> dict[str, object]:
         "list": list,
         "set": set,
         "tuple": tuple,
+        "type": type,
         # iteration / misc
         "len": len,
         "range": range,
@@ -161,6 +162,8 @@ def _safe_builtins(allowed_imports: list[str]) -> dict[str, object]:
         "KeyError": KeyError,
         "IndexError": IndexError,
         "ZeroDivisionError": ZeroDivisionError,
+        "NameError": NameError,
+        "AttributeError": AttributeError,
         # controlled imports
         "__import__": _safe_import_factory(allowed_imports_set),
     }
