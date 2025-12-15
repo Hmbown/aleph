@@ -229,7 +229,7 @@ aleph-mcp-local --timeout 30 --max-output 10000
 
 ## Research
 
-Inspired by [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) by Alex Zhang (MIT CSAIL). The core insight: rather than solving context limits at the architecture level, let models partition context and make recursive calls to themselves, maintaining smaller individual context windows throughout.
+Inspired by [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) by Alex Zhang and Omar Khattab. The core insight: rather than solving context limits at the architecture level, let models partition context and make recursive calls to themselves, maintaining smaller individual context windows throughout.
 
 ## License
 
