@@ -1,202 +1,61 @@
-# Aleph RLM
+# Aleph
 
 > *"What my eyes beheld was simultaneous, but what I shall now write down will be successive, because language is successive."*
 >
 > — Jorge Luis Borges, ["The Aleph"](https://web.mit.edu/allanmc/www/borgesaleph.pdf) (1945)
 
-MCP server for recursive LLM reasoning—load context, iterate with search/code/think tools, converge on answers.
+Aleph is an MCP server for recursive LLM reasoning over documents. Instead of cramming context into a single prompt, the model iteratively explores it with search, code execution, and structured thinking tools—converging on answers with full provenance.
 
-Aleph is an MCP server that implements **recursive language model reasoning**. Instead of single-pass context processing, Aleph gives LLMs a persistent session with tools to iteratively explore, analyze, and reason over documents. Load context once, then search, slice, execute Python, and structure your thinking across multiple iterations until you converge on a high-confidence answer.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PyPI version](https://img.shields.io/pypi/v/aleph-rlm.svg)](https://pypi.org/project/aleph-rlm/)
 
-**The core insight:** LLMs are better at many small, focused operations than one giant comprehension task. Aleph operationalizes this by giving the model a REPL session where it can:
-- Hold context in a variable (`ctx`)
-- Slice into relevant portions on demand
-- Run Python to transform/analyze
-- Track its own reasoning history
-- Persist variables across iterations
+## The Problem
 
-Inspired by research by **Alex Zhang** and **Omar Khattab (MIT)** on Recursive Language Models.
+Single-pass document analysis fails at scale:
 
-## Features
+- **Context limits**: Large documents exceed context windows
+- **Attention dilution**: Important details get lost in noise
+- **No audit trail**: You can't see how the model reached its conclusion
+- **Wasted tokens**: The entire document is processed even when only fragments matter
 
-- **Provider-agnostic**: works with Anthropic or OpenAI (and any custom provider implementing the `LLMProvider` protocol)
-- **Unbounded context**: context lives in a REPL variable, not in the LLM prompt
-- **Helper functions**: `peek`, `lines`, `search`, `chunk`, `cite`
-- **Recursive calls**:
-  - `sub_query(prompt, context_slice=None)` for cheaper semantic subcalls
-  - `sub_aleph(query, context=None)` for deeper recursion
-- **Budgets**: hard limits on tokens/cost/iterations/time/subqueries
-- **Observability**: full execution trajectory returned for debugging
-- **Async-first** API with a `complete_sync()` convenience wrapper
+## The Solution
 
-## Installation
+Recursive exploration with provenance tracking:
 
-This repository is provided as a standard Python package.
+```
+CONTEXT (stored in REPL as `ctx`)
+        │
+        ▼
+┌───────────────┐     ┌───────────────┐     ┌───────────────┐
+│     LOAD      │────▶│    EXPLORE    │────▶│     CITE      │
+│  Store once   │     │ search/peek/  │     │  Evidence     │
+│  in sandbox   │     │ chunk/exec    │     │  accumulates  │
+└───────────────┘     └───────────────┘     └───────┬───────┘
+                              ▲                     │
+                              │    ┌───────────┐    │
+                              └────│ EVALUATE  │◀───┘
+                                   │ progress  │
+                                   └───────────┘
+                                     │       │
+                                   Low     High
+                                     │       │
+                                     ▼       ▼
+                                 Continue  Finalize
+                                           (with citations)
+```
+
+The model sees metadata about the context, not the full text. It writes Python code to explore what it needs, when it needs it. Evidence auto-accumulates. Final answers include citations.
+
+## Quick Start
+
+### MCP Setup (Claude Desktop, Cursor, etc.)
 
 ```bash
-pip install -e .
+pip install aleph-rlm
 ```
 
-Optional extras:
-
-```bash
-pip install -e '.[mcp]'
-pip install -e '.[yaml]'
-pip install -e '.[rich]'
-pip install -e '.[openai_tokens]'
-```
-
-## API keys
-
-Aleph uses environment variables by default:
-
-- **Anthropic**: set `ANTHROPIC_API_KEY`
-- **OpenAI**: set `OPENAI_API_KEY`
-
-## Quickstart
-
-```python
-import asyncio
-from aleph import Aleph, Budget
-
-async def main():
-    aleph = Aleph(
-        provider="anthropic",
-        root_model="claude-sonnet-4-20250514",
-        sub_model="claude-haiku-3-5-20241022",
-        budget=Budget(max_cost_usd=1.0, max_iterations=20),
-    )
-
-    context = """... a very large document ..."""
-
-    resp = await aleph.complete(
-        query="What are the key risks mentioned?",
-        context=context,
-    )
-
-    print(resp.answer)
-    print("tokens:", resp.total_tokens)
-    print("cost:  ", resp.total_cost_usd)
-    print("iters: ", resp.total_iterations)
-
-asyncio.run(main())
-```
-
-## How it works
-
-1. Aleph stores the full context in a sandboxed REPL (`ctx`).
-2. The LLM is prompted with a short metadata summary of the context.
-3. The LLM writes Python code to:
-   - search the context (`search(...)`)
-   - inspect slices (`peek(...)`, `lines(...)`)
-   - split into chunks (`chunk(...)`)
-   - cite evidence (`cite(...)`) for provenance tracking
-4. Aleph executes the code and feeds the (truncated) output back into the conversation.
-5. The LLM can evaluate its progress and convergence using `evaluate_progress()`.
-6. The LLM repeats until it outputs:
-   - `FINAL(answer)` or
-   - `FINAL_VAR(variable_name)`
-7. Final output includes evidence citations for transparency.
-
-## Provenance Tracking
-
-Aleph automatically tracks evidence as you explore:
-
-- **`search_context`** matches are logged with patterns and line ranges
-- **`cite()`** helper lets you manually tag important findings with notes
-- **`get_evidence`** retrieves your evidence trail with source filtering (`search`, `peek`, `exec`, `manual`)
-- **`finalize`** includes citations in your final answer
-
-This makes Aleph suitable for **auditable analysis** where you need to show your work—legal research, compliance analysis, technical due diligence, etc.
-
-## Security
-
-The Aleph sandbox is **best-effort** and is not formally hardened.
-
-### What the sandbox blocks
-
-- **File I/O**: `open`, `os`, `pathlib`, and related modules
-- **Network access**: `socket`, `urllib`, `requests`, and related modules
-- **Process execution**: `subprocess`, `os.system`, and related functions
-- **Dangerous builtins**: `eval`, `exec`, `compile`, `__import__`, `getattr`, `setattr`
-- **Direct builtins access**: `__builtins__`
-- **Dunder attribute access**: `__class__`, `__subclasses__`, `__globals__`, etc.
-- **Catching BaseException**: `except BaseException`, `except SystemExit`, etc.
-- **Imports outside allowlist**: Only `re`, `json`, `csv`, `math`, `statistics`, `collections`, `itertools`, `functools`, `datetime`, `textwrap`, `difflib` are allowed
-
-### What the sandbox does NOT protect against
-
-- **CPU exhaustion**: Mitigated by configurable timeout (default 30s), but cannot interrupt all CPU-bound loops on Windows
-- **Memory exhaustion**: No memory limits are enforced
-- **Sophisticated escape techniques**: Determined attackers may find bypasses
-- **Side-channel attacks**: Not protected
-
-### Timeout enforcement
-
-Code execution timeout is configurable via `SandboxConfig(timeout_seconds=30.0)`.
-
-- **Unix (Linux, macOS) main thread**: Uses `signal.SIGALRM` for reliable interruption of CPU-bound code
-- **Other contexts (including worker threads)**: Uses a thread watchdog and best-effort async exception injection.
-  This can interrupt typical Python CPU-bound loops, but may not interrupt native extensions or C-level blocking calls.
-
-### Recommendations for production
-
-- Run Aleph in a containerized environment (Docker, gVisor, Firecracker)
-- Apply OS-level sandboxing (seccomp, SELinux, AppArmor)
-- Set resource limits via cgroups (CPU, memory)
-- **Do not expose code execution to untrusted users** without stronger isolation
-
-## MCP Server
-
-Install MCP support:
-
-```bash
-pip install -e '.[mcp]'
-```
-
-### API-Dependent Mode
-
-Uses an external LLM API for sub-queries (requires API keys):
-
-```bash
-python -m aleph.mcp.server --provider anthropic --model claude-sonnet-4-20250514
-```
-
-Tools exposed:
-
-- `load_context(context, context_id="default", format="auto")`
-- `peek_context(start=0, end=None, context_id="default", unit="chars"|"lines")`
-- `search_context(pattern, context_id="default", max_results=10, context_lines=2)`
-- `exec_python(code, context_id="default")`
-- `sub_query(prompt, context_slice=None, context_id="default")`
-- `get_variable(name, context_id="default")`
-
-### API-Free Mode (Local)
-
-**No API keys required!** The host AI (Claude Desktop, Cursor, Windsurf, etc.) provides all reasoning.
-
-```bash
-# Via entry point
-aleph-mcp-local
-
-# Or via module
-python -m aleph.mcp.local_server
-```
-
-Configure in Claude Desktop (`claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "aleph": {
-      "command": "aleph-mcp-local",
-      "args": ["--timeout", "30", "--max-output", "10000"]
-    }
-  }
-}
-```
-
-Configure in Cursor (`.cursor/mcp.json`):
+Add to Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
 ```json
 {
@@ -208,82 +67,159 @@ Configure in Cursor (`.cursor/mcp.json`):
 }
 ```
 
-**Tools exposed:**
+Then use it:
 
-| Tool | Description |
-|------|-------------|
-| `load_context` | Load text/data into sandboxed REPL (as variable `ctx`) |
+```
+You: Load this contract and find all liability exclusions
+
+[AI calls load_context with document]
+[AI calls search_context for "liab", "exclus", "indemnif"]
+[AI calls cite() to tag key clauses]
+[AI calls evaluate_progress → confidence 0.85]
+[AI calls finalize with citations]
+
+AI: Found 3 liability exclusions:
+    1. Section 4.2: Consequential damages excluded (lines 142-158)
+    2. Section 7.1: Force majeure carve-out (lines 289-301)
+    3. Section 9.3: Cap at contract value (lines 445-452)
+
+    Evidence: [4 citations with line ranges]
+```
+
+### Python API
+
+```python
+from aleph import Aleph, Budget
+
+aleph = Aleph(
+    provider="anthropic",
+    root_model="claude-sonnet-4-20250514",
+    budget=Budget(max_cost_usd=1.0, max_iterations=20),
+)
+
+resp = await aleph.complete(
+    query="What are the key risks?",
+    context=large_document,
+)
+
+print(resp.answer)
+print(f"Cost: ${resp.total_cost_usd:.4f}")
+print(f"Iterations: {resp.total_iterations}")
+```
+
+## MCP Tools
+
+| Tool | Purpose |
+|------|---------|
+| `load_context` | Store document in sandboxed REPL as `ctx` |
 | `peek_context` | View character or line ranges |
-| `search_context` | Regex search with surrounding context |
-| `exec_python` | Execute Python code in sandbox (includes `cite()` for provenance) |
-| `get_variable` | Retrieve variables from REPL namespace |
-| `think` | Structure a reasoning sub-step (returns prompt for YOU to reason about) |
-| `get_status` | Show current session state with convergence metrics |
-| `get_evidence` | Retrieve collected evidence/citations |
-| `finalize` | Mark task complete with final answer and evidence citations |
-| `chunk_context` | Split context into chunks with metadata for navigation |
-| `evaluate_progress` | Self-evaluate progress with convergence tracking |
-| `summarize_so_far` | Compress reasoning history to manage context window |
+| `search_context` | Regex search with evidence logging |
+| `exec_python` | Run code against context (includes `cite()` helper) |
+| `chunk_context` | Split into navigable chunks with metadata |
+| `think` | Structure reasoning sub-steps |
+| `evaluate_progress` | Check confidence and convergence |
+| `get_evidence` | Retrieve citation trail with filtering |
+| `get_status` | Session state and metrics |
+| `summarize_so_far` | Compress history to manage context |
+| `finalize` | Complete with answer and citations |
 
-**Recursive reasoning loop:**
+## REPL Helpers
 
-```
-load → search/peek → think → evaluate_progress → (repeat if needed) → finalize
-```
+Available inside `exec_python`:
 
-**Example workflow:**
+| Helper | Usage |
+|--------|-------|
+| `peek(start, end)` | View character range |
+| `lines(start, end)` | View line range |
+| `search(pattern, context_lines=2)` | Regex search |
+| `chunk(size, overlap=0)` | Split into chunks |
+| `cite(snippet, line_range, note)` | Tag evidence with provenance |
 
-1. User: "Analyze this 50KB log file and find all errors"
-2. AI uses `load_context` to load the file
-3. AI uses `chunk_context` to map document structure
-4. AI uses `search_context` to find "error" patterns (evidence tracked automatically)
-5. AI uses `exec_python` to parse/aggregate results, `cite()` important findings
-6. AI uses `think` to structure sub-questions
-7. AI uses `evaluate_progress` to check confidence (continues if < 0.8)
-8. AI reasons through each sub-question (no API call!)
-9. AI uses `summarize_so_far` if context gets long
-10. AI uses `finalize` to provide the answer with evidence citations
+## Why It Works
 
-**Benefits:**
+| Problem | Single-Pass | Aleph |
+|---------|-------------|-------|
+| Large documents | Truncate or summarize | Load once, explore iteratively |
+| Finding specifics | Scan everything | Targeted search |
+| Verification | Trust the output | Evidence with line numbers |
+| Context limits | Hit the wall | Only fetch what's needed |
+| Audit trail | None | Full citation history |
 
-- No API costs for sub-queries
-- No API keys needed
-- Lower latency (no network calls)
-- Works offline
-- Universal MCP compatibility
+## Provenance Tracking
 
-## Examples
+Every exploration action is logged:
 
-Run examples from the repo root:
+- `search_context` matches record pattern and line ranges
+- `cite()` lets you tag findings with notes
+- `get_evidence` retrieves the full trail (filterable by source)
+- `finalize` includes citations automatically
 
-```bash
-python examples/needle_haystack.py
-```
+This makes Aleph suitable for auditable analysis: legal research, compliance review, technical due diligence.
 
-Other examples:
-
-- `examples/document_qa.py`
-- `examples/mcp_server.py`
-
-## Development
-
-Install with dev dependencies:
+## Installation
 
 ```bash
-pip install -e '.[dev]'
+pip install aleph-rlm
 ```
 
-Run tests:
+Optional extras:
 
 ```bash
-pytest
+pip install aleph-rlm[mcp]     # MCP server support
+pip install aleph-rlm[yaml]    # YAML config files
+pip install aleph-rlm[rich]    # Better logging
 ```
 
-Run type checking:
+For development:
 
 ```bash
-mypy aleph/
+git clone https://github.com/Hmbown/aleph.git
+cd aleph
+pip install -e '.[dev,mcp]'
+pytest  # 190 tests
 ```
+
+## Security
+
+The sandbox is best-effort, not hardened.
+
+**Blocked**: `open`, `os`, `subprocess`, `socket`, `eval`, `exec`, dunder access, imports outside allowlist
+
+**Allowed imports**: `re`, `json`, `csv`, `math`, `statistics`, `collections`, `itertools`, `functools`, `datetime`, `textwrap`, `difflib`
+
+**For production**: Run in a container with resource limits. Do not expose to untrusted users without additional isolation.
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `ANTHROPIC_API_KEY` | Anthropic API (for Python API mode) |
+| `OPENAI_API_KEY` | OpenAI API (for Python API mode) |
+| `ALEPH_MAX_ITERATIONS` | Iteration limit |
+| `ALEPH_MAX_COST` | Cost limit in USD |
+
+### MCP Server Options
+
+```bash
+aleph-mcp-local --timeout 30 --max-output 10000
+```
+
+## Recent Changes
+
+### v0.1.1 (December 2025)
+
+- Initial public release
+- 12 MCP tools for recursive reasoning
+- Provenance tracking with `cite()` and `get_evidence`
+- Convergence metrics in `evaluate_progress`
+- Session compression with `summarize_so_far`
+- 190 tests passing
+
+## Research
+
+Inspired by work on Recursive Language Models by Alex Zhang and Omar Khattab at MIT.
 
 ## License
 
