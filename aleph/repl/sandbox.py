@@ -31,12 +31,8 @@ from types import CodeType
 from typing import Any, Awaitable, Callable, cast
 
 from ..types import ContextType, ExecutionResult, SubAlephFn, SubQueryFn
-from .helpers import chunk as _chunk
+from . import helpers as _helpers
 from .helpers import Citation
-from .helpers import cite as _cite
-from .helpers import lines as _lines
-from .helpers import peek as _peek
-from .helpers import search as _search
 
 
 DEFAULT_ALLOWED_IMPORTS: list[str] = [
@@ -51,6 +47,12 @@ DEFAULT_ALLOWED_IMPORTS: list[str] = [
     "datetime",
     "textwrap",
     "difflib",
+    "random",
+    "string",
+    "hashlib",
+    "base64",
+    "urllib.parse",
+    "html",
 ]
 
 
@@ -138,11 +140,23 @@ def _safe_builtins(allowed_imports: list[str]) -> dict[str, object]:
         "set": set,
         "tuple": tuple,
         "type": type,
-        # iteration / misc
+        "frozenset": frozenset,
+        "bytes": bytes,
+        "bytearray": bytearray,
+        "complex": complex,
+        "slice": slice,
+        "object": object,
+        # iteration / functional
         "len": len,
         "range": range,
         "enumerate": enumerate,
         "zip": zip,
+        "map": map,
+        "filter": filter,
+        "iter": iter,
+        "next": next,
+        "callable": callable,
+        # aggregation / comparison
         "min": min,
         "max": max,
         "sum": sum,
@@ -150,10 +164,26 @@ def _safe_builtins(allowed_imports: list[str]) -> dict[str, object]:
         "reversed": reversed,
         "any": any,
         "all": all,
+        # math
         "abs": abs,
         "round": round,
+        "pow": pow,
+        "divmod": divmod,
+        # string / repr
+        "repr": repr,
+        "ascii": ascii,
+        "chr": chr,
+        "ord": ord,
+        "format": format,
+        "hex": hex,
+        "oct": oct,
+        "bin": bin,
+        # introspection (safe subset)
         "print": print,
         "isinstance": isinstance,
+        "issubclass": issubclass,
+        "hash": hash,
+        "id": id,
         # exceptions
         "Exception": Exception,
         "ValueError": ValueError,
@@ -164,6 +194,13 @@ def _safe_builtins(allowed_imports: list[str]) -> dict[str, object]:
         "ZeroDivisionError": ZeroDivisionError,
         "NameError": NameError,
         "AttributeError": AttributeError,
+        "StopIteration": StopIteration,
+        "AssertionError": AssertionError,
+        "LookupError": LookupError,
+        "ArithmeticError": ArithmeticError,
+        "UnicodeError": UnicodeError,
+        "UnicodeDecodeError": UnicodeDecodeError,
+        "UnicodeEncodeError": UnicodeEncodeError,
         # controlled imports
         "__import__": _safe_import_factory(allowed_imports_set),
     }
@@ -381,27 +418,143 @@ class REPLEnvironment:
             note: str | None = None,
         ) -> Citation:
             """Cite evidence and store it for provenance tracking."""
-            citation = _cite(snippet, line_range, note)
+            citation = _helpers.cite(snippet, line_range, note)
             self._citations.append(citation)
             self._evidence.append(citation)
             return citation
 
+        # Core context-aware helpers (operate on ctx by default)
+        ctx_getter = lambda: self._namespace[context_var_name]
+
         self._namespace.update(
             {
-                "peek": lambda start=0, end=None: _peek(self._namespace[context_var_name], start, end),
-                "lines": lambda start=0, end=None: _lines(self._namespace[context_var_name], start, end),
-                "search": lambda pattern, context_lines=2, flags=0, max_results=20: _search(
-                    self._namespace[context_var_name],
-                    pattern,
-                    context_lines=context_lines,
-                    flags=flags,
-                    max_results=max_results,
+                # === Core helpers (context-aware) ===
+                "peek": lambda start=0, end=None: _helpers.peek(ctx_getter(), start, end),
+                "lines": lambda start=0, end=None: _helpers.lines(ctx_getter(), start, end),
+                "search": lambda pattern, context_lines=2, flags=0, max_results=20: _helpers.search(
+                    ctx_getter(), pattern, context_lines=context_lines, flags=flags, max_results=max_results
                 ),
-                "chunk": lambda chunk_size, overlap=0: _chunk(
-                    self._namespace[context_var_name], chunk_size=chunk_size, overlap=overlap
-                ),
+                "chunk": lambda chunk_size, overlap=0: _helpers.chunk(ctx_getter(), chunk_size=chunk_size, overlap=overlap),
                 "cite": _cite_and_store,
                 "_evidence": self._evidence,
+
+                # === Extraction helpers (context-aware) ===
+                "extract_numbers": lambda include_negative=True, include_decimals=True: _helpers.extract_numbers(ctx_getter(), include_negative, include_decimals),
+                "extract_money": lambda currencies=r'[$€£¥₹]': _helpers.extract_money(ctx_getter(), currencies),
+                "extract_percentages": lambda: _helpers.extract_percentages(ctx_getter()),
+                "extract_dates": lambda: _helpers.extract_dates(ctx_getter()),
+                "extract_times": lambda: _helpers.extract_times(ctx_getter()),
+                "extract_timestamps": lambda: _helpers.extract_timestamps(ctx_getter()),
+                "extract_emails": lambda: _helpers.extract_emails(ctx_getter()),
+                "extract_urls": lambda: _helpers.extract_urls(ctx_getter()),
+                "extract_ips": lambda include_ipv6=False: _helpers.extract_ips(ctx_getter(), include_ipv6),
+                "extract_phones": lambda: _helpers.extract_phones(ctx_getter()),
+                "extract_hex": lambda: _helpers.extract_hex(ctx_getter()),
+                "extract_uuids": lambda: _helpers.extract_uuids(ctx_getter()),
+                "extract_paths": lambda: _helpers.extract_paths(ctx_getter()),
+                "extract_env_vars": lambda: _helpers.extract_env_vars(ctx_getter()),
+                "extract_versions": lambda: _helpers.extract_versions(ctx_getter()),
+                "extract_hashes": lambda: _helpers.extract_hashes(ctx_getter()),
+
+                # === Code extraction (context-aware) ===
+                "extract_functions": lambda lang="python": _helpers.extract_functions(ctx_getter(), lang),
+                "extract_classes": lambda lang="python": _helpers.extract_classes(ctx_getter(), lang),
+                "extract_imports": lambda lang="python": _helpers.extract_imports(ctx_getter(), lang),
+                "extract_comments": lambda lang="python": _helpers.extract_comments(ctx_getter(), lang),
+                "extract_strings": lambda: _helpers.extract_strings(ctx_getter()),
+                "extract_todos": lambda: _helpers.extract_todos(ctx_getter()),
+
+                # === Log extraction (context-aware) ===
+                "extract_log_levels": lambda: _helpers.extract_log_levels(ctx_getter()),
+                "extract_exceptions": lambda: _helpers.extract_exceptions(ctx_getter()),
+                "extract_json_objects": lambda: _helpers.extract_json_objects(ctx_getter()),
+
+                # === Statistics (context-aware) ===
+                "word_count": lambda: _helpers.word_count(ctx_getter()),
+                "char_count": lambda include_whitespace=True: _helpers.char_count(ctx_getter(), include_whitespace),
+                "line_count": lambda: _helpers.line_count(ctx_getter()),
+                "sentence_count": lambda: _helpers.sentence_count(ctx_getter()),
+                "paragraph_count": lambda: _helpers.paragraph_count(ctx_getter()),
+                "unique_words": lambda case_insensitive=True: _helpers.unique_words(ctx_getter(), case_insensitive),
+                "word_frequency": lambda top_n=20, case_insensitive=True: _helpers.word_frequency(ctx_getter(), top_n, case_insensitive),
+                "ngrams": lambda n=2, top_k=20: _helpers.ngrams(ctx_getter(), n, top_k),
+
+                # === Line operations (context-aware) ===
+                "head": lambda n=10: _helpers.head(ctx_getter(), n),
+                "tail": lambda n=10: _helpers.tail(ctx_getter(), n),
+                "grep": lambda pattern, flags=0: _helpers.grep(ctx_getter(), pattern, flags),
+                "grep_v": lambda pattern, flags=0: _helpers.grep_v(ctx_getter(), pattern, flags),
+                "grep_c": lambda pattern, flags=0: _helpers.grep_c(ctx_getter(), pattern, flags),
+                "uniq": lambda: _helpers.uniq(ctx_getter()),
+                "sort_lines": lambda reverse=False, numeric=False: _helpers.sort_lines(ctx_getter(), reverse, numeric),
+                "number_lines": lambda start=1: _helpers.number_lines(ctx_getter(), start),
+                "strip_lines": lambda: _helpers.strip_lines(ctx_getter()),
+                "blank_lines": lambda: _helpers.blank_lines(ctx_getter()),
+                "non_blank_lines": lambda: _helpers.non_blank_lines(ctx_getter()),
+                "columns": lambda col, delim=r'\s+': _helpers.columns(ctx_getter(), col, delim),
+
+                # === Text manipulation (context-aware) ===
+                "replace_all": lambda pattern, replacement, flags=0: _helpers.replace_all(ctx_getter(), pattern, replacement, flags),
+                "split_by": lambda pattern, flags=0: _helpers.split_by(ctx_getter(), pattern, flags),
+                "between": lambda start_pattern, end_pattern, include_markers=False: _helpers.between(ctx_getter(), start_pattern, end_pattern, include_markers),
+                "before": lambda pattern: _helpers.before(ctx_getter(), pattern),
+                "after": lambda pattern: _helpers.after(ctx_getter(), pattern),
+                "truncate": lambda max_len=100, suffix="...": _helpers.truncate(ctx_getter(), max_len, suffix),
+                "wrap_text": lambda width=80: _helpers.wrap_text(ctx_getter(), width),
+                "indent_text": lambda prefix="  ": _helpers.indent_text(ctx_getter(), prefix),
+                "dedent_text": lambda: _helpers.dedent_text(ctx_getter()),
+                "normalize_whitespace": lambda: _helpers.normalize_whitespace(ctx_getter()),
+                "remove_punctuation": lambda: _helpers.remove_punctuation(ctx_getter()),
+                "to_lower": lambda: _helpers.to_lower(ctx_getter()),
+                "to_upper": lambda: _helpers.to_upper(ctx_getter()),
+                "to_title": lambda: _helpers.to_title(ctx_getter()),
+
+                # === Pattern matching (context-aware) ===
+                "contains": lambda pattern, flags=0: _helpers.contains(ctx_getter(), pattern, flags),
+                "contains_any": lambda patterns, flags=0: _helpers.contains_any(ctx_getter(), patterns, flags),
+                "contains_all": lambda patterns, flags=0: _helpers.contains_all(ctx_getter(), patterns, flags),
+                "count_matches": lambda pattern, flags=0: _helpers.count_matches(ctx_getter(), pattern, flags),
+                "find_all": lambda pattern, flags=0: _helpers.find_all(ctx_getter(), pattern, flags),
+                "first_match": lambda pattern, flags=0: _helpers.first_match(ctx_getter(), pattern, flags),
+
+                # === Standalone utilities (not context-aware) ===
+                "diff": _helpers.diff,
+                "similarity": _helpers.similarity,
+                "common_lines": _helpers.common_lines,
+                "diff_lines": _helpers.diff_lines,
+                "dedupe": _helpers.dedupe,
+                "flatten": _helpers.flatten,
+                "first": _helpers.first,
+                "last": _helpers.last,
+                "take": _helpers.take,
+                "drop": _helpers.drop,
+                "partition": _helpers.partition,
+                "group_by": _helpers.group_by,
+                "frequency": _helpers.frequency,
+                "sample_items": _helpers.sample_items,
+                "shuffle_items": _helpers.shuffle_items,
+
+                # === Validation ===
+                "is_numeric": _helpers.is_numeric,
+                "is_email": _helpers.is_email,
+                "is_url": _helpers.is_url,
+                "is_ip": _helpers.is_ip,
+                "is_uuid": _helpers.is_uuid,
+                "is_json": _helpers.is_json,
+                "is_blank": _helpers.is_blank,
+
+                # === Conversion ===
+                "to_json": _helpers.to_json,
+                "from_json": _helpers.from_json,
+                "to_csv_row": _helpers.to_csv_row,
+                "from_csv_row": _helpers.from_csv_row,
+                "to_int": _helpers.to_int,
+                "to_float": _helpers.to_float,
+                "to_snake_case": _helpers.to_snake_case,
+                "to_camel_case": _helpers.to_camel_case,
+                "to_pascal_case": _helpers.to_pascal_case,
+                "to_kebab_case": _helpers.to_kebab_case,
+                "slugify": _helpers.slugify,
             }
         )
 

@@ -102,21 +102,50 @@ AI: Found 3 liability exclusions:
 </details>
 
 <details>
-<summary><strong>REPL Helpers</strong> (available in exec_python)</summary>
+<summary><strong>REPL Helpers</strong> (80+ functions available in exec_python)</summary>
 
-| Helper | Returns |
-|--------|---------|
-| `peek(start, end)` | Character slice as string |
-| `lines(start, end)` | Line slice as string |
-| `search(pattern, context_lines=2)` | `list[dict]` with `match`, `line_num`, `context` |
-| `chunk(size, overlap=0)` | `list[str]` of text chunks |
-| `cite(snippet, line_range, note)` | Citation dict (also logs to evidence) |
+**Core:**
+`peek`, `lines`, `search`, `chunk`, `cite`
+
+**Extraction (auto-detect from context):**
+`extract_numbers`, `extract_money`, `extract_percentages`, `extract_dates`, `extract_times`, `extract_timestamps`, `extract_emails`, `extract_urls`, `extract_ips`, `extract_phones`, `extract_paths`, `extract_env_vars`, `extract_versions`, `extract_uuids`, `extract_hashes`, `extract_hex`
+
+**Code analysis:**
+`extract_functions`, `extract_classes`, `extract_imports`, `extract_comments`, `extract_strings`, `extract_todos`
+
+**Log analysis:**
+`extract_log_levels`, `extract_exceptions`, `extract_json_objects`
+
+**Statistics:**
+`word_count`, `char_count`, `line_count`, `sentence_count`, `paragraph_count`, `unique_words`, `word_frequency`, `ngrams`
+
+**Line operations (grep-like):**
+`head`, `tail`, `grep`, `grep_v`, `grep_c`, `uniq`, `sort_lines`, `number_lines`, `strip_lines`, `blank_lines`, `non_blank_lines`, `columns`
+
+**Text manipulation:**
+`replace_all`, `split_by`, `between`, `before`, `after`, `truncate`, `wrap_text`, `indent_text`, `dedent_text`, `normalize_whitespace`, `remove_punctuation`, `to_lower`, `to_upper`, `to_title`
+
+**Pattern matching:**
+`contains`, `contains_any`, `contains_all`, `count_matches`, `find_all`, `first_match`
+
+**Comparison:**
+`diff`, `similarity`, `common_lines`, `diff_lines`
+
+**Collections:**
+`dedupe`, `flatten`, `first`, `last`, `take`, `drop`, `partition`, `group_by`, `frequency`, `sample_items`, `shuffle_items`
+
+**Validation:**
+`is_numeric`, `is_email`, `is_url`, `is_ip`, `is_uuid`, `is_json`, `is_blank`
+
+**Conversion:**
+`to_json`, `from_json`, `to_csv_row`, `from_csv_row`, `to_int`, `to_float`, `to_snake_case`, `to_camel_case`, `to_pascal_case`, `to_kebab_case`, `slugify`
 
 ```python
-# Example: iterate over search results
-for r in search("liability|indemnif"):
-    print(f"Line {r['line_num']}: {r['match']}")
-    cite(r['match'], line_range=(r['line_num'], r['line_num']))
+# Examples
+emails = extract_emails()  # Auto-extracts from ctx
+money = extract_money()    # Finds $1,234.56 patterns
+errors = grep("ERROR")     # Filter lines
+word_frequency(top_n=10)   # Most common words
 ```
 
 </details>
@@ -124,13 +153,13 @@ for r in search("liability|indemnif"):
 <details>
 <summary><strong>Sandbox Builtins</strong></summary>
 
-**Types:** `bool`, `int`, `float`, `str`, `dict`, `list`, `set`, `tuple`, `type`
+**Types:** `bool`, `int`, `float`, `str`, `dict`, `list`, `set`, `tuple`, `type`, `frozenset`, `bytes`, `bytearray`, `complex`, `slice`, `object`
 
-**Functions:** `len`, `range`, `enumerate`, `zip`, `min`, `max`, `sum`, `sorted`, `reversed`, `any`, `all`, `abs`, `round`, `print`, `isinstance`
+**Functions:** `len`, `range`, `enumerate`, `zip`, `map`, `filter`, `iter`, `next`, `callable`, `min`, `max`, `sum`, `sorted`, `reversed`, `any`, `all`, `abs`, `round`, `pow`, `divmod`, `repr`, `ascii`, `chr`, `ord`, `format`, `hex`, `oct`, `bin`, `print`, `isinstance`, `issubclass`, `hash`, `id`
 
-**Exceptions:** `Exception`, `ValueError`, `TypeError`, `RuntimeError`, `KeyError`, `IndexError`, `ZeroDivisionError`, `NameError`, `AttributeError`
+**Exceptions:** `Exception`, `ValueError`, `TypeError`, `RuntimeError`, `KeyError`, `IndexError`, `ZeroDivisionError`, `NameError`, `AttributeError`, `StopIteration`, `AssertionError`, `LookupError`, `ArithmeticError`, `UnicodeError`
 
-**Imports:** `re`, `json`, `csv`, `math`, `statistics`, `collections`, `itertools`, `functools`, `datetime`, `textwrap`, `difflib`
+**Imports:** `re`, `json`, `csv`, `math`, `statistics`, `collections`, `itertools`, `functools`, `datetime`, `textwrap`, `difflib`, `random`, `string`, `hashlib`, `base64`, `urllib.parse`, `html`
 
 </details>
 
@@ -174,6 +203,30 @@ cd aleph
 pip install -e '.[dev,mcp]'
 pytest  # 190 tests
 ```
+
+## Recent Changes
+
+### v0.2.0 (December 2025)
+
+**80+ new REPL helpers** for document analysis:
+- 16 extraction functions (emails, IPs, money, dates, phones, URLs, paths, versions, UUIDs, functions, classes, TODOs, log levels)
+- 8 statistics (word/line/char count, word frequency, n-grams)
+- 12 grep-like line operations (head, tail, grep, sort, uniq, columns)
+- 15 text manipulation (replace, split, before/after, truncate, normalize)
+- 6 pattern matching (contains, count_matches, find_all)
+- 4 comparison (diff, similarity)
+- 11 collection utilities (dedupe, flatten, group_by, frequency)
+- 7 validators (is_email, is_url, is_ip, is_uuid, is_json)
+- 11 converters (to_json, to_snake_case, slugify)
+
+**30+ new builtins:** `map`, `filter`, `iter`, `next`, `repr`, `chr`, `ord`, `pow`, `divmod`, `hash`, `id`, `callable`, `frozenset`, `bytes`, `slice`...
+
+**6 new allowed imports:** `random`, `string`, `hashlib`, `base64`, `urllib.parse`, `html`
+
+### v0.1.3 (December 2025)
+
+- Added `type` builtin to sandbox
+- Added `NameError` and `AttributeError` exceptions
 
 ## Research
 
