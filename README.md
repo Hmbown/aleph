@@ -93,7 +93,7 @@ from aleph import Aleph, Budget
 
 aleph = Aleph(
     provider="anthropic",
-    root_model="claude-sonnet-4-20250514",
+    root_model="claude-sonnet-4-5-20241022",
     budget=Budget(max_cost_usd=1.0, max_iterations=20),
 )
 
