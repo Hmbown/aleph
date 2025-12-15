@@ -102,29 +102,6 @@ AI: Found 3 liability exclusions:
     Evidence: [4 citations with line ranges]
 ```
 
-### Python API
-
-```python
-from aleph import Aleph, Budget
-
-aleph = Aleph(
-    provider="anthropic",
-    root_model="claude-sonnet-4-5-20241022",
-    budget=Budget(max_cost_usd=1.0, max_iterations=20),
-)
-
-resp = await aleph.complete(
-    query="What are the key risks?",
-    context=large_document,
-)
-
-print(resp.answer)
-print(f"Cost: ${resp.total_cost_usd:.4f}")
-print(f"Iterations: {resp.total_iterations}")
-```
-
-If budget is exceeded, `complete()` returns with `resp.budget_status.exhausted = True` and whatever partial answer was reached. No exception is raised.
-
 ## MCP Tools
 
 | Tool | Purpose |
@@ -221,10 +198,10 @@ The sandbox is best-effort, not hardened.
 
 | Variable | Purpose |
 |----------|---------|
-| `ANTHROPIC_API_KEY` | Anthropic API (for Python API mode) |
-| `OPENAI_API_KEY` | OpenAI API (for Python API mode) |
 | `ALEPH_MAX_ITERATIONS` | Iteration limit |
 | `ALEPH_MAX_COST` | Cost limit in USD |
+
+> **Note:** Standalone Python API with direct Anthropic/OpenAI calls is coming soon. Currently Aleph works as an MCP server where the host AI provides reasoning.
 
 ### CLI Commands
 
