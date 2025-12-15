@@ -49,11 +49,25 @@ The model sees metadata about the context, not the full text. It writes Python c
 
 ## Quick Start
 
-### MCP Setup (Claude Desktop, Cursor, etc.)
+### MCP Setup (Claude Desktop, Cursor, Windsurf, etc.)
 
 ```bash
-pip install aleph-rlm
+pip install aleph-rlm[mcp]
+aleph install
 ```
+
+The installer auto-detects your MCP clients and configures them. Or install to a specific client:
+
+```bash
+aleph install claude-desktop
+aleph install cursor
+aleph install windsurf
+aleph install claude-code
+aleph doctor  # verify installation
+```
+
+<details>
+<summary>Manual configuration (alternative)</summary>
 
 Add to Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
@@ -66,6 +80,8 @@ Add to Claude Desktop config (`~/Library/Application Support/Claude/claude_deskt
   }
 }
 ```
+
+</details>
 
 Then use it:
 
@@ -210,6 +226,18 @@ The sandbox is best-effort, not hardened.
 | `ALEPH_MAX_ITERATIONS` | Iteration limit |
 | `ALEPH_MAX_COST` | Cost limit in USD |
 
+### CLI Commands
+
+```bash
+aleph install              # Interactive installer
+aleph install <client>     # Install to specific client
+aleph install --all        # Install to all detected clients
+aleph uninstall <client>   # Remove from client
+aleph doctor               # Verify installation
+```
+
+Supported clients: `claude-desktop`, `cursor`, `windsurf`, `vscode`, `claude-code`
+
 ### MCP Server Options
 
 ```bash
@@ -217,6 +245,12 @@ aleph-mcp-local --timeout 30 --max-output 10000
 ```
 
 ## Recent Changes
+
+### v0.1.2 (December 2025)
+
+- `aleph install` CLI for easy MCP client configuration
+- Auto-detection of Claude Desktop, Cursor, Windsurf, VSCode, Claude Code
+- `aleph doctor` command to verify installation
 
 ### v0.1.1 (December 2025)
 
