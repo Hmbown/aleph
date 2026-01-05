@@ -49,7 +49,14 @@ I need you to install and configure Aleph (an MCP server for recursive LLM reaso
    args = ["--enable-actions"]
    ```
 
-4. Set up the Mimo API key for sub_query functionality (needed for non-CLI environments like Claude Desktop):
+4. Install the `/aleph` skill for Codex CLI:
+
+   ```bash
+   mkdir -p ~/.codex/skills/aleph
+   cp /path/to/aleph/ALEPH.md ~/.codex/skills/aleph/SKILL.md
+   ```
+
+5. Set up the Mimo API key for sub_query functionality (needed for non-CLI environments like Claude Desktop):
 
    Create or update ~/.zshrc (or ~/.bashrc):
    ```bash
@@ -60,12 +67,12 @@ I need you to install and configure Aleph (an MCP server for recursive LLM reaso
 
    Get a free API key at: https://xiaomimimo.com
 
-5. Verify installation:
+6. Verify installation:
    ```bash
    aleph-rlm doctor
    ```
 
-6. Test by restarting each environment and checking if the aleph tools are available.
+7. Test by restarting each environment and checking if the aleph tools are available.
 
 **Important notes:**
 - The `--enable-actions` flag allows file read/write and command execution

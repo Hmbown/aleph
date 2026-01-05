@@ -19,6 +19,16 @@ args = []
 
 Restart Codex CLI after changes.
 
+## Codex Skills
+
+Codex skills live in `~/.codex/skills`. To install the `/aleph` skill from this repo:
+```bash
+mkdir -p ~/.codex/skills/aleph
+cp /path/to/aleph/ALEPH.md ~/.codex/skills/aleph/SKILL.md
+```
+
+Restart Codex CLI after changes.
+
 ## ChatGPT / OpenAI desktop clients
 
 If your client exposes MCP server settings, add a server with:
