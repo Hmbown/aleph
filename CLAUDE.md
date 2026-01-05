@@ -1,29 +1,24 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance when working with code in this repository.
 
 ## Overview
 
-Aleph is a production-oriented implementation of **Recursive Language Models (RLMs)**. Instead of cramming context into LLM prompts, Aleph stores context in a sandboxed Python REPL (as variable `ctx`) and lets the model write code to explore and process it.
+Aleph is an MCP server for **Recursive Language Model (RLM)** reasoning over documents. Instead of cramming context into prompts, Aleph stores context in a sandboxed Python REPL (as variable `ctx`) and lets the model iteratively explore it.
 
-## Commands
+**Key feature**: `sub_query` tool enables RLM-style recursive sub-agent calls for chunked analysis.
+
+## Development Commands
 
 ```bash
 # Install (development)
-pip install -e .
+pip install -e '.[mcp]'
 
-# Install with optional dependencies
-pip install -e '.[mcp]'      # MCP server support
-pip install -e '.[yaml]'     # YAML config files
-pip install -e '.[rich]'     # Better logging
-pip install -e '.[openai_tokens]'  # tiktoken for token counting
+# Run tests
+python3 -m pytest -q
 
-# Run examples
-python examples/needle_haystack.py
-python examples/document_qa.py
-
-# Run MCP server
-python -m aleph.mcp.server --provider anthropic --model claude-sonnet-4-20250514
+# Run local MCP server (API-free, for IDE integration)
+aleph-mcp-local --enable-actions
 ```
 
 ## Architecture
@@ -69,15 +64,30 @@ The sandbox (`aleph/repl/sandbox.py`) is best-effort, not hardened:
 
 `BudgetStatus` tracks consumption and is checked at each iteration.
 
-### Sub-calls
+### Sub-calls (RLM Pattern)
 
-Two recursion mechanisms available in REPL:
-- `sub_query(prompt, context_slice)`: Cheaper model call for semantic sub-questions
-- `sub_aleph(query, context)`: Full recursive Aleph call at depth+1
+The `sub_query` MCP tool enables recursive sub-agent calls:
+
+```python
+# In exec_python - chunk and analyze
+chunks = chunk(100000)
+for c in chunks:
+    result = sub_query("Analyze this section:", context_slice=c)
+```
+
+**Backend priority** (auto-detected):
+1. `claude` CLI - uses existing subscription, no extra API key
+2. `codex` CLI - uses existing subscription
+3. `aider` CLI
+4. Mimo API - free fallback (requires `MIMO_API_KEY`)
 
 ## Environment Variables
 
-- `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`: Provider API keys
-- `ALEPH_PROVIDER`: "anthropic" or "openai"
-- `ALEPH_MODEL`, `ALEPH_SUB_MODEL`: Model names
-- `ALEPH_MAX_COST`, `ALEPH_MAX_ITERATIONS`, `ALEPH_MAX_DEPTH`: Budget limits
+- `MIMO_API_KEY`: Xiaomi MiMo API key (free at xiaomimimo.com)
+- `OPENAI_BASE_URL`: API base URL (default: `https://api.xiaomimimo.com/v1`)
+- `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`: Provider API keys (for aleph.mcp.server)
+
+## See Also
+
+- `ALEPH.md` - Skill guide for using Aleph's RLM pattern
+- `docs/1-4-update.md` - Implementation details for sub_query feature
