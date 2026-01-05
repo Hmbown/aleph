@@ -130,17 +130,19 @@ The habit Aleph is trying to enforce:
 
 In an MCP client, that typically looks like:
 
-### A sample user prompt
+### A sample user prompt (workflow-agnostic)
 
-If your client supports it, you can frame requests like this to encourage the full Aleph workflow (load → search/peek → compute → cite → finalize):
+If your client supports it, you can frame requests like this to enforce the Aleph loop (load → search/peek → compute → cite → finalize), regardless of what the “context” is (docs, code, logs, datasets, API output):
 
 ```text
-/aleph: Load the attached contract, find all liability exclusions, and respond with:
-- a bullet list of exclusions
-- line-range citations for each exclusion
-- a short note if anything is ambiguous or missing
+/aleph: Use Aleph to work over the attached context and produce a result that is grounded and auditable.
 
-Use search/peek and cite everything you rely on; don’t paste the whole document.
+Requirements:
+- Start by loading the context into Aleph (don’t paste it into the chat).
+- Use search/peek to locate the relevant parts.
+- Use exec_python for any parsing, counting, extraction, or cross-referencing.
+- Cite every key claim to a line range / slice you inspected.
+- Finalize with: (1) the result, (2) evidence/citations, (3) remaining unknowns + what you’d check next.
 ```
 
 1) Load context
