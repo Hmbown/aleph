@@ -9,6 +9,7 @@ Tools:
 - search_context: Regex search with context
 - exec_python: Execute Python code in sandbox
 - get_variable: Retrieve variables from REPL
+- sub_query: RLM-style recursive sub-agent queries (CLI or API backend)
 - think: Structure a reasoning sub-step (returns prompt for YOU to reason about)
 - get_status: Show current session state
 - get_evidence: Retrieve collected evidence/citations
@@ -55,6 +56,9 @@ from ..recipe import (
     compute_baseline_tokens,
     SCHEMA_VERSION,
 )
+from ..sub_query import SubQueryConfig, detect_backend, has_api_credentials
+from ..sub_query.cli_backend import run_cli_sub_query, CLI_BACKENDS
+from ..sub_query.api_backend import run_api_sub_query
 
 __all__ = ["AlephMCPServerLocal", "main"]
 
@@ -62,7 +66,7 @@ __all__ = ["AlephMCPServerLocal", "main"]
 @dataclass
 class _Evidence:
     """Provenance tracking for reasoning conclusions."""
-    source: Literal["search", "peek", "exec", "manual", "action"]
+    source: Literal["search", "peek", "exec", "manual", "action", "sub_query"]
     line_range: tuple[int, int] | None
     pattern: str | None
     snippet: str
@@ -199,9 +203,11 @@ class AlephMCPServerLocal:
         self,
         sandbox_config: SandboxConfig | None = None,
         action_config: ActionConfig | None = None,
+        sub_query_config: SubQueryConfig | None = None,
     ) -> None:
         self.sandbox_config = sandbox_config or SandboxConfig()
         self.action_config = action_config or ActionConfig()
+        self.sub_query_config = sub_query_config or SubQueryConfig()
         self._sessions: dict[str, _Session] = {}
         self._recipes: dict[str, RecipeRunner] = {}
         self._recipe_results: dict[str, RecipeResult] = {}
@@ -1458,6 +1464,107 @@ class AlephMCPServerLocal:
                         if ev.note:
                             source_info += f" note: {ev.note}"
                         parts.append(f"{i}. {source_info}: \"{ev.snippet[:80]}...\"" if len(ev.snippet) > 80 else f"{i}. {source_info}: \"{ev.snippet}\"")
+
+            return "\n".join(parts)
+
+        # =====================================================================
+        # Sub-query tool (RLM-style recursive reasoning)
+        # =====================================================================
+
+        @self.server.tool()
+        async def sub_query(
+            prompt: str,
+            context_slice: str | None = None,
+            context_id: str = "default",
+            backend: str = "auto",
+        ) -> str:
+            """Run a sub-query using a spawned sub-agent (RLM-style recursive reasoning).
+
+            This enables you to break large problems into chunks and query a sub-agent
+            for each chunk, then aggregate results. The sub-agent runs independently
+            and returns its response.
+
+            Backend priority (when backend="auto"):
+            1. claude CLI - uses your existing Claude subscription (no extra cost)
+            2. codex CLI - uses your existing OpenAI subscription
+            3. aider CLI
+            4. API fallback - Mimo Flash V2 (free until Jan 20, 2026)
+
+            Args:
+                prompt: The question/task for the sub-agent
+                context_slice: Optional context to include (e.g., a chunk from ctx)
+                context_id: Session to record evidence in
+                backend: "auto", "claude", "codex", "aider", or "api"
+
+            Returns:
+                The sub-agent's response
+
+            Example usage in exec_python:
+                chunks = chunk(100000)  # 100k char chunks
+                summaries = []
+                for c in chunks:
+                    result = sub_query("Summarize this section:", context_slice=c)
+                    summaries.append(result)
+                final = sub_query(f"Combine these summaries: {summaries}")
+            """
+            session = self._sessions.get(context_id)
+            if session:
+                session.iterations += 1
+
+            # Truncate context if needed
+            truncated = False
+            if context_slice and len(context_slice) > self.sub_query_config.max_context_chars:
+                context_slice = context_slice[:self.sub_query_config.max_context_chars]
+                truncated = True
+
+            # Resolve backend
+            resolved_backend = backend
+            if backend == "auto":
+                resolved_backend = detect_backend()
+
+            # Try CLI first, fall back to API
+            if resolved_backend in CLI_BACKENDS:
+                success, output = await run_cli_sub_query(
+                    prompt=prompt,
+                    context_slice=context_slice,
+                    backend=resolved_backend,  # type: ignore
+                    timeout=self.sub_query_config.cli_timeout_seconds,
+                    cwd=self.action_config.workspace_root if self.action_config.enabled else None,
+                    max_output_chars=self.sub_query_config.cli_max_output_chars,
+                )
+            else:
+                success, output = await run_api_sub_query(
+                    prompt=prompt,
+                    context_slice=context_slice,
+                    model=self.sub_query_config.api_model,
+                    api_key_env=self.sub_query_config.api_key_env,
+                    api_base_url_env=self.sub_query_config.api_base_url_env,
+                    timeout=self.sub_query_config.api_timeout_seconds,
+                    system_prompt=self.sub_query_config.system_prompt if self.sub_query_config.include_system_prompt else None,
+                )
+
+            # Record evidence
+            if session:
+                session.evidence.append(_Evidence(
+                    source="sub_query",
+                    line_range=None,
+                    pattern=None,
+                    snippet=output[:200] if success else f"[ERROR] {output[:150]}",
+                    note=f"backend={resolved_backend}" + (" [truncated context]" if truncated else ""),
+                ))
+                session.information_gain.append(1 if success else 0)
+
+            if not success:
+                return f"## Sub-Query Error\n\n**Backend:** `{resolved_backend}`\n\n{output}"
+
+            parts = [
+                "## Sub-Query Result",
+                "",
+                f"**Backend:** `{resolved_backend}`",
+            ]
+            if truncated:
+                parts.append(f"*Note: Context was truncated to {self.sub_query_config.max_context_chars:,} chars*")
+            parts.extend(["", "---", "", output])
 
             return "\n".join(parts)
 
