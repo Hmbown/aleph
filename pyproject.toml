@@ -34,7 +34,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Hmbown/Aleph-RLM"
+Homepage = "https://github.com/Hmbown/aleph"
 
 [project.scripts]
 aleph-rlm = "aleph.cli:main"
