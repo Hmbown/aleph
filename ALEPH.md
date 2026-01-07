@@ -35,6 +35,11 @@ load_context(content="<document text>", context_id="doc1")
 ```
 
 You receive metadata (size, preview) but NOT the full content. This protects your context window.
+If the document lives in your workspace, you can also use:
+
+```
+load_file(path="docs/ARCHITECTURE.md", context_id="doc1")
+```
 
 ### 2. Search for What You Need
 
@@ -42,7 +47,7 @@ You receive metadata (size, preview) but NOT the full content. This protects you
 search_context(pattern="liability|damages", context_id="doc1")
 ```
 
-Returns matching lines with surrounding context. Use regex patterns.
+Returns matching lines with surrounding context (line numbers are 1-based by default). Use regex patterns.
 
 ### 3. View Specific Sections
 
@@ -50,7 +55,7 @@ Returns matching lines with surrounding context. Use regex patterns.
 peek_context(start=100, end=150, unit="lines", context_id="doc1")
 ```
 
-Returns just lines 100-150. Only pull what you need.
+Returns just lines 100-150 (end is inclusive). Only pull what you need.
 
 ### 4. Cite Evidence
 
@@ -99,6 +104,7 @@ Each `sub_query` spawns an independent sub-agent. You aggregate the results.
 | Tool | What It Does |
 |------|--------------|
 | `load_context` | Store document externally |
+| `load_file` | Load a workspace file into a context (action tool) |
 | `search_context` | Find patterns (regex) |
 | `peek_context` | View specific lines/chars |
 | `exec_python` | Run code on the document |
@@ -118,6 +124,9 @@ You have access to:
 - `chunk(size)` — split into chunks
 - `cite(snippet, line_range, note)` — track evidence
 - `sub_query(prompt, context_slice)` — spawn sub-agent
+- `allowed_imports()` — list allowed imports in the sandbox
+- `is_import_allowed(name)` — check if an import is allowed
+- `blocked_names()` — list forbidden builtin names
 
 Plus 80+ extractors: `extract_emails()`, `extract_dates()`, `word_frequency()`, etc.
 

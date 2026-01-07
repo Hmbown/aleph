@@ -193,12 +193,21 @@ class TestSandboxExecution:
         assert result.return_value is not None
         assert len(result.return_value) > 0
 
+    def test_helper_import_introspection(self, repl: REPLEnvironment) -> None:
+        result = repl.execute("is_import_allowed('json')")
+        assert result.return_value is True
+
     def test_code_execution_disabled(self) -> None:
         config = SandboxConfig(enable_code_execution=False)
         repl = REPLEnvironment(context="test", config=config)
         result = repl.execute("x = 1")
         assert result.error is not None
         assert "disabled" in result.error.lower()
+
+    def test_cite_invalid_line_range(self, repl: REPLEnvironment) -> None:
+        result = repl.execute("cite('bad range', (5, 3))")
+        assert result.error is not None
+        assert "line_range" in result.error
 
     def test_output_truncation(self) -> None:
         config = SandboxConfig(max_output_chars=50)

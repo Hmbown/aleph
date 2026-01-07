@@ -65,6 +65,7 @@ async def _call_tool(server, tool_name: str, **kwargs):
         context = kwargs.get("context", "")
         context_id = kwargs.get("context_id", "default")
         format_str = kwargs.get("format", "auto")
+        line_number_base = kwargs.get("line_number_base", 1)
 
         fmt = _detect_format(context) if format_str == "auto" else ContentFormat(format_str)
         meta = _analyze_text_context(context, fmt)
@@ -76,9 +77,10 @@ async def _call_tool(server, tool_name: str, **kwargs):
             config=server.sandbox_config,
             loop=asyncio.get_running_loop(),
         )
+        repl.set_variable("line_number_base", line_number_base)
 
         from aleph.mcp.local_server import _Session
-        server._sessions[context_id] = _Session(repl=repl, meta=meta)
+        server._sessions[context_id] = _Session(repl=repl, meta=meta, line_number_base=line_number_base)
         return f"Context loaded: {context_id}"
 
     # Get session for tools that need it
@@ -92,6 +94,8 @@ async def _call_tool(server, tool_name: str, **kwargs):
         pattern = kwargs.get("pattern", "")
         context_lines = kwargs.get("context_lines", 2)
         max_results = kwargs.get("max_results", 10)
+        record_evidence = kwargs.get("record_evidence", True)
+        evidence_mode = kwargs.get("evidence_mode", "summary")
 
         session.iterations += 1
         fn = session.repl.get_variable("search")
@@ -109,14 +113,31 @@ async def _call_tool(server, tool_name: str, **kwargs):
 
         # Track evidence
         evidence_before = len(session.evidence)
-        for r in results:
-            line_num = r['line_num']
-            session.evidence.append(_Evidence(
-                source="search",
-                line_range=(max(0, line_num - context_lines), line_num + context_lines),
-                pattern=pattern,
-                snippet=r['match'][:200],
-            ))
+        base = session.line_number_base
+        if record_evidence:
+            ranges = []
+            for r in results:
+                line_num = r['line_num']
+                start = max(base, line_num - context_lines)
+                end = line_num + context_lines
+                ranges.append((start, end))
+            if evidence_mode == "all":
+                for r, line_range in zip(results, ranges):
+                    session.evidence.append(_Evidence(
+                        source="search",
+                        line_range=line_range,
+                        pattern=pattern,
+                        snippet=r['match'][:200],
+                    ))
+            else:
+                start = min(r[0] for r in ranges)
+                end = max(r[1] for r in ranges)
+                session.evidence.append(_Evidence(
+                    source="search",
+                    line_range=(start, end),
+                    pattern=pattern,
+                    snippet=results[0]['match'][:200],
+                ))
         session.information_gain.append(len(session.evidence) - evidence_before)
         return f"Found {len(results)} matches"
 
@@ -125,20 +146,30 @@ async def _call_tool(server, tool_name: str, **kwargs):
         start = kwargs.get("start", 0)
         end = kwargs.get("end")
         unit = kwargs.get("unit", "chars")
+        record_evidence = kwargs.get("record_evidence", False)
 
         session.iterations += 1
         if unit == "chars":
             fn = session.repl.get_variable("peek")
         else:
             fn = session.repl.get_variable("lines")
+            base = session.line_number_base
+            if base == 1 and start == 0:
+                start = 1
+            if end == 0 and base == 1:
+                end = 1
+            start_idx = start - base
+            end_idx = None if end is None else end - base + 1
         if not callable(fn):
             return "Error: peek/lines helper not available"
-
-        result = fn(start, end)
+        if unit == "chars":
+            result = fn(start, end)
+        else:
+            result = fn(start_idx, end_idx)
 
         # Track evidence
         evidence_before = len(session.evidence)
-        if result:
+        if record_evidence and result:
             session.evidence.append(_Evidence(
                 source="peek",
                 line_range=(start, end) if unit == "lines" else None,
@@ -179,8 +210,8 @@ async def _call_tool(server, tool_name: str, **kwargs):
 
     if tool_name == "get_status":
         parts = [
-            "## Session Status",
-            f"**Session ID:** `{context_id}`",
+            "## Context Status",
+            f"**Context ID:** `{context_id}`",
             f"**Iterations:** {session.iterations}",
             "### Convergence Metrics",
             f"- Evidence collected: {len(session.evidence)}",
@@ -212,7 +243,12 @@ async def _call_tool(server, tool_name: str, **kwargs):
                 }
                 for ev in page
             ]
-            return json.dumps({"context_id": context_id, "total": len(evidence), "items": payload})
+            return json.dumps({
+                "context_id": context_id,
+                "total": len(evidence),
+                "line_number_base": session.line_number_base,
+                "items": payload,
+            })
 
         return "\n".join(f"- [{ev.source}] {ev.snippet}" for ev in page) or "(no evidence)"
 
@@ -286,8 +322,8 @@ async def _call_tool(server, tool_name: str, **kwargs):
         clear_history = kwargs.get("clear_history", False)
 
         parts = [
-            "## Session Summary",
-            f"**Session ID:** `{context_id}`",
+            "## Context Summary",
+            f"**Context ID:** `{context_id}`",
             f"**Iterations:** {session.iterations}",
         ]
 
@@ -916,7 +952,7 @@ class TestSummarizeSoFar:
         """Test basic summary generation."""
         result = await _call_tool(loaded_server, "summarize_so_far",
                                   context_id="test")
-        assert "Session Summary" in result
+        assert "Context Summary" in result
         assert "test" in result  # session ID
 
     @pytest.mark.asyncio
@@ -964,6 +1000,7 @@ class TestProvenanceTracking:
         """Test that peek_context collects evidence."""
         await _call_tool(loaded_server, "peek_context",
                         start=0, end=10, unit="lines",
+                        record_evidence=True,
                         context_id="test")
         session = loaded_server._sessions["test"]
         # Find peek evidence

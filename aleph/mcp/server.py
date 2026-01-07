@@ -29,6 +29,10 @@ from ..repl.sandbox import REPLEnvironment, SandboxConfig
 from ..types import ContentFormat, ContextMetadata
 
 
+LineNumberBase = Literal[0, 1]
+DEFAULT_LINE_NUMBER_BASE: LineNumberBase = 1
+
+
 def _detect_format(text: str) -> ContentFormat:
     t = text.lstrip()
     if t.startswith("{") or t.startswith("["):
@@ -54,10 +58,17 @@ def _analyze_text_context(text: str, fmt: ContentFormat) -> ContextMetadata:
     )
 
 
+def _validate_line_number_base(value: int) -> LineNumberBase:
+    if value not in (0, 1):
+        raise ValueError("line_number_base must be 0 or 1")
+    return cast(LineNumberBase, value)
+
+
 @dataclass(slots=True)
 class _Session:
     repl: REPLEnvironment
     meta: ContextMetadata
+    line_number_base: LineNumberBase = DEFAULT_LINE_NUMBER_BASE
 
 
 class AlephMCPServer:
@@ -94,8 +105,14 @@ class AlephMCPServer:
             context: str,
             context_id: str = "default",
             format: str = "auto",
+            line_number_base: LineNumberBase = DEFAULT_LINE_NUMBER_BASE,
         ) -> str:
             """Load context into an in-memory REPL session."""
+
+            try:
+                base = _validate_line_number_base(line_number_base)
+            except ValueError as e:
+                return f"Error: {e}"
 
             fmt = _detect_format(context) if format == "auto" else ContentFormat(format)
             meta = _analyze_text_context(context, fmt)
@@ -106,6 +123,7 @@ class AlephMCPServer:
                 config=self.sandbox_config,
                 loop=asyncio.get_running_loop(),
             )
+            repl.set_variable("line_number_base", base)
 
             # Provide a lightweight sub_query function inside the REPL for convenience.
             async def _sub_query(prompt: str, context_slice: str | None = None) -> str:
@@ -118,9 +136,10 @@ class AlephMCPServer:
 
             repl.inject_sub_query(_sub_query)
 
-            self._sessions[context_id] = _Session(repl=repl, meta=meta)
+            self._sessions[context_id] = _Session(repl=repl, meta=meta, line_number_base=base)
             return (
-                f"Loaded context '{context_id}': {meta.size_chars:,} chars, {meta.size_lines:,} lines, ~{meta.size_tokens_estimate:,} tokens"
+                f"Loaded context '{context_id}': {meta.size_chars:,} chars, {meta.size_lines:,} lines, "
+                f"~{meta.size_tokens_estimate:,} tokens (line numbers { '1-based' if base == 1 else '0-based' })"
             )
 
         @self.server.tool()
@@ -134,7 +153,8 @@ class AlephMCPServer:
             if context_id not in self._sessions:
                 return f"Error: No context loaded with ID '{context_id}'. Use load_context first."
 
-            repl = self._sessions[context_id].repl
+            session = self._sessions[context_id]
+            repl = session.repl
             if unit == "chars":
                 fn = repl.get_variable("peek")
                 if not callable(fn):
@@ -145,7 +165,18 @@ class AlephMCPServer:
             if not callable(fn):
                 return "Error: lines() helper is not available"
             lines_fn = cast(Callable[[int, int | None], str], fn)
-            return lines_fn(start, end)
+            base = session.line_number_base
+            if base == 1 and start == 0:
+                start = 1
+            if end == 0 and base == 1:
+                end = 1
+            if start < base:
+                return f"Error: start must be >= {base} for line-based peeks"
+            if end is not None and end < start:
+                return "Error: end must be >= start"
+            start_idx = start - base
+            end_idx = None if end is None else end - base + 1
+            return lines_fn(start_idx, end_idx)
 
         @self.server.tool()
         async def search_context(
@@ -158,7 +189,8 @@ class AlephMCPServer:
             if context_id not in self._sessions:
                 return f"Error: No context loaded with ID '{context_id}'. Use load_context first."
 
-            repl = self._sessions[context_id].repl
+            session = self._sessions[context_id]
+            repl = session.repl
             fn = repl.get_variable("search")
             if not callable(fn):
                 return "Error: search() helper is not available"
@@ -170,7 +202,8 @@ class AlephMCPServer:
             out: list[str] = []
             for r in results:
                 try:
-                    out.append(f"Line {r['line_num']}:\n{r['context']}")
+                    line_num = r["line_num"] + session.line_number_base
+                    out.append(f"Line {line_num}:\n{r['context']}")
                 except Exception:
                     out.append(str(r))
             return "\n---\n".join(out)

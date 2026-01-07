@@ -214,9 +214,12 @@ final = sub_query("Synthesize into a summary:", context_slice="\n\n".join(result
 **Optional actions** (disabled by default, enable with `--enable-actions`):
 | Tool | Purpose |
 |------|---------|
+| `load_file` | Load a workspace file into a context |
 | `read_file`, `write_file` | File system access |
 | `run_command`, `run_tests` | Shell execution |
 | `save_session`, `load_session` | Persist/restore state |
+
+Action tools that return JSON support `output="object"` for structured responses without double-encoding.
 
 ---
 
@@ -237,6 +240,18 @@ export ALEPH_SUB_QUERY_MODEL=gpt-4o-mini
 > **Note:** Some MCP clients don't reliably pass `env` vars from their config to the server process. If `sub_query` reports "API key not found" despite your client's MCP settings, add the exports to your shell profile (`~/.zshrc` or `~/.bashrc`) and restart your terminal/client.
 
 See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for all options.
+
+---
+
+## Changelog
+
+### Unreleased
+
+- Added `load_file` and auto-created contexts for action tools when a `context_id` is provided
+- Standardized line numbering to 1-based by default (configurable), clarified peek/search line ranges, and added `include_raw` for `read_file`
+- Added `output="object"` for structured responses and consistent JSON error payloads
+- Reduced evidence noise with search summary mode and `record_evidence` flags; `cite` now validates line ranges
+- Hardened `run_tests` reporting (exit codes/errors) and `sub_query` backend validation; added sandbox import introspection helpers
 
 ---
 

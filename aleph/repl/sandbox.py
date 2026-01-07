@@ -412,13 +412,32 @@ class REPLEnvironment:
         self._evidence: list[Citation] = []
 
         # Helper functions (wrappers around repl.helpers)
+        def _normalize_line_range(
+            line_range: tuple[int, int] | list[int] | None,
+        ) -> tuple[int, int] | None:
+            if line_range is None:
+                return None
+            if isinstance(line_range, list):
+                line_range = tuple(line_range)
+            if (
+                not isinstance(line_range, tuple)
+                or len(line_range) != 2
+                or not all(isinstance(x, int) for x in line_range)
+            ):
+                raise ValueError("line_range must be a tuple of two integers")
+            start, end = line_range
+            if start < 0 or end < 0 or start > end:
+                raise ValueError("line_range must be non-negative and start <= end")
+            return line_range
+
         def _cite_and_store(
             snippet: str,
             line_range: tuple[int, int] | None = None,
             note: str | None = None,
         ) -> Citation:
             """Cite evidence and store it for provenance tracking."""
-            citation = _helpers.cite(snippet, line_range, note)
+            normalized_range = _normalize_line_range(line_range)
+            citation = _helpers.cite(snippet, normalized_range, note)
             self._citations.append(citation)
             self._evidence.append(citation)
             return citation
@@ -431,12 +450,21 @@ class REPLEnvironment:
                 # === Core helpers (context-aware) ===
                 "peek": lambda start=0, end=None: _helpers.peek(ctx_getter(), start, end),
                 "lines": lambda start=0, end=None: _helpers.lines(ctx_getter(), start, end),
-                "search": lambda pattern, context_lines=2, flags=0, max_results=20: _helpers.search(
-                    ctx_getter(), pattern, context_lines=context_lines, flags=flags, max_results=max_results
-                ),
+                "search": lambda pattern, context_lines=2, flags=0, max_results=20: [
+                    {
+                        **r,
+                        "line_num": r["line_num"] + (self._namespace.get("line_number_base", 1) or 0),
+                    }
+                    for r in _helpers.search(
+                        ctx_getter(), pattern, context_lines=context_lines, flags=flags, max_results=max_results
+                    )
+                ],
                 "chunk": lambda chunk_size, overlap=0: _helpers.chunk(ctx_getter(), chunk_size=chunk_size, overlap=overlap),
                 "cite": _cite_and_store,
                 "_evidence": self._evidence,
+                "allowed_imports": lambda: list(self.config.allowed_imports),
+                "is_import_allowed": lambda name: name.split(".", 1)[0] in self.config.allowed_imports,
+                "blocked_names": lambda: sorted(FORBIDDEN_NAMES),
 
                 # === Extraction helpers (context-aware) ===
                 "extract_numbers": lambda include_negative=True, include_decimals=True: _helpers.extract_numbers(ctx_getter(), include_negative, include_decimals),
@@ -692,6 +720,16 @@ class REPLEnvironment:
                 error=None,
             )
 
+        except SecurityError as e:
+            return ExecutionResult(
+                stdout=stdout_io.getvalue(),
+                stderr=stderr_io.getvalue(),
+                return_value=None,
+                variables_updated=[],
+                truncated=False,
+                execution_time_ms=(time.time() - start) * 1000.0,
+                error=f"{e} (blocked by sandbox before execution; try/except cannot catch this)",
+            )
         except ExecutionTimeout as e:
             return ExecutionResult(
                 stdout=stdout_io.getvalue(),
