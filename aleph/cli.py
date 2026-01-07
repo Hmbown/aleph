@@ -9,15 +9,15 @@ Provides easy installation of Aleph into various MCP clients:
 - Codex CLI
 
 Usage:
-    aleph install           # Interactive mode, detects all clients
-    aleph install claude-desktop
-    aleph install cursor
-    aleph install windsurf
-    aleph install claude-code
-    aleph install codex
-    aleph install --all     # Configure all detected clients
-    aleph uninstall <client>
-    aleph doctor            # Verify installation
+    aleph-rlm install           # Interactive mode, detects all clients
+    aleph-rlm install claude-desktop
+    aleph-rlm install cursor
+    aleph-rlm install windsurf
+    aleph-rlm install claude-code
+    aleph-rlm install codex
+    aleph-rlm install --all     # Configure all detected clients
+    aleph-rlm uninstall <client>
+    aleph-rlm doctor            # Verify installation
 """
 
 from __future__ import annotations
@@ -231,7 +231,7 @@ CLIENTS: dict[str, ClientConfig] = {
 # The JSON configuration to inject
 ALEPH_MCP_CONFIG = {
     "command": "aleph-mcp-local",
-    "args": [],
+    "args": ["--enable-actions"],
 }
 
 
@@ -445,7 +445,7 @@ def install_to_toml_config(
     block = (
         "[mcp_servers.aleph]\n"
         "command = \"aleph-mcp-local\"\n"
-        "args = []\n"
+        "args = [\"--enable-actions\"]\n"
     )
 
     if dry_run:
@@ -926,11 +926,11 @@ def print_usage() -> None:
 Aleph MCP Server Installer
 
 Usage:
-    aleph install              Interactive mode - detect and configure clients
-    aleph install <client>     Configure a specific client
-    aleph install --all        Configure all detected clients
-    aleph uninstall <client>   Remove Aleph from a client
-    aleph doctor               Verify installation
+    aleph-rlm install              Interactive mode - detect and configure clients
+    aleph-rlm install <client>     Configure a specific client
+    aleph-rlm install --all        Configure all detected clients
+    aleph-rlm uninstall <client>   Remove Aleph from a client
+    aleph-rlm doctor               Verify installation
 
 Clients:
     claude-desktop     Claude Desktop app
@@ -946,12 +946,12 @@ Options:
     --help, -h         Show this help message
 
 Examples:
-    aleph install                     # Interactive mode
-    aleph install claude-desktop      # Configure Claude Desktop
-    aleph install codex               # Configure Codex CLI
-    aleph install --all --dry-run     # Preview all installations
-    aleph uninstall cursor            # Remove from Cursor
-    aleph doctor                      # Check installation status
+    aleph-rlm install                     # Interactive mode
+    aleph-rlm install claude-desktop      # Configure Claude Desktop
+    aleph-rlm install codex               # Configure Codex CLI
+    aleph-rlm install --all --dry-run     # Preview all installations
+    aleph-rlm uninstall cursor            # Remove from Cursor
+    aleph-rlm doctor                      # Check installation status
 """)
 
 

@@ -1,8 +1,3 @@
----
-name: aleph
-description: Use Aleph MCP tools to analyze large documents without stuffing them into the context window. Load, search, cite, and finalize with evidence.
----
-
 # /aleph — Document Analysis Skill
 
 **Purpose:** Analyze documents without stuffing them into your context window.

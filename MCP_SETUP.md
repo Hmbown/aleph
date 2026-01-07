@@ -97,7 +97,7 @@ Add to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.aleph]
 command = "aleph-mcp-local"
-args = []
+args = ["--enable-actions"]
 ```
 
 To enable actions (read_file, write_file, etc.), use:

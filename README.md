@@ -71,7 +71,8 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 {
   "mcpServers": {
     "aleph": {
-      "command": "aleph-mcp-local"
+      "command": "aleph-mcp-local",
+      "args": ["--enable-actions"]
     }
   }
 }
@@ -109,7 +110,7 @@ Add to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.aleph]
 command = "aleph-mcp-local"
-args = []
+args = ["--enable-actions"]
 ```
 
 Or run: `aleph-rlm install codex`
