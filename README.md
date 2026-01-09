@@ -29,13 +29,13 @@ Traditional LLMs are limited by their context window (~200K tokens). Aleph sides
 - **Python loads the entire file into RAM** as a string
 - **The LLM queries it** via `search()`, `peek()`, `lines()`, etc.
 - **Only query results** (kilobytes) enter the LLM's context—never the full file
-- **Your RAM is the limit**, not the model's context window (with a default 1GB safety cap)
+- **Your RAM is the limit**, not the model's context window (with a default 1GB safety cap on action tools)
 
 You can load **multiple files or entire repos** as separate contexts and query them independently.
 
 A 50MB log file? The LLM sees ~1KB of search results. A 2GB database dump? Same—just the slices you ask for.
 
-By default, Aleph sets a **1GB max file size** to avoid accidental overload, but you can raise it with `--max-file-size` based on your machine.
+By default, Aleph sets a **1GB max file size** for action tools to avoid accidental overload, but you can raise it with `--max-file-size` based on your machine.
 
 ## Installation
 
@@ -232,7 +232,7 @@ For full configuration options (limits, budgets, and backend details), see [docs
 
 ### Unreleased
 
-- **Unlimited context architecture**: Clarified that file size is limited only by system RAM, not LLM context window. Load gigabytes of data and query it with search/peek/lines.
+- **Unlimited context architecture**: Clarified that file size is limited by system RAM (with a default 1GB action-tool cap) rather than LLM context windows. Load gigabytes of data and query it with search/peek/lines.
 - Added `--workspace-mode` for action tools (`fixed`, `git`, `any`) to support multi-repo workflows.
 - Added optional `cwd` for `run_tests` to run tests outside the server’s default working directory.
 - Updated MCP setup docs with multi-repo configuration examples.
