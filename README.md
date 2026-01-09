@@ -36,6 +36,7 @@ You can load **multiple files or entire repos** as separate contexts and query t
 A 50MB log file? The LLM sees ~1KB of search results. A 2GB database dump? Same—just the slices you ask for.
 
 By default, Aleph sets a **1GB max file size** for action tools to avoid accidental overload, but you can raise it with `--max-file-size` based on your machine.
+This cap applies to `load_file` / `read_file`; `load_context` still accepts any size you can supply in-memory.
 
 ## Installation
 
