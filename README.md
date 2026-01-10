@@ -249,6 +249,16 @@ pytest
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for architecture details.
 
+## References
+
+Aleph implements the Recursive Language Model (RLM) architecture described in:
+
+> **Recursive Language Models**
+> Zhang, A. L., Kraska, T., & Khattab, O. (2025)
+> [arXiv:2512.24601](https://arxiv.org/abs/2512.24601)
+
+RLMs treat the input context as an external environment variable rather than part of the prompt. This allows models to programmatically decompose inputs, recursively query themselves over chunks, and synthesize results—processing inputs far beyond their native context window.
+
 ## License
 
 MIT
