@@ -6,6 +6,7 @@ This guide covers all configuration options for Aleph, including environment var
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
+| `ALEPH_WORKSPACE_ROOT` | Override workspace root detection | auto-detect |
 | `ALEPH_SUB_QUERY_BACKEND` | Force sub-query backend | `auto` |
 | `ALEPH_SUB_QUERY_API_KEY` | API key (fallback: `OPENAI_API_KEY`) | -- |
 | `ALEPH_SUB_QUERY_URL` | API base URL (fallback: `OPENAI_BASE_URL`) | `https://api.openai.com/v1` |

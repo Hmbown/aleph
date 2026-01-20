@@ -505,12 +505,50 @@ def _session_from_payload(
 
     return session
 
+def _resolve_env_dir() -> Path | None:
+    """Return invocation directory from env vars, preferring explicit override."""
+
+    def _resolve_path(value: str, base: Path | None) -> Path:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = (base or Path.cwd()) / path
+        return path.resolve()
+
+    def _resolve_invocation_dir() -> Path | None:
+        for var in ("PWD", "INIT_CWD"):
+            val = os.environ.get(var)
+            if not val:
+                continue
+            path = _resolve_path(val, base=None)
+            if path.is_dir():
+                return path
+        return None
+
+    invocation_dir = _resolve_invocation_dir()
+    override = os.environ.get("ALEPH_WORKSPACE_ROOT")
+    if override:
+        path = _resolve_path(override, base=invocation_dir)
+        if path.is_dir():
+            return path
+
+    return invocation_dir
+
+
 def _detect_workspace_root() -> Path:
-    cwd = Path.cwd()
-    for parent in [cwd, *cwd.parents]:
+    """Auto-detect workspace root with env override support.
+
+    Detection order:
+    1. ALEPH_WORKSPACE_ROOT env var (explicit override)
+    2. PWD env var (invocation directory)
+    3. INIT_CWD env var (npm/yarn invocation)
+    4. os.getcwd() fallback
+    5. Walk up to find .git from resolved directory
+    """
+    base = _resolve_env_dir() or Path.cwd()
+    for parent in [base, *base.parents]:
         if (parent / ".git").exists():
             return parent
-    return cwd
+    return base
 
 
 def _nearest_existing_parent(path: Path) -> Path:
@@ -3438,7 +3476,7 @@ def main() -> None:
         "--workspace-root",
         type=str,
         default=None,
-        help="Workspace root for action tools (default: auto-detect git root or cwd)",
+        help="Workspace root for action tools (default: ALEPH_WORKSPACE_ROOT env or auto-detect from PWD/INIT_CWD/cwd)",
     )
     parser.add_argument(
         "--workspace-mode",

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+- Added `ALEPH_WORKSPACE_ROOT` environment variable for explicit workspace override.
+- Improved workspace auto-detection: prefers `PWD`/`INIT_CWD` over `os.getcwd()`.
+- Fixes "path escapes workspace root" errors when server starts from install path.
+
 ## 0.5.9
 
 - Fixed `sub_query` to auto-inject session context when `context_slice` is omitted.

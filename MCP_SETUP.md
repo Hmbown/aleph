@@ -312,9 +312,11 @@ The workspace root should be the directory containing:
 - The root of your project
 
 **Automatic Detection:** If you don't set `--workspace-root`, aleph will:
-1. Check if `.git` exists in current directory
-2. If not, search parent directories until finding `.git`
-3. Use that directory as the workspace root
+1. Check `ALEPH_WORKSPACE_ROOT` env var (explicit override)
+2. Check `PWD` env var (shell's invocation directory)
+3. Check `INIT_CWD` env var (npm/yarn invocation directory)
+4. Fall back to `os.getcwd()`
+5. Walk up from the resolved directory to find `.git`
 
 **Recommended:** Always set `--workspace-root` explicitly to avoid ambiguity.
 If you need to work across multiple repos in one MCP server, prefer `--workspace-mode git` and use absolute paths (or a broad workspace root).
