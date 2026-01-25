@@ -189,7 +189,7 @@ async def _run_with_arg(
         overrides: list[str] = []
         if mcp_server_url:
             overrides = _codex_mcp_overrides(mcp_server_url, mcp_server_name, trust_mcp_server)
-        cmd = ["codex", *overrides, "exec", "--full-auto", prompt]
+        cmd = ["codex", *overrides, "exec", "--skip-git-repo-check", "--full-auto", prompt]
     elif backend == "gemini":
         # Google Gemini CLI: -y for yolo mode (auto-approve all actions)
         if mcp_server_url:
@@ -269,7 +269,7 @@ async def _run_with_tempfile(
             overrides: list[str] = []
             if mcp_server_url:
                 overrides = _codex_mcp_overrides(mcp_server_url, mcp_server_name, trust_mcp_server)
-            cmd = ["codex", *overrides, "exec", "--full-auto", "-"]
+            cmd = ["codex", *overrides, "exec", "--skip-git-repo-check", "--full-auto", "-"]
             stdin_data = prompt.encode("utf-8")
         elif backend == "gemini":
             # Gemini: -y for yolo mode, pass prompt via stdin

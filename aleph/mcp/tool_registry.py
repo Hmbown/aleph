@@ -1420,10 +1420,10 @@ def register_tools(server: "AlephMCPServerLocal") -> None:
         and returns its response.
 
         Backend priority (when backend="auto"):
-        1. API - if ALEPH_SUB_QUERY_API_KEY or OPENAI_API_KEY is set (most reliable)
-        2. codex CLI - if installed
-        3. gemini CLI - if installed
-        4. claude CLI - if installed (deprioritized: hangs in MCP/sandbox contexts)
+        1. codex CLI - if installed
+        2. gemini CLI - if installed
+        3. claude CLI - if installed (deprioritized: hangs in MCP/sandbox contexts)
+        4. API - if ALEPH_SUB_QUERY_API_KEY or OPENAI_API_KEY is set (last resort)
 
         Configure via environment:
         - ALEPH_SUB_QUERY_BACKEND: Force specific backend ("api", "claude", "codex", "gemini")

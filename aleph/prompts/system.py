@@ -58,9 +58,9 @@ sections = ctx.split("\\n\\n")  # or by headers
 for i, section in enumerate(sections):
     if len(section) < 1000:  # skip tiny sections
         continue
-    summary = sub_query(f"Extract info relevant to: {query}", section)
-    buffers.append(f"Section {i}: {summary}")
-final = sub_query(f"Based on these summaries, answer: {query}\\n\\n" + "\\n".join(buffers))
+    summary = sub_query(f"Extract info relevant to: {{query}}", section)
+    buffers.append(f"Section {{i}}: {{summary}}")
+final = sub_query(f"Based on these summaries, answer: {{query}}\\n\\n" + "\\n".join(buffers))
 print(final)
 ```
 
@@ -82,8 +82,8 @@ for hit in hits:
     start = max(0, hit['line_num'] - 50)
     end = hit['line_num'] + 50
     snippet = lines(start, end)
-    answer = sub_query(f"Analyze this section for X:\\n{snippet}")
-    print(f"Lines {start}-{end}: {answer}")
+    answer = sub_query(f"Analyze this section for X:\\n{{snippet}}")
+    print(f"Lines {{start}}-{{end}}: {{answer}}")
 ```
 
 IMPORTANT:

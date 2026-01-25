@@ -20,6 +20,7 @@ Also tests:
 from __future__ import annotations
 
 import json
+import os
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, patch
@@ -1135,15 +1136,31 @@ async def test_run_sub_aleph_uses_session_context(loaded_server):
         wall_time_seconds=0.1,
         trajectory=[],
     )
-    with patch("aleph.mcp.local_server.Aleph.complete", new=AsyncMock(return_value=response)) as mock_complete:
-        result, meta = await loaded_server._run_sub_aleph(
-            query="What is line 1?",
-            context_slice=None,
-            context_id="test",
-            max_depth=3,
-        )
+    with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "api"}, clear=True):
+        with patch("aleph.mcp.local_server.Aleph.complete", new=AsyncMock(return_value=response)) as mock_complete:
+            result, meta = await loaded_server._run_sub_aleph(
+                query="What is line 1?",
+                context_slice=None,
+                context_id="test",
+                max_depth=3,
+            )
     assert result.success is True
     assert meta["budget"].max_depth == 3
     assert mock_complete.call_args.kwargs["context"].startswith("Line 1")
     session = loaded_server._sessions["test"]
     assert session.evidence[-1].source == "sub_aleph"
+
+
+@pytest.mark.asyncio
+async def test_run_sub_aleph_cli_single_shot(loaded_server):
+    with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "codex"}, clear=True):
+        with patch("aleph.mcp.local_server.run_cli_sub_query", new=AsyncMock(return_value=(True, "FINAL(ok)"))) as mock_run:
+            result, meta = await loaded_server._run_sub_aleph(
+                query="Return ok",
+                context_slice=None,
+                context_id="test",
+            )
+    assert result.success is True
+    assert result.answer == "ok"
+    assert meta["backend"] == "codex"
+    assert mock_run.call_count == 1

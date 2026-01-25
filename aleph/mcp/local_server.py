@@ -45,6 +45,7 @@ import shlex
 import subprocess
 import sys
 import time
+import uuid
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -55,10 +56,11 @@ from html.parser import HTMLParser
 
 from ..config import AlephConfig
 from ..core import Aleph
+from ..prompts.system import DEFAULT_SYSTEM_PROMPT
 from ..providers.registry import get_provider
 from ..repl.sandbox import REPLEnvironment, SandboxConfig
 from ..types import AlephResponse, Budget, ContentFormat, ContextMetadata
-from ..sub_query import SubQueryConfig, detect_backend, has_api_credentials
+from ..sub_query import SubQueryConfig, detect_backend
 from ..sub_query.cli_backend import run_cli_sub_query, CLI_BACKENDS
 from ..sub_query.api_backend import run_api_sub_query
 
@@ -322,6 +324,50 @@ def _analyze_text_context(text: str, fmt: ContentFormat) -> ContextMetadata:
     )
 
 
+_FINAL_RE = re.compile(r"FINAL\((.*?)\)", re.DOTALL)
+_FINAL_VAR_RE = re.compile(r"FINAL_VAR\((.*?)\)", re.DOTALL)
+
+
+def _extract_final_answer(text: str) -> tuple[str, bool]:
+    match = _FINAL_RE.search(text)
+    if match:
+        return match.group(1).strip(), True
+    match_var = _FINAL_VAR_RE.search(text)
+    if match_var:
+        raw = match_var.group(1).strip()
+        if len(raw) >= 2 and ((raw[0] == raw[-1] == '"') or (raw[0] == raw[-1] == "'")):
+            raw = raw[1:-1].strip()
+        return raw, True
+    return text.strip(), False
+
+
+def _build_sub_aleph_cli_prompt(
+    *,
+    query: str,
+    context_slice: str,
+    context_format: ContentFormat,
+    cfg: AlephConfig,
+) -> str:
+    meta = _analyze_text_context(context_slice, context_format)
+    system_template = cfg.system_prompt or DEFAULT_SYSTEM_PROMPT
+    system_prompt = system_template.format(
+        query=query,
+        context_var=cfg.context_var_name,
+        context_format=meta.format.value,
+        context_size_chars=meta.size_chars,
+        context_size_lines=meta.size_lines,
+        context_size_tokens=meta.size_tokens_estimate,
+        context_preview=meta.sample_preview,
+        structure_hint=meta.structure_hint or "N/A",
+    )
+    instructions = (
+        "SINGLE-SHOT MODE (no live Python REPL in this call):\n"
+        "- Do not output code blocks.\n"
+        "- Answer directly and wrap the final answer in FINAL(...).\n"
+    )
+    return f"{system_prompt}\n\n{instructions}\nQUERY:\n{query}"
+
+
 @dataclass
 class _Session:
     """Session state for a context."""
@@ -341,6 +387,8 @@ class _Session:
     # Lightweight task tracking
     tasks: list[dict[str, Any]] = field(default_factory=list)
     task_counter: int = 0
+    # Recursion depth tracking for sub_aleph
+    max_depth_seen: int = 1
 
 
 def _session_to_payload(session_id: str, session: _Session) -> dict[str, Any]:
@@ -1024,6 +1072,7 @@ class AlephMCPServerLocal:
         query: str,
         context_slice: str | None,
         context_id: str,
+        current_depth: int = 1,
         root_model: str | None = None,
         sub_model: str | None = None,
         max_depth: int | None = None,
@@ -1036,6 +1085,7 @@ class AlephMCPServerLocal:
         session = self._sessions.get(context_id)
         if session:
             session.iterations += 1
+            session.max_depth_seen = max(session.max_depth_seen, current_depth)
 
         if context_slice is None and session:
             ctx_val = session.repl.get_variable("ctx")
@@ -1065,50 +1115,161 @@ class AlephMCPServerLocal:
             except (TypeError, ValueError):
                 temp_val = 0.0
 
-        try:
-            provider = get_provider(cfg.provider, api_key=cfg.api_key)
-            runner = Aleph(
-                provider=provider,
-                root_model=resolved_root,
-                sub_model=resolved_sub,
-                budget=budget,
-                sandbox_config=self.sandbox_config,
-                system_prompt=cfg.system_prompt,
-                enable_caching=cfg.enable_caching,
-                log_trajectory=cfg.log_trajectory,
-            )
-            response = await runner.complete(
+        resolved_backend = detect_backend(self.sub_query_config)
+        truncated_context = False
+        start_time = time.perf_counter()
+
+        if resolved_backend in CLI_BACKENDS:
+            cli_context = context_slice or ""
+            if cli_context and len(cli_context) > self.sub_query_config.max_context_chars:
+                cli_context = cli_context[: self.sub_query_config.max_context_chars]
+                truncated_context = True
+
+            context_format = session.meta.format if session else ContentFormat.TEXT
+            prompt = _build_sub_aleph_cli_prompt(
                 query=query,
-                context=context_slice or "",
-                root_model=resolved_root,
-                sub_model=resolved_sub,
-                budget=budget,
-                temperature=temp_val,
-            )
-        except Exception as e:
-            response = AlephResponse(
-                answer="",
-                success=False,
-                total_iterations=0,
-                max_depth_reached=0,
-                total_tokens=0,
-                total_cost_usd=0.0,
-                wall_time_seconds=0.0,
-                trajectory=[],
-                error=str(e),
-                error_type="provider_error",
+                context_slice=cli_context,
+                context_format=context_format,
+                cfg=cfg,
             )
 
+            mcp_server_url = None
+            server_name = "aleph_shared"
+            share_session = _get_env_bool("ALEPH_SUB_QUERY_SHARE_SESSION", False)
+            if share_session and resolved_backend in {"claude", "codex", "gemini"}:
+                host = os.environ.get("ALEPH_SUB_QUERY_HTTP_HOST", "127.0.0.1")
+                port = _get_env_int("ALEPH_SUB_QUERY_HTTP_PORT", 8765)
+                path = os.environ.get("ALEPH_SUB_QUERY_HTTP_PATH", "/mcp")
+                server_name = os.environ.get(
+                    "ALEPH_SUB_QUERY_MCP_SERVER_NAME",
+                    "aleph_shared",
+                ).strip() or "aleph_shared"
+                ok, url_or_err = await self._ensure_streamable_http_server(host, port, path)
+                if not ok:
+                    response = AlephResponse(
+                        answer="",
+                        success=False,
+                        total_iterations=0,
+                        max_depth_reached=0,
+                        total_tokens=0,
+                        total_cost_usd=0.0,
+                        wall_time_seconds=time.perf_counter() - start_time,
+                        trajectory=[],
+                        error=f"Failed to start streamable HTTP server: {url_or_err}",
+                        error_type="cli_error",
+                    )
+                else:
+                    mcp_server_url = url_or_err
+                    prompt = (
+                        f"{prompt}\n\n"
+                        f"[MCP tools are available via the live Aleph server. "
+                        f"Use context_id={context_id!r} when calling tools. "
+                        f"Tools are prefixed with `mcp__{server_name}__`.]"
+                    )
+
+            if mcp_server_url is not None or not share_session:
+                try:
+                    success, output = await run_cli_sub_query(
+                        prompt=prompt,
+                        context_slice=cli_context if cli_context else None,
+                        backend=resolved_backend,  # type: ignore[arg-type]
+                        timeout=self.sub_query_config.cli_timeout_seconds,
+                        cwd=self.action_config.workspace_root if self.action_config.enabled else None,
+                        max_output_chars=self.sub_query_config.cli_max_output_chars,
+                        mcp_server_url=mcp_server_url,
+                        mcp_server_name=server_name,
+                        trust_mcp_server=True,
+                    )
+                except Exception as e:
+                    success, output = False, f"{type(e).__name__}: {e}"
+
+                wall_time = time.perf_counter() - start_time
+                if success:
+                    answer, _ = _extract_final_answer(output)
+                    if not answer:
+                        response = AlephResponse(
+                            answer="",
+                            success=False,
+                            total_iterations=current_depth,
+                            max_depth_reached=current_depth,
+                            total_tokens=0,
+                            total_cost_usd=0.0,
+                            wall_time_seconds=wall_time,
+                            trajectory=[],
+                            error="Empty response from CLI backend",
+                            error_type="cli_error",
+                        )
+                    else:
+                        response = AlephResponse(
+                            answer=answer,
+                            success=True,
+                            total_iterations=current_depth,
+                            max_depth_reached=current_depth,
+                            total_tokens=0,
+                            total_cost_usd=0.0,
+                            wall_time_seconds=wall_time,
+                            trajectory=[],
+                        )
+                else:
+                    response = AlephResponse(
+                        answer="",
+                        success=False,
+                        total_iterations=current_depth,
+                        max_depth_reached=current_depth,
+                        total_tokens=0,
+                        total_cost_usd=0.0,
+                        wall_time_seconds=wall_time,
+                        trajectory=[],
+                        error=output,
+                        error_type="cli_error",
+                    )
+        else:
+            try:
+                provider = get_provider(cfg.provider, api_key=cfg.api_key)
+                runner = Aleph(
+                    provider=provider,
+                    root_model=resolved_root,
+                    sub_model=resolved_sub,
+                    budget=budget,
+                    sandbox_config=self.sandbox_config,
+                    system_prompt=cfg.system_prompt,
+                    enable_caching=cfg.enable_caching,
+                    log_trajectory=cfg.log_trajectory,
+                )
+                response = await runner.complete(
+                    query=query,
+                    context=context_slice or "",
+                    root_model=resolved_root,
+                    sub_model=resolved_sub,
+                    budget=budget,
+                    temperature=temp_val,
+                )
+            except Exception as e:
+                response = AlephResponse(
+                    answer="",
+                    success=False,
+                    total_iterations=0,
+                    max_depth_reached=0,
+                    total_tokens=0,
+                    total_cost_usd=0.0,
+                    wall_time_seconds=0.0,
+                    trajectory=[],
+                    error=str(e),
+                    error_type="provider_error",
+                )
+
         if session:
-            note = f"models={resolved_root}/{resolved_sub}"
+            note_parts = [f"backend={resolved_backend}", f"models={resolved_root}/{resolved_sub}"]
             if budget.max_depth is not None:
-                note = f"{note} max_depth={budget.max_depth}"
+                note_parts.append(f"max_depth={budget.max_depth}")
+            if truncated_context:
+                note_parts.append("truncated_context")
             session.evidence.append(_Evidence(
                 source="sub_aleph",
                 line_range=None,
                 pattern=None,
                 snippet=response.answer[:200] if response.success else f"[ERROR] {str(response.error)[:150]}",
-                note=note,
+                note=" ".join(note_parts),
             ))
             session.information_gain.append(1 if response.success else 0)
 
@@ -1117,6 +1278,8 @@ class AlephMCPServerLocal:
             "sub_model": resolved_sub,
             "budget": budget,
             "temperature": temp_val,
+            "backend": resolved_backend,
+            "truncated_context": truncated_context,
         }
         return response, meta
 
@@ -3187,10 +3350,10 @@ class AlephMCPServerLocal:
             and returns its response. Use validate_regex + retries to enforce output format.
 
             Backend priority (when backend="auto"):
-            1. API - if ALEPH_SUB_QUERY_API_KEY or OPENAI_API_KEY is set (most reliable)
-            2. codex CLI - if installed
-            3. gemini CLI - if installed
-            4. claude CLI - if installed (deprioritized: hangs in MCP/sandbox contexts)
+            1. codex CLI - if installed
+            2. gemini CLI - if installed
+            3. claude CLI - if installed (deprioritized: hangs in MCP/sandbox contexts)
+            4. API - if ALEPH_SUB_QUERY_API_KEY or OPENAI_API_KEY is set (last resort)
 
             Configure via environment:
             - ALEPH_SUB_QUERY_BACKEND: Force specific backend ("api", "claude", "codex", "gemini", "auto")
@@ -3279,7 +3442,10 @@ class AlephMCPServerLocal:
 
             Use this when you want the sub-agent to have full Aleph capabilities
             (exec_python, sub_query, and deeper sub_aleph) instead of a single
-            LLM response.
+            LLM response. Backend selection follows ALEPH_SUB_QUERY_BACKEND
+            ("auto" defaults to CLI). When a CLI backend is selected, this runs
+            as a single-shot "act like Aleph" call without a live REPL; use the
+            API backend for full looped execution.
 
             Args:
                 query: The question/task for the nested Aleph run
@@ -3298,10 +3464,12 @@ class AlephMCPServerLocal:
             Returns:
                 Nested Aleph response (answer or formatted metadata + answer)
             """
+            session = self._sessions.get(context_id)
             response, meta = await self._run_sub_aleph(
                 query=query,
                 context_slice=context_slice,
                 context_id=context_id,
+                current_depth=session.max_depth_seen + 1 if session else 1,
                 root_model=root_model,
                 sub_model=sub_model,
                 max_depth=max_depth,
@@ -3326,20 +3494,30 @@ class AlephMCPServerLocal:
                 return response.answer
 
             budget = cast(Budget, meta["budget"])
+            is_cli = meta["backend"] in CLI_BACKENDS
             parts = [
                 "## Sub-Aleph Result",
                 "",
-                f"**Models:** root=`{meta['root_model']}` sub=`{meta['sub_model']}`",
+            ]
+            if not is_cli:
+                parts.append(f"**Models:** root=`{meta['root_model']}` sub=`{meta['sub_model']}`")
+            parts.extend([
+                f"**Backend:** `{meta['backend']}`",
                 f"**Depth reached:** {response.max_depth_reached}",
                 f"**Iterations:** {response.total_iterations}",
-            ]
+            ])
             if budget.max_depth is not None:
                 parts.append(f"**Max depth:** {budget.max_depth}")
             if budget.max_sub_queries is not None:
                 parts.append(f"**Max sub-queries:** {budget.max_sub_queries}")
+            if meta.get("truncated_context"):
+                parts.append(f"*Note: Context was truncated to {self.sub_query_config.max_context_chars:,} chars*")
+            if not is_cli:
+                parts.extend([
+                    f"**Tokens:** {response.total_tokens}",
+                    f"**Cost:** ${response.total_cost_usd:.4f}",
+                ])
             parts.extend([
-                f"**Tokens:** {response.total_tokens}",
-                f"**Cost:** ${response.total_cost_usd:.4f}",
                 f"**Wall time:** {response.wall_time_seconds:.2f}s",
                 "",
                 "---",

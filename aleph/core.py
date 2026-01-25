@@ -687,6 +687,7 @@ class Aleph:
 
     def _build_initial_messages(self, query: str, meta: ContextMetadata) -> list[Message]:
         system = self.system_prompt.format(
+            query=query,
             context_var=self.context_var_name,
             context_format=meta.format.value,
             context_size_chars=meta.size_chars,

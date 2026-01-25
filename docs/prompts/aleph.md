@@ -228,7 +228,7 @@ configure(sub_query_backend="claude")
 configure(sub_query_timeout=90, sub_query_share_session=True)
 ```
 
-**Backend priority (auto mode):** api → codex → gemini → claude
+**Backend priority (auto mode):** codex → gemini → claude → api
 
 **Per-call overrides:** `validate_regex` and `max_retries` in `sub_query_strict()` override env defaults.
 

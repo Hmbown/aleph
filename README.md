@@ -10,12 +10,6 @@ Aleph is an [MCP server](https://modelcontextprotocol.io/) that gives any LLM ac
 
 Based on the [Recursive Language Model](https://arxiv.org/abs/2512.24601) (RLM) architecture.
 
-## RLM Updates (0.7.0)
-
-- Sub-queries now work directly inside the REPL via `exec_python` (including CLI backends: codex/claude/gemini).
-- Runtime backend switching via `set_backend()` or the `configure()` MCP tool—no restart needed.
-- New CLI flags: `--sub-query-backend`, `--sub-query-timeout`, `--sub-query-share-session`.
-
 ## Use Cases
 
 | Scenario | What Aleph Does |
@@ -300,6 +294,16 @@ Extractors return `list[dict]` with keys: `value`, `line_num`, `start`, `end`.
 - `--max-write-bytes` — max file write (default: 100MB)  
 - `--timeout` — sandbox/command timeout (default: 60s)
 - `--max-output` — max command output (default: 50,000 chars)
+
+**Recursion budgets (depth/time/detail):**
+- `ALEPH_MAX_DEPTH` (default: 2) — max `sub_aleph` nesting depth
+- `ALEPH_MAX_ITERATIONS` (default: 100) — total RLM loop steps (root + recursion)
+- `ALEPH_MAX_WALL_TIME` (default: 300s) — wall-time cap per Aleph run
+- `ALEPH_MAX_SUB_QUERIES` (default: 100) — total `sub_query` calls allowed
+- `ALEPH_MAX_TOKENS` (default: unset) — optional per-call output cap
+
+Override these via env vars above or per-call args on `sub_aleph`. CLI backends run
+`sub_aleph` as a single-shot call; use the API backend for full multi-iteration recursion.
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all options.
 

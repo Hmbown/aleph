@@ -4,9 +4,9 @@ This module enables Aleph to spawn sub-agents that can reason over context slice
 following the Recursive Language Model (RLM) paradigm.
 
 Backend priority (configurable via ALEPH_SUB_QUERY_BACKEND):
-1. API (if credentials available) - OpenAI-compatible APIs only
-2. CLI backends (codex, gemini) - uses existing subscriptions
+1. CLI backends (codex, gemini) - uses existing subscriptions
    Note: claude CLI is deprioritized as it hangs in MCP/sandbox contexts
+2. API (if credentials available) - OpenAI-compatible APIs only (last resort)
 
 Configuration via environment:
 - ALEPH_SUB_QUERY_API_KEY (or OPENAI_API_KEY fallback)
@@ -61,13 +61,13 @@ class SubQueryConfig:
     - ALEPH_SUB_QUERY_MCP_SERVER_NAME: Server name exposed to sub-agents
 
     When backend="auto" (default), the priority is:
-    1. API - if API credentials are available
-    2. codex CLI - if installed
-    3. gemini CLI - if installed
-    4. claude CLI - if installed (deprioritized: hangs in MCP/sandbox contexts)
+    1. codex CLI - if installed
+    2. gemini CLI - if installed
+    3. claude CLI - if installed (deprioritized: hangs in MCP/sandbox contexts)
+    4. API - if credentials are available (fallback)
 
     Attributes:
-        backend: Which backend to use. "auto" prioritizes API, then CLI.
+        backend: Which backend to use. "auto" prioritizes CLI, then API.
         cli_timeout_seconds: Timeout for CLI subprocess calls.
         cli_max_output_chars: Maximum output characters from CLI.
         api_timeout_seconds: Timeout for API calls.
@@ -152,13 +152,12 @@ def has_api_credentials(config: SubQueryConfig | None = None) -> bool:
 def detect_backend(config: SubQueryConfig | None = None) -> BackendType:
     """Auto-detect the best available backend.
 
-    Priority (API-first for reliability and configurability):
+    Priority (CLI-first; API is last resort):
     1. Check ALEPH_SUB_QUERY_BACKEND env var for explicit override
-    2. api - if API credentials are available
-    3. codex CLI - if installed
-    4. gemini CLI - if installed
-    5. claude CLI - if installed (deprioritized: hangs in MCP/sandbox contexts)
-    6. api (fallback) - will error if no credentials, but gives helpful message
+    2. codex CLI - if installed
+    3. gemini CLI - if installed
+    4. claude CLI - if installed (deprioritized: hangs in MCP/sandbox contexts)
+    5. api (fallback) - will error if no credentials, but gives helpful message
 
     Returns:
         The detected backend type.
@@ -169,14 +168,6 @@ def detect_backend(config: SubQueryConfig | None = None) -> BackendType:
     explicit_backend = os.environ.get("ALEPH_SUB_QUERY_BACKEND", "").lower().strip()
     if explicit_backend in ("api", "claude", "codex", "gemini"):
         return explicit_backend  # type: ignore
-
-    # Prefer API if explicit model is set and credentials exist
-    if (cfg.api_model or os.environ.get(cfg.api_model_env)) and has_api_credentials(cfg):
-        return "api"
-
-    # Priority 1: API if credentials are available
-    if has_api_credentials(cfg):
-        return "api"
 
     # Priority 2-4: CLI backends (codex/gemini preferred over claude)
     # Note: claude CLI hangs in MCP/sandbox contexts, so it's deprioritized
