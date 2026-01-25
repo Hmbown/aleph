@@ -10,11 +10,11 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, cast, TYPE_CHECKING
+from typing import Any, Literal, cast
 
 from ..repl.sandbox import REPLEnvironment
 from ..types import ContentFormat, ContextMetadata
-from ..sub_query import detect_backend, has_api_credentials
+from ..sub_query import detect_backend
 from ..sub_query.cli_backend import CLI_BACKENDS, run_cli_sub_query
 from ..sub_query.api_backend import run_api_sub_query
 from . import actions as _actions
@@ -39,11 +39,7 @@ from .workspace import (
     _validate_line_number_base,
 )
 
-if TYPE_CHECKING:
-    from .local_server import AlephMCPServerLocal
-
-
-def register_tools(server: "AlephMCPServerLocal") -> None:
+def register_tools(server: Any) -> None:
 
     """Register all MCP tools."""
     self = server
@@ -73,12 +69,12 @@ def register_tools(server: "AlephMCPServerLocal") -> None:
         context_id: str,
         increment: bool = True,
     ) -> _Session | str:
-        session = self._sessions.get(context_id)
+        session = cast(_Session | None, self._sessions.get(context_id))
         if session is None:
             return NO_CONTEXT_ERROR.format(context_id=context_id)
         if increment:
             session.iterations += 1
-        return session
+        return cast(_Session, session)
 
     def _create_session(
         context: str,
@@ -94,7 +90,7 @@ def register_tools(server: "AlephMCPServerLocal") -> None:
         context_id: str,
         line_number_base: LineNumberBase | None = None,
     ) -> _Session:
-        session = self._sessions.get(context_id)
+        session = cast(_Session | None, self._sessions.get(context_id))
         if session is not None:
             return session
 
@@ -1068,7 +1064,7 @@ def register_tools(server: "AlephMCPServerLocal") -> None:
             if not title:
                 return _format_error("title is required for add", output=output)
             session.task_counter += 1
-            task = {
+            new_task = {
                 "id": session.task_counter,
                 "title": title,
                 "status": status if status in valid_statuses else "todo",
@@ -1076,11 +1072,15 @@ def register_tools(server: "AlephMCPServerLocal") -> None:
                 "created_at": now,
                 "updated_at": now,
             }
-            session.tasks.append(task)
+            session.tasks.append(new_task)
         elif action in {"update", "done"}:
             if task_id is None:
                 return _format_error("task_id is required for update/done", output=output)
-            task = next((t for t in session.tasks if t.get("id") == task_id), None)
+            task: dict[str, Any] | None = None
+            for t in session.tasks:
+                if t.get("id") == task_id:
+                    task = t
+                    break
             if task is None:
                 return _format_error(f"Task {task_id} not found", output=output)
             if title is not None:
@@ -1105,11 +1105,12 @@ def register_tools(server: "AlephMCPServerLocal") -> None:
             "doing": sum(1 for t in session.tasks if t.get("status") == "doing"),
             "done": sum(1 for t in session.tasks if t.get("status") == "done"),
         }
+        items = sorted(session.tasks, key=lambda t: int(t.get("id", 0)))
         payload = {
             "context_id": context_id,
             "total": len(session.tasks),
             "counts": counts,
-            "items": sorted(session.tasks, key=lambda t: int(t.get("id", 0))),
+            "items": items,
         }
 
         if output == "object":
@@ -1121,9 +1122,9 @@ def register_tools(server: "AlephMCPServerLocal") -> None:
             "## Tasks",
             f"Total: {payload['total']} (todo: {counts['todo']}, doing: {counts['doing']}, done: {counts['done']})",
         ]
-        if payload["items"]:
+        if items:
             parts.append("")
-            for task in payload["items"]:
+            for task in items:
                 note_text = f" — {task['note']}" if task.get("note") else ""
                 parts.append(f"- [{task.get('status', 'todo')}] #{task.get('id')}: {task.get('title')}{note_text}")
         return "\n".join(parts)
@@ -1615,12 +1616,18 @@ def register_tools(server: "AlephMCPServerLocal") -> None:
             ok, res = await self._remote_orchestrator.ensure_remote_server(server_id)
             if not ok:
                 return _format_error(str(res), output=output)
-            handle = res  # type: ignore[assignment]
-            try:
-                r = await handle.session.list_tools()  # type: ignore[union-attr]
-                tools = _to_jsonable(r)
-            except Exception:
+            if not isinstance(res, _RemoteServerHandle):
+                return _format_error(str(res), output=output)
+            handle = res
+            session = handle.session
+            if session is None:
                 tools = None
+            else:
+                try:
+                    r = await session.list_tools()
+                    tools = _to_jsonable(r)
+                except Exception:
+                    tools = None
 
         payload: dict[str, Any] = {
             "server_id": server_id,
@@ -1682,7 +1689,7 @@ def register_tools(server: "AlephMCPServerLocal") -> None:
         timeout_seconds: float | None = DEFAULT_REMOTE_TOOL_TIMEOUT_SECONDS,
         confirm: bool = False,
         output: Literal["json", "markdown", "object"] = "markdown",
-    ) -> str | dict[str, Any]:
+    ) -> str | dict[str, Any] | list[Any]:
         """Call a tool on a remote MCP server.
 
         Args:
@@ -1710,7 +1717,7 @@ def register_tools(server: "AlephMCPServerLocal") -> None:
             return _format_error(str(result_jsonable), output=output)
 
         if output == "object":
-            return result_jsonable
+            return cast(dict[str, Any] | list[Any], result_jsonable)
         if output == "json":
             return json.dumps(result_jsonable, ensure_ascii=False, indent=2)
 
@@ -1738,11 +1745,12 @@ def register_tools(server: "AlephMCPServerLocal") -> None:
             return _format_error(err, output=output)
 
         ok, msg = await self._remote_orchestrator.close_remote_server(server_id)
+        msg_text = str(msg)
         if output == "object":
-            return {"ok": ok, "message": msg}
+            return {"ok": ok, "message": msg_text}
         if output == "json":
-            return json.dumps({"ok": ok, "message": msg}, indent=2)
-        return msg
+            return json.dumps({"ok": ok, "message": msg_text}, indent=2)
+        return msg_text
 
     @_tool()
     async def chunk_context(
@@ -1846,7 +1854,7 @@ def register_tools(server: "AlephMCPServerLocal") -> None:
         parts = [
             "## Progress Evaluation",
             "",
-            f"**Current Understanding:**",
+            "**Current Understanding:**",
             current_understanding,
             "",
         ]

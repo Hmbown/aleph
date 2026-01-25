@@ -426,18 +426,21 @@ class REPLEnvironment:
         ) -> tuple[int, int] | None:
             if line_range is None:
                 return None
+            candidate: tuple[int, ...] | list[int] | tuple[int, int]
             if isinstance(line_range, list):
-                line_range = tuple(line_range)
+                candidate = tuple(line_range)
+            else:
+                candidate = line_range
             if (
-                not isinstance(line_range, tuple)
-                or len(line_range) != 2
-                or not all(isinstance(x, int) for x in line_range)
+                not isinstance(candidate, tuple)
+                or len(candidate) != 2
+                or not all(isinstance(x, int) for x in candidate)
             ):
                 raise ValueError("line_range must be a tuple of two integers")
-            start, end = line_range
+            start, end = candidate
             if start < 0 or end < 0 or start > end:
                 raise ValueError("line_range must be non-negative and start <= end")
-            return line_range
+            return cast(tuple[int, int], candidate)
 
         def _cite_and_store(
             snippet: str,
@@ -535,13 +538,14 @@ class REPLEnvironment:
                 prompt = f"{base_prompt}\n\n{retry_note}\nRequired format regex: {validate_regex}"
 
         # Core context-aware helpers (operate on ctx by default)
-        ctx_getter = lambda: self._namespace[context_var_name]
+        def ctx_getter() -> object:
+            return self._namespace[context_var_name]
 
         def _wrap_context_helper(name: str, fn: Callable[..., object]) -> Callable[..., object]:
             if name in LINE_NUMBER_HELPERS:
-                def _wrapped(*args: object, **kwargs: object) -> object:
+                def _wrapped_line(*args: object, **kwargs: object) -> object:
                     base = self._namespace.get("line_number_base", 1) or 0
-                    results = fn(ctx_getter(), *args, **kwargs)
+                    results = cast(list[dict[str, Any]], fn(ctx_getter(), *args, **kwargs))
                     return [
                         {
                             **r,
@@ -550,12 +554,12 @@ class REPLEnvironment:
                         for r in results
                     ]
 
-                return _wrapped
+                return _wrapped_line
 
-            def _wrapped(*args: object, **kwargs: object) -> object:
+            def _wrapped_default(*args: object, **kwargs: object) -> object:
                 return fn(ctx_getter(), *args, **kwargs)
 
-            return _wrapped
+            return _wrapped_default
 
         helpers_ns: dict[str, object] = {
             "cite": _cite_and_store,

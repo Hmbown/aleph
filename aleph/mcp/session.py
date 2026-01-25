@@ -178,8 +178,15 @@ def _session_from_payload(
                 continue
             if "id" not in task or "title" not in task:
                 continue
+            raw_id = task.get("id")
+            if raw_id is None:
+                continue
+            try:
+                task_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
             tasks.append({
-                "id": int(task.get("id")),
+                "id": task_id,
                 "title": str(task.get("title")),
                 "status": str(task.get("status") or "todo"),
                 "note": task.get("note"),
@@ -187,7 +194,14 @@ def _session_from_payload(
                 "updated_at": task.get("updated_at"),
             })
 
-    task_counter = int(obj.get("task_counter") or (max((t["id"] for t in tasks), default=0)))
+    raw_task_counter = obj.get("task_counter")
+    if isinstance(raw_task_counter, (int, str)):
+        try:
+            task_counter = int(raw_task_counter)
+        except (TypeError, ValueError):
+            task_counter = max((t["id"] for t in tasks), default=0)
+    else:
+        task_counter = max((t["id"] for t in tasks), default=0)
 
     session = _Session(
         repl=repl,

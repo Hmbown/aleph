@@ -235,7 +235,7 @@ async def run_command(
     if err:
         return _format_error(err, output=output)
 
-    session = deps.get_or_create_session(context_id, line_number_base=None)
+    session = deps.get_or_create_session(context_id, None)
     session.iterations += 1
 
     workspace_root = deps.action_config.workspace_root
@@ -277,7 +277,7 @@ async def rg_search(
     if not pattern:
         return _format_error("pattern is required", output=output)
 
-    session = deps.get_or_create_session(context_id, line_number_base=None)
+    session = deps.get_or_create_session(context_id, None)
     session.iterations += 1
 
     workspace_root = deps.action_config.workspace_root
@@ -396,7 +396,7 @@ async def read_file(
         except ValueError as e:
             return _format_error(str(e), output=output)
 
-    session = deps.get_or_create_session(context_id, line_number_base=base_override)
+    session = deps.get_or_create_session(context_id, base_override)
     session.iterations += 1
     try:
         base = _resolve_line_number_base(session, line_number_base)
@@ -475,8 +475,8 @@ async def load_file(
     try:
         text, detected_fmt, warning = deps.load_text_from_path(
             p,
-            max_bytes=deps.action_config.max_read_bytes,
-            timeout_seconds=deps.action_config.max_cmd_seconds,
+            deps.action_config.max_read_bytes,
+            deps.action_config.max_cmd_seconds,
         )
     except ValueError as e:
         return f"Error: {e}"
@@ -485,7 +485,7 @@ async def load_file(
     except Exception as e:
         return f"Error: {e}"
     meta = deps.create_session(text, context_id, fmt, base)
-    session = deps.get_or_create_session(context_id, line_number_base=base)
+    session = deps.get_or_create_session(context_id, base)
     record_action(session, note="load_file", snippet=str(p))
     return _format_context_loaded(context_id, meta, base, note=warning)
 
@@ -503,7 +503,7 @@ async def write_file(
     if err:
         return _format_error(err, output=output)
 
-    session = deps.get_or_create_session(context_id, line_number_base=None)
+    session = deps.get_or_create_session(context_id, None)
     session.iterations += 1
 
     p, err = _resolve_scoped_path(deps, path)
@@ -545,7 +545,7 @@ async def run_tests(
     if err:
         return _format_error(err, output=output)
 
-    session = deps.get_or_create_session(context_id, line_number_base=None)
+    session = deps.get_or_create_session(context_id, None)
     session.iterations += 1
 
     runner_resolved = "pytest" if runner == "auto" else runner
@@ -558,9 +558,10 @@ async def run_tests(
 
     cwd_path = deps.action_config.workspace_root
     if cwd:
-        cwd_path, err = _resolve_scoped_path(deps, cwd)
-        if err or cwd_path is None:
+        resolved_cwd, err = _resolve_scoped_path(deps, cwd)
+        if err or resolved_cwd is None:
             return _format_error(err or "Invalid path", output=output)
+        cwd_path = resolved_cwd
 
     proc_payload = await run_subprocess(
         action_config=deps.action_config,
@@ -568,7 +569,9 @@ async def run_tests(
         cwd=cwd_path,
         timeout_seconds=deps.action_config.max_cmd_seconds,
     )
-    raw_output = (proc_payload.get("stdout") or "") + ("\n" + proc_payload.get("stderr") if proc_payload.get("stderr") else "")
+    stdout = str(proc_payload.get("stdout") or "")
+    stderr = str(proc_payload.get("stderr") or "")
+    raw_output = stdout + ("\n" + stderr if stderr else "")
 
     passed = 0
     failed = 0

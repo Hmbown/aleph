@@ -191,6 +191,7 @@ class TestSandboxExecution:
     def test_helper_search_available(self, repl_multiline: REPLEnvironment) -> None:
         result = repl_multiline.execute("search('line2')")
         assert result.return_value is not None
+        assert isinstance(result.return_value, list)
         assert len(result.return_value) > 0
 
     def test_helper_import_introspection(self, repl: REPLEnvironment) -> None:

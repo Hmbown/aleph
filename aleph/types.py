@@ -5,7 +5,7 @@ The library is intentionally type-rich so it works well with pyright/mypy.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Awaitable, Callable, Literal, TypeAlias
@@ -152,6 +152,7 @@ class AlephResponse:
             "execution_error",
             "provider_error",
             "no_final",
+            "cli_error",
         ]
         | None
     ) = None

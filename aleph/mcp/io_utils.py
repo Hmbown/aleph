@@ -13,7 +13,6 @@ import subprocess
 import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
 
 import xml.etree.ElementTree as ET
 

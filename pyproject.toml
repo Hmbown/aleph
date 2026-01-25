@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aleph-rlm"
-version = "0.7.3"
+version = "0.7.4"
 description = "MCP server for recursive LLM reasoning—load context, iterate with search/code/think tools, converge on answers"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -39,6 +39,7 @@ Homepage = "https://github.com/Hmbown/aleph"
 [project.scripts]
 aleph-rlm = "aleph.cli:main"
 aleph = "aleph.mcp.local_server:main"
+alef = "aleph.alef_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["aleph"]

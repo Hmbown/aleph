@@ -25,6 +25,7 @@ Based on the [Recursive Language Model](https://arxiv.org/abs/2512.24601) (RLM) 
 
 - Python 3.10+
 - An MCP-compatible client: [Claude Code](https://claude.ai/code), [Cursor](https://cursor.sh), [VS Code](https://code.visualstudio.com/), [Windsurf](https://codeium.com/windsurf), [Codex CLI](https://github.com/openai/codex), or [Claude Desktop](https://claude.ai/download)
+- **Or** for CLI-only mode: just `claude`, `codex`, or `gemini` CLI installed (no API keys needed)
 
 ## Quickstart
 
@@ -78,6 +79,67 @@ get_status()
 ```
 
 If using Claude Code, tools are prefixed: `mcp__aleph__get_status`.
+
+## CLI-Only Mode (`alef`) — No API Keys Required
+
+Run the full RLM reasoning loop directly from your terminal using local CLI tools (`claude`, `codex`, or `gemini`). No API keys or MCP setup needed.
+
+### Basic Usage
+
+```bash
+# Simple query
+alef run "What is 2+2?" --provider cli --model claude
+
+# With context from a file
+alef run "Summarize this log" --provider cli --model claude --context-file app.log
+
+# JSON context
+alef run "Extract all names" --provider cli --model claude --context '{"users": [{"name": "Alice"}, {"name": "Bob"}]}'
+
+# Full JSON output with trajectory
+alef run "Analyze this data" --provider cli --model claude --context-file data.json --json --include-trajectory
+```
+
+### With Sub-Queries (Multi-Claude Recursion)
+
+Enable recursive sub-queries where the LLM spawns additional Claude calls:
+
+```bash
+# Enable Claude CLI for sub-queries
+export ALEPH_SUB_QUERY_BACKEND=claude
+
+# Run a complex analysis that uses sub_query()
+alef run "For each item in the context, use sub_query to summarize it, then combine results" \
+  --provider cli --model claude \
+  --context '{"items": [{"name": "Alice", "score": 95}, {"name": "Bob", "score": 87}]}' \
+  --max-iterations 10
+```
+
+The RLM loop will:
+1. Execute Python code blocks to explore the context
+2. Call `sub_query()` which spawns additional Claude CLI processes
+3. Iterate until `FINAL(answer)` is reached
+
+### CLI Options
+
+| Flag | Description |
+|------|-------------|
+| `--provider cli` | Use local CLI tools instead of API |
+| `--model claude\|codex\|gemini` | Which CLI backend to use |
+| `--context "..."` | Inline context string |
+| `--context-file path` | Load context from file |
+| `--context-stdin` | Read context from stdin |
+| `--json` | Output JSON response |
+| `--include-trajectory` | Include full reasoning trace in JSON |
+| `--max-iterations N` | Limit RLM loop iterations |
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `ALEPH_SUB_QUERY_BACKEND` | Backend for `sub_query()`: `claude`, `codex`, `gemini`, or `api` |
+| `ALEPH_SUB_QUERY_SHARE_SESSION` | Share MCP session with sub-agents (set to `1`) |
+| `ALEPH_CLI_TIMEOUT` | Timeout for CLI calls (default: 120s) |
 
 ## AI Assistant Setup (MCP + `/aleph` Skill) — Copy/Paste
 

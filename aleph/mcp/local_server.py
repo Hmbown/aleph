@@ -45,7 +45,6 @@ import shlex
 import subprocess
 import sys
 import time
-import uuid
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -59,12 +58,14 @@ from ..core import Aleph
 from ..prompts.system import DEFAULT_SYSTEM_PROMPT
 from ..providers.registry import get_provider
 from ..repl.sandbox import REPLEnvironment, SandboxConfig
-from ..types import AlephResponse, Budget, ContentFormat, ContextMetadata
+from ..types import AlephResponse, Budget, ContentFormat, ContextMetadata, ContextType
 from ..sub_query import SubQueryConfig, detect_backend
 from ..sub_query.cli_backend import run_cli_sub_query, CLI_BACKENDS
 from ..sub_query.api_backend import run_api_sub_query
 
 __all__ = ["AlephMCPServerLocal", "main", "mcp"]
+
+mcp: Any
 
 
 LineNumberBase = Literal[0, 1]
@@ -471,11 +472,13 @@ def _session_from_payload(
         config=sandbox_config,
         loop=loop,
     )
-    line_number_base = obj.get("line_number_base")
-    if line_number_base is None:
-        line_number_base = 0
+    raw_line_number_base = obj.get("line_number_base")
+    if isinstance(raw_line_number_base, (int, str)):
+        line_number_base_val = raw_line_number_base
+    else:
+        line_number_base_val = 0
     try:
-        base = _validate_line_number_base(int(line_number_base))
+        base = _validate_line_number_base(int(line_number_base_val))
     except Exception:
         base = DEFAULT_LINE_NUMBER_BASE
     repl.set_variable("line_number_base", base)
@@ -496,8 +499,15 @@ def _session_from_payload(
                 continue
             if "id" not in task or "title" not in task:
                 continue
+            raw_id = task.get("id")
+            if raw_id is None:
+                continue
+            try:
+                task_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
             tasks.append({
-                "id": int(task.get("id")),
+                "id": task_id,
                 "title": str(task.get("title")),
                 "status": str(task.get("status") or "todo"),
                 "note": task.get("note"),
@@ -505,7 +515,14 @@ def _session_from_payload(
                 "updated_at": task.get("updated_at"),
             })
 
-    task_counter = int(obj.get("task_counter") or (max((t["id"] for t in tasks), default=0)))
+    raw_task_counter = obj.get("task_counter")
+    if isinstance(raw_task_counter, (int, str)):
+        try:
+            task_counter = int(raw_task_counter)
+        except (TypeError, ValueError):
+            task_counter = max((t["id"] for t in tasks), default=0)
+    else:
+        task_counter = max((t["id"] for t in tasks), default=0)
 
     session = _Session(
         repl=repl,
@@ -1359,10 +1376,17 @@ class AlephMCPServerLocal:
         session.repl.inject_sub_query(sub_query)
 
     def _inject_repl_sub_aleph(self, session: _Session, context_id: str) -> None:
-        async def sub_aleph(query: str, context: str | None = None) -> AlephResponse:
+        async def sub_aleph(query: str, context: ContextType | None = None) -> AlephResponse:
+            context_slice: str | None
+            if context is None:
+                context_slice = None
+            elif isinstance(context, str):
+                context_slice = context
+            else:
+                context_slice = _coerce_context_to_text(context)
             response, _meta = await self._run_sub_aleph(
                 query=query,
-                context_slice=context,
+                context_slice=context_slice,
                 context_id=context_id,
             )
             return response
@@ -1443,18 +1467,28 @@ class AlephMCPServerLocal:
         ok, res = await self._ensure_remote_server(server_id)
         if not ok:
             return False, res
-        handle = res  # type: ignore[assignment]
+        if not isinstance(res, _RemoteServerHandle):
+            return False, res
+        handle = res
+        session = handle.session
+        if session is None:
+            return False, f"Error: Remote server '{server_id}' is not connected."
         try:
-            result = await handle.session.list_tools()  # type: ignore[union-attr]
+            result = await session.list_tools()
             return True, _to_jsonable(result)
-        except Exception as e:
+        except Exception:
             await self._reset_remote_server_handle(handle)
             ok, res = await self._ensure_remote_server(server_id)
             if not ok:
                 return False, f"Error: list_tools failed and reconnect failed: {res}"
-            handle = res  # type: ignore[assignment]
+            if not isinstance(res, _RemoteServerHandle):
+                return False, res
+            handle = res
+            session = handle.session
+            if session is None:
+                return False, f"Error: Remote server '{server_id}' is not connected."
             try:
-                result = await handle.session.list_tools()  # type: ignore[union-attr]
+                result = await session.list_tools()
                 return True, _to_jsonable(result)
             except Exception as e2:
                 return False, f"Error: list_tools failed after reconnect: {e2}"
@@ -1469,7 +1503,9 @@ class AlephMCPServerLocal:
         ok, res = await self._ensure_remote_server(server_id)
         if not ok:
             return False, res
-        handle = res  # type: ignore[assignment]
+        if not isinstance(res, _RemoteServerHandle):
+            return False, res
+        handle = res
 
         if not self._remote_tool_allowed(handle, tool):
             return False, f"Error: Tool '{tool}' is not allowed for remote server '{server_id}'."
@@ -1479,20 +1515,28 @@ class AlephMCPServerLocal:
         read_timeout = timedelta(
             seconds=float(timeout_seconds or DEFAULT_REMOTE_TOOL_TIMEOUT_SECONDS)
         )
+        session = handle.session
+        if session is None:
+            return False, f"Error: Remote server '{server_id}' is not connected."
         try:
-            result = await handle.session.call_tool(  # type: ignore[union-attr]
+            result = await session.call_tool(
                 name=tool,
                 arguments=arguments or {},
                 read_timeout_seconds=read_timeout,
             )
-        except Exception as e:
+        except Exception:
             await self._reset_remote_server_handle(handle)
             ok, res = await self._ensure_remote_server(server_id)
             if not ok:
                 return False, f"Error: call_tool failed and reconnect failed: {res}"
-            handle = res  # type: ignore[assignment]
+            if not isinstance(res, _RemoteServerHandle):
+                return False, res
+            handle = res
+            session = handle.session
+            if session is None:
+                return False, f"Error: Remote server '{server_id}' is not connected."
             try:
-                result = await handle.session.call_tool(  # type: ignore[union-attr]
+                result = await session.call_tool(
                     name=tool,
                     arguments=arguments or {},
                     read_timeout_seconds=read_timeout,
@@ -2192,7 +2236,9 @@ class AlephMCPServerLocal:
                 cwd=cwd_path,
                 timeout_seconds=self.action_config.max_cmd_seconds,
             )
-            raw_output = (proc_payload.get("stdout") or "") + ("\n" + proc_payload.get("stderr") if proc_payload.get("stderr") else "")
+            stdout = str(proc_payload.get("stdout") or "")
+            stderr = str(proc_payload.get("stderr") or "")
+            raw_output = stdout + ("\n" + stderr if stderr else "")
 
             passed = 0
             failed = 0
@@ -2994,7 +3040,7 @@ class AlephMCPServerLocal:
                 if not title:
                     return _format_error("title is required for add", output=output)
                 session.task_counter += 1
-                task = {
+                new_task = {
                     "id": session.task_counter,
                     "title": title,
                     "status": status if status in valid_statuses else "todo",
@@ -3002,11 +3048,15 @@ class AlephMCPServerLocal:
                     "created_at": now,
                     "updated_at": now,
                 }
-                session.tasks.append(task)
+                session.tasks.append(new_task)
             elif action in {"update", "done"}:
                 if task_id is None:
                     return _format_error("task_id is required for update/done", output=output)
-                task = next((t for t in session.tasks if t.get("id") == task_id), None)
+                task: dict[str, Any] | None = None
+                for t in session.tasks:
+                    if t.get("id") == task_id:
+                        task = t
+                        break
                 if task is None:
                     return _format_error(f"Task {task_id} not found", output=output)
                 if title is not None:
@@ -3031,11 +3081,12 @@ class AlephMCPServerLocal:
                 "doing": sum(1 for t in session.tasks if t.get("status") == "doing"),
                 "done": sum(1 for t in session.tasks if t.get("status") == "done"),
             }
+            items = sorted(session.tasks, key=lambda t: int(t.get("id", 0)))
             payload = {
                 "context_id": context_id,
                 "total": len(session.tasks),
                 "counts": counts,
-                "items": sorted(session.tasks, key=lambda t: int(t.get("id", 0))),
+                "items": items,
             }
 
             if output == "object":
@@ -3047,9 +3098,9 @@ class AlephMCPServerLocal:
                 "## Tasks",
                 f"Total: {payload['total']} (todo: {counts['todo']}, doing: {counts['doing']}, done: {counts['done']})",
             ]
-            if payload["items"]:
+            if items:
                 parts.append("")
-                for task in payload["items"]:
+                for task in items:
                     note_text = f" — {task['note']}" if task.get("note") else ""
                     parts.append(f"- [{task.get('status', 'todo')}] #{task.get('id')}: {task.get('title')}{note_text}")
             return "\n".join(parts)
@@ -3618,12 +3669,18 @@ class AlephMCPServerLocal:
                 ok, res = await self._ensure_remote_server(server_id)
                 if not ok:
                     return _format_error(str(res), output=output)
-                handle = res  # type: ignore[assignment]
-                try:
-                    r = await handle.session.list_tools()  # type: ignore[union-attr]
-                    tools = _to_jsonable(r)
-                except Exception:
+                if not isinstance(res, _RemoteServerHandle):
+                    return _format_error(str(res), output=output)
+                handle = res
+                session = handle.session
+                if session is None:
                     tools = None
+                else:
+                    try:
+                        r = await session.list_tools()
+                        tools = _to_jsonable(r)
+                    except Exception:
+                        tools = None
 
             payload: dict[str, Any] = {
                 "server_id": server_id,
@@ -3685,7 +3742,7 @@ class AlephMCPServerLocal:
             timeout_seconds: float | None = DEFAULT_REMOTE_TOOL_TIMEOUT_SECONDS,
             confirm: bool = False,
             output: Literal["json", "markdown", "object"] = "markdown",
-        ) -> str | dict[str, Any]:
+        ) -> str | dict[str, Any] | list[Any]:
             """Call a tool on a remote MCP server.
 
             Args:
@@ -3713,7 +3770,7 @@ class AlephMCPServerLocal:
                 return _format_error(str(result_jsonable), output=output)
 
             if output == "object":
-                return result_jsonable
+                return cast(dict[str, Any] | list[Any], result_jsonable)
             if output == "json":
                 return json.dumps(result_jsonable, ensure_ascii=False, indent=2)
 
@@ -3850,7 +3907,7 @@ class AlephMCPServerLocal:
             parts = [
                 "## Progress Evaluation",
                 "",
-                f"**Current Understanding:**",
+                "**Current Understanding:**",
                 current_understanding,
                 "",
             ]

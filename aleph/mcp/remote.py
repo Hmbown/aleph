@@ -47,7 +47,9 @@ class RemoteOrchestrator:
         ok, res = await self.ensure_remote_server(server_id)
         if not ok:
             return False, res
-        handle = res  # type: ignore[assignment]
+        if not isinstance(res, _RemoteServerHandle):
+            return False, res
+        handle = res
         try:
             return True, await action(handle)
         except Exception:
@@ -55,7 +57,9 @@ class RemoteOrchestrator:
             ok, res = await self.ensure_remote_server(server_id)
             if not ok:
                 return False, f"Error: {action_name} failed and reconnect failed: {res}"
-            handle = res  # type: ignore[assignment]
+            if not isinstance(res, _RemoteServerHandle):
+                return False, res
+            handle = res
             try:
                 return True, await action(handle)
             except Exception as e2:

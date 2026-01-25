@@ -43,9 +43,8 @@ try:
     from rich.console import Console
     from rich.panel import Panel
     from rich.table import Table
-    from rich import print as rprint
     RICH_AVAILABLE = True
-    console = Console()
+    console: Console | None = Console()
 except ImportError:
     RICH_AVAILABLE = False
     console = None
@@ -57,7 +56,7 @@ except ImportError:
 
 def print_success(msg: str) -> None:
     """Print success message in green."""
-    if RICH_AVAILABLE:
+    if console is not None:
         console.print(f"[green]{msg}[/green]")
     else:
         print(f"SUCCESS: {msg}")
@@ -65,7 +64,7 @@ def print_success(msg: str) -> None:
 
 def print_error(msg: str) -> None:
     """Print error message in red."""
-    if RICH_AVAILABLE:
+    if console is not None:
         console.print(f"[red]{msg}[/red]")
     else:
         print(f"ERROR: {msg}", file=sys.stderr)
@@ -73,7 +72,7 @@ def print_error(msg: str) -> None:
 
 def print_warning(msg: str) -> None:
     """Print warning message in yellow."""
-    if RICH_AVAILABLE:
+    if console is not None:
         console.print(f"[yellow]{msg}[/yellow]")
     else:
         print(f"WARNING: {msg}")
@@ -81,7 +80,7 @@ def print_warning(msg: str) -> None:
 
 def print_info(msg: str) -> None:
     """Print info message in blue."""
-    if RICH_AVAILABLE:
+    if console is not None:
         console.print(f"[blue]{msg}[/blue]")
     else:
         print(msg)
@@ -89,7 +88,7 @@ def print_info(msg: str) -> None:
 
 def print_header(title: str) -> None:
     """Print a header/title."""
-    if RICH_AVAILABLE:
+    if console is not None and RICH_AVAILABLE:
         console.print(Panel(title, style="bold cyan"))
     else:
         print(f"\n{'=' * 50}")
@@ -99,7 +98,7 @@ def print_header(title: str) -> None:
 
 def print_table(title: str, rows: list[tuple[str, str, str]]) -> None:
     """Print a table with Client, Status, Path columns."""
-    if RICH_AVAILABLE:
+    if console is not None and RICH_AVAILABLE:
         table = Table(title=title)
         table.add_column("Client", style="cyan")
         table.add_column("Status", style="green")
@@ -398,10 +397,10 @@ def validate_json(path: Path) -> bool:
 def validate_toml(path: Path) -> bool:
     """Validate that a TOML file is well-formed when tomllib/tomli is available."""
     try:
-        import tomllib  # type: ignore[attr-defined]
+        import tomllib
     except ImportError:
         try:
-            import tomli as tomllib  # type: ignore[no-redef]
+            import tomli as tomllib
         except ImportError:
             return True
     try:

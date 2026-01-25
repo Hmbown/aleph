@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from aleph.core import _FINAL_RE, _FINAL_VAR_RE, _CODE_BLOCK_RE, Aleph
 
 

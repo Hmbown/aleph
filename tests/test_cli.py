@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 from aleph.cli import _find_claude_cli, is_client_installed, CLIENTS
 
@@ -70,7 +68,6 @@ class TestFindClaudeCli:
         with patch("shutil.which", return_value=None):
             with patch("platform.system", return_value="Windows"):
                 with patch.dict(os.environ, {"APPDATA": "C:\\Users\\test\\AppData\\Roaming"}):
-                    npm_path = Path("C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd")
                     with patch.object(Path, "exists", return_value=True):
                         result = _find_claude_cli()
                         # Should return the full path from npm

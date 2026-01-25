@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.4
+
+- New: `alef` CLI command for running full RLM loop without MCP server.
+- New: CLI provider (`--provider cli`) for API-key-free operation via `claude`, `codex`, or `gemini` CLIs.
+- New: Entry point `alef run "prompt" --provider cli --model claude` with context file/stdin support.
+- Fixed: Code blocks before FINAL directives are now executed properly (parser priority fix).
+- Fixed: Trajectory JSON serialization for `ActionType` enum.
+- Fixed: Type annotations for mypy compliance.
+
+## 0.7.3
+
+- New: CLI recursion tracking and depth controls for `sub_aleph`.
+- Improved: Session management for nested recursion contexts.
+
 ## 0.7.2
 
 - New: `sub_aleph` nested recursion tool for RLM-style recursive reasoning with depth control.

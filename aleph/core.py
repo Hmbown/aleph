@@ -702,14 +702,33 @@ class Aleph:
         ]
 
     def _parse_response(self, text: str) -> ParsedAction:
-        if _FINAL_VAR_RE.search(text):
+        # Check for code blocks first - they should be executed before any FINAL directive
+        code_match = _CODE_BLOCK_RE.search(text)
+        final_var_match = _FINAL_VAR_RE.search(text)
+        final_match = _FINAL_RE.search(text)
+
+        # If there's a code block, check if it comes before any FINAL directive
+        if code_match:
+            code_pos = code_match.start()
+            final_pos = float("inf")
+            if final_var_match:
+                final_pos = min(final_pos, final_var_match.start())
+            if final_match:
+                final_pos = min(final_pos, final_match.start())
+
+            # Execute code first if it appears before FINAL
+            if code_pos < final_pos:
+                return ParsedAction(ActionType.CODE_BLOCK, code_match.group(1).strip(), text)
+
+        # No code before FINAL, check for FINAL directives
+        if final_var_match:
             return ParsedAction(ActionType.FINAL_VAR, "", text)
-        if _FINAL_RE.search(text):
+        if final_match:
             return ParsedAction(ActionType.FINAL_ANSWER, "", text)
 
-        m = _CODE_BLOCK_RE.search(text)
-        if m:
-            return ParsedAction(ActionType.CODE_BLOCK, m.group(1).strip(), text)
+        # Code block without FINAL
+        if code_match:
+            return ParsedAction(ActionType.CODE_BLOCK, code_match.group(1).strip(), text)
 
         return ParsedAction(ActionType.CONTINUE, "", text)
 

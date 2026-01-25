@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from aleph.types import Budget, BudgetStatus
 
 
@@ -37,6 +35,7 @@ class TestBudgetExceeds:
         status = BudgetStatus(iterations_used=15)
         exceeded, reason = status.exceeds(budget)
         assert exceeded is True
+        assert reason is not None
         assert "Iteration" in reason
 
     def test_depth_exceeded(self) -> None:
@@ -44,6 +43,7 @@ class TestBudgetExceeds:
         status = BudgetStatus(depth_current=3)
         exceeded, reason = status.exceeds(budget)
         assert exceeded is True
+        assert reason is not None
         assert "Depth" in reason
 
     def test_wall_time_exceeded(self) -> None:
@@ -51,6 +51,7 @@ class TestBudgetExceeds:
         status = BudgetStatus(wall_time_used=120.0)
         exceeded, reason = status.exceeds(budget)
         assert exceeded is True
+        assert reason is not None
         assert "Wall-time" in reason
 
     def test_sub_queries_exceeded(self) -> None:
@@ -58,6 +59,7 @@ class TestBudgetExceeds:
         status = BudgetStatus(sub_queries_used=15)
         exceeded, reason = status.exceeds(budget)
         assert exceeded is True
+        assert reason is not None
         assert "Sub-query" in reason
 
     def test_nothing_exceeded(self) -> None:

@@ -72,6 +72,14 @@ def _step_to_json(step: TrajectoryStep) -> dict[str, object]:
     d = cast(dict[str, object], asdict(step))
     # datetime isn't JSON serializable by default
     d["timestamp"] = step.timestamp.isoformat()
+    # Convert nested enum values (ActionType) to strings
+    if "action" in d and isinstance(d["action"], dict):
+        action_dict = cast(dict[str, object], d["action"])
+        if "action_type" in action_dict:
+            from ..types import ActionType
+            val = action_dict["action_type"]
+            if isinstance(val, ActionType):
+                action_dict["action_type"] = val.value
     return d
 
 
