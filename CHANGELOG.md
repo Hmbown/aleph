@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.10
+
+- Fixed: Removed unsupported `color` kwarg from `ArgumentParser` that crashed on Python < 3.14 (and in Docker containers using older Python).
+
 ## 0.7.9
 
 - Improved: Increased sub-query timeout defaults (CLI: 120s -> 300s, API: 60s -> 120s).

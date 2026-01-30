@@ -2781,24 +2781,11 @@ class AlephMCPServerLocal:
 def main() -> None:
     """CLI entry point: `aleph` or `python -m aleph.mcp.local_server`"""
     import argparse
-    import functools
 
     if len(sys.argv) > 1 and sys.argv[1] in {"run", "shell", "serve"}:
         from ..alef_cli import main as alef_main
 
         raise SystemExit(alef_main(sys.argv[1:]))
-
-    def _can_colorize_stream(stream: io.TextIOBase | None) -> bool:
-        if stream is None:
-            return False
-        try:
-            stream.fileno()
-        except Exception:
-            return False
-        return not getattr(stream, "closed", False)
-
-    def _enable_argparse_color() -> bool:
-        return _can_colorize_stream(sys.stdout) and _can_colorize_stream(sys.stderr)
 
     def _parse_bool_flag(value: str) -> bool:
         normalized = value.strip().lower()
@@ -2817,14 +2804,8 @@ def main() -> None:
                 except (AttributeError, OSError, ValueError):
                     pass
 
-    formatter_class = functools.partial(
-        argparse.HelpFormatter,
-        color=_enable_argparse_color(),
-    )
     parser = _SafeArgumentParser(
         description="Run Aleph as an MCP server for local AI reasoning",
-        color=_enable_argparse_color(),
-        formatter_class=formatter_class,
     )
     parser.add_argument(
         "--timeout",
