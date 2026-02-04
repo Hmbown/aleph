@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.11
+
+- Fixed: MCP `rg_search` now accepts `paths` as string or list; previously string caused a Pydantic validation error.
+
 ## 0.7.10
 
 - Fixed: Removed unsupported `color` kwarg from `ArgumentParser` that crashed on Python < 3.14 (and in Docker containers using older Python).

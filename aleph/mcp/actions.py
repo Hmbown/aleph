@@ -263,7 +263,7 @@ async def run_command(
 async def rg_search(
     deps: ActionDeps,
     pattern: str,
-    paths: list[str] | None = None,
+    paths: list[str] | str | None = None,
     glob: str | None = None,
     max_results: int = 200,
     load_context_id: str | None = None,
@@ -276,6 +276,8 @@ async def rg_search(
         return _format_error(err, output=output)
     if not pattern:
         return _format_error("pattern is required", output=output)
+    if isinstance(paths, str):
+        paths = [paths]
 
     session = deps.get_or_create_session(context_id, None)
     session.iterations += 1

@@ -233,7 +233,7 @@ def register_tools(server: Any) -> None:
     @_tool()
     async def rg_search(
         pattern: str,
-        paths: list[str] | None = None,
+        paths: list[str] | str | None = None,
         glob: str | None = None,
         max_results: int = 200,
         load_context_id: str | None = None,
@@ -253,6 +253,8 @@ def register_tools(server: Any) -> None:
             output: "json", "markdown", or "object"
             context_id: Session to record evidence in
         """
+        if isinstance(paths, str):
+            paths = [paths]
         return await _actions.rg_search(
             action_deps,
             pattern=pattern,
