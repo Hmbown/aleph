@@ -11,7 +11,7 @@ programmatic configuration.
 |---------------------------------------|-------------------------------------------------|-------------------------------|
 | `ALEPH_WORKSPACE_ROOT`                | Override workspace root detection                | auto-detect                   |
 | `ALEPH_SUB_QUERY_BACKEND`            | Force sub-query backend                          | `auto`                        |
-| `ALEPH_SUB_QUERY_TIMEOUT`            | Sub-query timeout in seconds                     | CLI 120 / API 60              |
+| `ALEPH_SUB_QUERY_TIMEOUT`            | Sub-query timeout in seconds                     | CLI 300 / API 120             |
 | `ALEPH_SUB_QUERY_SHARE_SESSION`      | Share MCP session with CLI sub-agents            | `false`                       |
 | `ALEPH_SUB_QUERY_API_KEY`            | API key (fallback: `OPENAI_API_KEY`)             | --                            |
 | `ALEPH_SUB_QUERY_URL`                | API base URL (fallback: `OPENAI_BASE_URL`)       | `https://api.openai.com/v1`   |
@@ -36,7 +36,7 @@ Gemini). Auto mode prioritizes CLI backends, then falls back to API.
 | Variable                              | Description                                                   | Default                       |
 |---------------------------------------|---------------------------------------------------------------|-------------------------------|
 | `ALEPH_SUB_QUERY_BACKEND`            | Backend override (`auto`, `api`, `codex`, `gemini`, `claude`) | `auto`                        |
-| `ALEPH_SUB_QUERY_TIMEOUT`            | Timeout in seconds for CLI + API sub-queries                  | CLI 120 / API 60              |
+| `ALEPH_SUB_QUERY_TIMEOUT`            | Timeout in seconds for CLI + API sub-queries                  | CLI 300 / API 120             |
 | `ALEPH_SUB_QUERY_SHARE_SESSION`      | Share MCP session with CLI sub-agents                         | `false`                       |
 | `ALEPH_SUB_QUERY_HTTP_HOST`          | Host for shared MCP session                                   | `127.0.0.1`                   |
 | `ALEPH_SUB_QUERY_HTTP_PORT`          | Port for shared MCP session                                   | `8765`                        |
