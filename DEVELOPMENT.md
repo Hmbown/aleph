@@ -1,28 +1,36 @@
 # Development Guide
 
-This document covers Aleph's architecture and development workflow.
+Architecture and development workflow for Aleph.
+
+---
 
 ## Overview
 
-Aleph is an MCP server implementing the [Recursive Language Model](https://arxiv.org/abs/2512.24601) (RLM) paradigm for document analysis. Instead of stuffing context into prompts, Aleph stores documents in a sandboxed Python REPL and provides tools for iterative exploration.
+Aleph is an MCP server implementing the
+[Recursive Language Model](https://arxiv.org/abs/2512.24601) (RLM) paradigm for
+document analysis. Instead of stuffing context into prompts, Aleph stores
+documents in a sandboxed Python REPL and provides tools for iterative
+exploration.
+
+---
 
 ## Project Structure
 
 ```
 aleph/
 ├── core.py              # Main Aleph class, RLM loop, message handling
-├── types.py             # Dataclasses: Budget, AlephResponse, TrajectoryStep, etc.
+├── types.py             # Dataclasses: Budget, AlephResponse, TrajectoryStep
 ├── config.py            # AlephConfig, create_aleph() factory
 ├── cli.py               # CLI entry points (aleph-rlm install/doctor)
 ├── mcp/
 │   ├── local_server.py  # MCP server (main entry point)
 │   └── server.py        # Compatibility entry point (aliases local_server)
 ├── repl/
-│   ├── sandbox.py       # REPLEnvironment - sandboxed code execution
-│   └── helpers.py       # 80+ helper functions (peek, search, extract_*, etc.)
+│   ├── sandbox.py       # REPLEnvironment -- sandboxed code execution
+│   └── helpers.py       # 100+ helper functions (peek, search, extract_*)
 ├── sub_query/
 │   ├── __init__.py      # SubQueryConfig, detect_backend()
-│   ├── cli_backend.py   # Claude/Codex CLI spawning
+│   ├── cli_backend.py   # Claude / Codex / Gemini CLI spawning
 │   └── api_backend.py   # OpenAI-compatible API calls
 ├── providers/
 │   ├── base.py          # LLMProvider protocol
@@ -32,13 +40,15 @@ aleph/
     └── system.py        # Default system prompt template
 ```
 
+---
+
 ## Development Setup
 
 ```bash
 # Clone and install in development mode
 git clone https://github.com/Hmbown/aleph.git
 cd aleph
-pip install -e '.[dev,mcp]'
+pip install -e ".[dev,mcp]"
 
 # Run tests
 python3 -m pytest -q
@@ -47,6 +57,8 @@ python3 -m pytest -q
 aleph --enable-actions --tool-docs concise
 ```
 
+---
+
 ## Architecture
 
 ### Core Loop (`core.py`)
@@ -54,7 +66,8 @@ aleph --enable-actions --tool-docs concise
 The `Aleph` class implements the RLM execution loop:
 
 1. Context is stored in a sandboxed REPL namespace (`ctx`)
-2. LLM receives metadata about context (format, size, preview) — not the full content
+2. LLM receives metadata about context (format, size, preview) -- not full
+   content
 3. LLM writes Python code blocks to explore via helper functions
 4. Aleph executes code, feeds truncated output back
 5. Loop continues until LLM emits `FINAL(answer)` or `FINAL_VAR(variable_name)`
@@ -63,23 +76,28 @@ The `Aleph` class implements the RLM execution loop:
 
 The primary entry point for IDE integration. Exposes tools:
 
-- **Context management:** `load_context`, `peek_context`, `search_context`
-- **Code execution:** `exec_python`, `get_variable`
-- **Sub-queries:** `sub_query` (RLM-style recursive calls)
-- **Reasoning:** `think`, `evaluate_progress`, `summarize_so_far`
-- **Output:** `finalize`, `get_evidence`, `get_status`
-- **Actions:** `run_command`, `read_file`, `write_file`, `run_tests`
+| Category            | Tools                                                             |
+|---------------------|-------------------------------------------------------------------|
+| **Context**         | `load_context`, `peek_context`, `search_context`                  |
+| **Compute**         | `exec_python`, `get_variable`                                     |
+| **Recursion**       | `sub_query` (RLM-style recursive calls)                           |
+| **Reasoning**       | `think`, `evaluate_progress`, `summarize_so_far`                  |
+| **Output**          | `finalize`, `get_evidence`, `get_status`                          |
+| **Actions**         | `run_command`, `read_file`, `write_file`, `run_tests`             |
 
 ### Sandbox (`repl/sandbox.py`)
 
 The `REPLEnvironment` provides a sandboxed Python execution environment:
 
-- **AST validation:** Blocks dunder access, forbidden builtins
-- **Import whitelist:** `re`, `json`, `csv`, `math`, `statistics`, `collections`, `itertools`, `functools`, `datetime`, `textwrap`, `difflib`, `random`, `string`, `hashlib`, `base64`, `urllib.parse`, `html`
-- **Output truncation:** Prevents token explosions
-- **Helper injection:** 80+ functions for document analysis
+- **AST validation:** blocks dunder access, forbidden builtins
+- **Import whitelist:** `re`, `json`, `csv`, `math`, `statistics`,
+  `collections`, `itertools`, `functools`, `datetime`, `textwrap`, `difflib`,
+  `random`, `string`, `hashlib`, `base64`, `urllib.parse`, `html`
+- **Output truncation:** prevents token explosions
+- **Helper injection:** 100+ functions for document analysis
 
-The sandbox is best-effort, not hardened. For untrusted input, use container isolation.
+The sandbox is best-effort, not hardened. For untrusted input, use container
+isolation.
 
 ### Sub-Query System (`sub_query/`)
 
@@ -94,8 +112,9 @@ Enables RLM-style recursive reasoning:
 # 5. gemini CLI (if installed)
 ```
 
-**CLI backend:** Spawns subprocess, passes prompt via stdin or temp file
-**API backend:** OpenAI-compatible HTTP calls (any provider with `/v1/chat/completions`)
+- **CLI backend:** spawns subprocess, passes prompt via stdin or temp file
+- **API backend:** OpenAI-compatible HTTP calls (any provider with
+  `/v1/chat/completions`)
 
 ### Budget System (`types.py`)
 
@@ -128,6 +147,8 @@ class LLMProvider(Protocol):
     def get_output_limit(self, model: str) -> int: ...
 ```
 
+---
+
 ## Testing
 
 ```bash
@@ -144,6 +165,8 @@ pytest tests/test_sub_query.py
 pytest -k "test_search"
 ```
 
+---
+
 ## Code Style
 
 - Python 3.10+ with type hints
@@ -158,6 +181,8 @@ isort aleph tests
 # Lint
 ruff check aleph tests
 ```
+
+---
 
 ## Adding a New Tool
 
@@ -192,11 +217,11 @@ async def my_new_tool(
     if not session:
         return f"Error: No context loaded with ID '{context_id}'"
 
-    # Implementation
     result = do_something(arg1, arg2)
-
     return f"## Result\n\n{result}"
 ```
+
+---
 
 ## Adding a New Helper
 
@@ -227,16 +252,20 @@ HELPER_FUNCTIONS = {
 }
 ```
 
+---
+
 ## Environment Variables
 
-| Variable | Purpose |
-|----------|---------|
-| `ALEPH_SUB_QUERY_BACKEND` | Force sub-query backend: `api`, `claude`, `codex`, `gemini` |
-| `ALEPH_SUB_QUERY_API_KEY` | API key (fallback: `OPENAI_API_KEY`) |
-| `ALEPH_SUB_QUERY_URL` | API base URL (fallback: `OPENAI_BASE_URL`) |
-| `ALEPH_SUB_QUERY_MODEL` | Model name (required for API backend) |
-| `ALEPH_MAX_ITERATIONS` | Iteration limit |
-| `ALEPH_MAX_COST` | Cost limit in USD |
+| Variable                    | Purpose                                                    |
+|-----------------------------|------------------------------------------------------------|
+| `ALEPH_SUB_QUERY_BACKEND`  | Force sub-query backend: `api`, `claude`, `codex`, `gemini`|
+| `ALEPH_SUB_QUERY_API_KEY`  | API key (fallback: `OPENAI_API_KEY`)                       |
+| `ALEPH_SUB_QUERY_URL`      | API base URL (fallback: `OPENAI_BASE_URL`)                 |
+| `ALEPH_SUB_QUERY_MODEL`    | Model name (required for API backend)                      |
+| `ALEPH_MAX_ITERATIONS`     | Iteration limit                                            |
+| `ALEPH_MAX_COST`           | Cost limit in USD                                          |
+
+---
 
 ## Release Process
 
@@ -248,8 +277,13 @@ HELPER_FUNCTIONS = {
 6. Upload to PyPI: `twine upload dist/*`
 7. Tag release: `git tag v0.x.0 && git push --tags`
 
+---
+
 ## Related Documentation
 
-- [docs/prompts/aleph.md](docs/prompts/aleph.md) — workflow prompt + tool reference
-- [README.md](README.md) — User documentation
-- [CHANGELOG.md](CHANGELOG.md) — release notes
+| Document                                              | Description                      |
+|-------------------------------------------------------|----------------------------------|
+| [README.md](README.md)                                | User documentation               |
+| [docs/prompts/aleph.md](docs/prompts/aleph.md)       | Workflow prompt + tool reference  |
+| [CHANGELOG.md](CHANGELOG.md)                         | Release notes                    |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md)       | Full configuration reference     |
