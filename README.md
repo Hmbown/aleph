@@ -6,26 +6,50 @@
 
 **Your RAM is the new context window.**
 
-Aleph is an [MCP server](https://modelcontextprotocol.io/) that gives any LLM access to gigabytes of local data without consuming context. Load massive files into a Python process—the model explores them via search, slicing, and sandboxed code execution. Only results enter the context window, never the raw content.
+Aleph is an [MCP server](https://modelcontextprotocol.io/) that gives any LLM
+access to gigabytes of local data without consuming context. Load massive files
+into a Python process -- the model explores them via search, slicing, and
+sandboxed code execution. Only results enter the context window, never the raw
+content.
 
-Based on the [Recursive Language Model](https://arxiv.org/abs/2512.24601) (RLM) architecture.
+Based on the [Recursive Language Model](https://arxiv.org/abs/2512.24601) (RLM)
+architecture.
+
+```
++-----------------+    tool calls     +--------------------------+
+|   LLM client    | ---------------> |  Aleph (Python, RAM)     |
+|  (limited ctx)  | <--------------- |  search / peek / exec    |
++-----------------+   small results  +--------------------------+
+```
+
+---
 
 ## Use Cases
 
-| Scenario | What Aleph Does |
-|----------|-----------------|
-| **Large log analysis** | Load 500MB of logs, search for patterns, correlate across time ranges |
-| **Codebase navigation** | Load entire repos, find definitions, trace call chains, extract architecture |
-| **Data exploration** | JSON exports, CSV files, API responses—explore interactively with Python |
-| **Mixed document ingestion** | Load PDFs, Word docs, HTML, and logs like plain text |
-| **Semantic search** | Find relevant sections by meaning, then zoom in with peek |
-| **Research sessions** | Save/resume sessions, track evidence with citations, spawn sub-queries |
+| Scenario                      | What Aleph Does                                                       |
+|-------------------------------|-----------------------------------------------------------------------|
+| **Large log analysis**        | Load 500 MB of logs, search for patterns, correlate across time       |
+| **Codebase navigation**       | Load entire repos, find definitions, trace call chains                |
+| **Data exploration**          | JSON exports, CSV files, API responses -- explore with Python         |
+| **Mixed document ingestion**  | Load PDFs, Word docs, HTML, and logs as plain text                    |
+| **Semantic search**           | Find relevant sections by meaning, then zoom in with peek             |
+| **Research sessions**         | Save/resume sessions, track evidence with citations, spawn sub-queries|
+
+---
 
 ## Requirements
 
 - Python 3.10+
-- **For MCP mode:** An MCP-compatible client ([Claude Code](https://claude.ai/code), [Cursor](https://cursor.sh), [VS Code](https://code.visualstudio.com/), [Windsurf](https://codeium.com/windsurf), [Codex CLI](https://github.com/openai/codex), or [Claude Desktop](https://claude.ai/download))
-- **For CLI mode:** `claude`, `codex`, or `gemini` CLI installed
+- **MCP mode:** an MCP-compatible client
+  ([Claude Code](https://claude.ai/code),
+  [Cursor](https://cursor.sh),
+  [VS Code](https://code.visualstudio.com/),
+  [Windsurf](https://codeium.com/windsurf),
+  [Codex CLI](https://github.com/openai/codex), or
+  [Claude Desktop](https://claude.ai/download))
+- **CLI mode:** `claude`, `codex`, or `gemini` CLI installed
+
+---
 
 ## Quickstart
 
@@ -37,49 +61,57 @@ pip install "aleph-rlm[mcp]"
 
 This installs three commands:
 
-| Command | Purpose |
-|---------|---------|
-| `aleph` | MCP server — connect from any MCP client (also supports `run`/`shell`) |
-| `alef` | Standalone CLI — deprecated (use `aleph run` or `aleph-rlm run`) |
-| `aleph-rlm` | Setup utility — auto-configure MCP clients (also supports `run`/`shell`) |
+| Command      | Purpose                                                                     |
+|--------------|-----------------------------------------------------------------------------|
+| `aleph`      | MCP server -- connect from any MCP client (also supports `run` / `shell`)   |
+| `aleph-rlm`  | Setup utility -- auto-configure MCP clients (also supports `run` / `shell`) |
+| `alef`       | Standalone CLI -- **deprecated** (use `aleph run` or `aleph-rlm run`)       |
 
 Quick mental model:
-- Use `aleph-rlm` once to configure MCP clients.
-- Your MCP client runs `aleph` as the server command.
-- Use `aleph run` or `aleph-rlm run` for standalone CLI mode (replaces `alef`).
 
-### 2. Choose your mode
+- Use **`aleph-rlm`** once to configure MCP clients.
+- Your MCP client runs **`aleph`** as the server command.
+- Use **`aleph run`** or **`aleph-rlm run`** for standalone CLI mode (replaces `alef`).
 
-**Option A: MCP Mode** (recommended for AI assistants)
+### 2. Choose Your Mode
 
-Configure your MCP client to use the `aleph` server, then interact via tool calls.
+**Option A -- MCP mode** (recommended for AI assistants)
 
-**Option B: CLI Mode** (standalone terminal use)
+Configure your MCP client to use the `aleph` server, then interact via tool
+calls.
 
-Run `aleph run` (or `aleph-rlm run`) directly from the command line — no MCP setup required.
-(`alef` still works for now but is deprecated.)
+**Option B -- CLI mode** (standalone terminal use)
+
+Run `aleph run` (or `aleph-rlm run`) directly from the command line -- no MCP
+setup required. (`alef` still works for now but is deprecated.)
 
 ---
 
 ## MCP Mode Setup
 
-### Configure your MCP client
+### Configure Your MCP Client
 
 **Automatic** (recommended):
+
 ```bash
 aleph-rlm install
 ```
 
-This auto-detects your installed clients and configures them with sensible defaults.
+This auto-detects your installed clients and configures them with sensible
+defaults.
 
-To customize server settings (workspace scope, sub-query backend, Docker, etc.) use:
+To customize server settings (workspace scope, sub-query backend, Docker, etc.):
+
 ```bash
 aleph-rlm configure
 ```
 
-To confirm which client was configured, open the client config file (table below) and look for an `aleph` entry. If a client wasn't detected, install/update it and re-run `aleph-rlm install`, or use the manual config.
+To confirm which client was configured, open the client config file (table
+below) and look for an `aleph` entry. If a client was not detected, install or
+update it and re-run `aleph-rlm install`, or use the manual config.
 
 **Manual** (any MCP client):
+
 ```json
 {
   "mcpServers": {
@@ -91,31 +123,34 @@ To confirm which client was configured, open the client config file (table below
 }
 ```
 
-**Docker (optional):**
-If you want the MCP server to run inside a container, build the image once:
+**Docker** (optional):
+
+Build the image once, then use `aleph-rlm configure` and choose the Docker
+option:
+
 ```bash
 docker build -t aleph-rlm:local .
 ```
-Then use `aleph-rlm configure` and choose the Docker option.
 
 <details>
 <summary><strong>Config file locations</strong></summary>
 
-| Client | macOS/Linux | Windows |
-|--------|-------------|---------|
-| Claude Code | `~/.claude/settings.json` | `%USERPROFILE%\.claude\settings.json` |
-| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | `%APPDATA%\Claude\claude_desktop_config.json` |
-| Cursor | `~/.cursor/mcp.json` | `%USERPROFILE%\.cursor\mcp.json` |
-| VS Code | `~/.vscode/mcp.json` | `%USERPROFILE%\.vscode\mcp.json` |
-| Codex CLI | `~/.codex/config.toml` | `%USERPROFILE%\.codex\config.toml` |
+| Client          | macOS / Linux                                                            | Windows                                          |
+|-----------------|--------------------------------------------------------------------------|--------------------------------------------------|
+| Claude Code     | `~/.claude/settings.json`                                                | `%USERPROFILE%\.claude\settings.json`             |
+| Claude Desktop  | `~/Library/Application Support/Claude/claude_desktop_config.json`        | `%APPDATA%\Claude\claude_desktop_config.json`     |
+| Cursor          | `~/.cursor/mcp.json`                                                     | `%USERPROFILE%\.cursor\mcp.json`                  |
+| VS Code         | `~/.vscode/mcp.json`                                                     | `%USERPROFILE%\.vscode\mcp.json`                  |
+| Codex CLI       | `~/.codex/config.toml`                                                   | `%USERPROFILE%\.codex\config.toml`                |
 
 </details>
 
-See [MCP_SETUP.md](MCP_SETUP.md) for detailed instructions.
+See [MCP_SETUP.md](MCP_SETUP.md) for detailed per-client instructions.
 
 ### Verify
 
 In your assistant, run:
+
 ```
 get_status()
 ```
@@ -124,11 +159,15 @@ If using Claude Code, tools are prefixed: `mcp__aleph__get_status`.
 
 ---
 
-## CLI Mode (`aleph run` / `aleph-rlm run`)
+## CLI Mode
 
-The `aleph run` command runs the full RLM reasoning loop directly from your terminal. It uses local CLI tools (`claude`, `codex`, or `gemini`) as the LLM backend — no separate Aleph API keys needed, just the CLI tool's own authentication. (`aleph-rlm run` works the same.)
+The `aleph run` command runs the full RLM reasoning loop directly from your
+terminal. It uses local CLI tools (`claude`, `codex`, or `gemini`) as the LLM
+backend -- no separate API keys needed, just the CLI tool's own authentication.
+(`aleph-rlm run` works the same way.)
 
-**Prerequisites:** Have `claude`, `codex`, or `gemini` CLI installed and authenticated.
+**Prerequisites:** have `claude`, `codex`, or `gemini` CLI installed and
+authenticated.
 
 ### Basic Usage
 
@@ -140,13 +179,15 @@ aleph run "What is 2+2?" --provider cli --model claude
 aleph run "Summarize this log" --provider cli --model claude --context-file app.log
 
 # JSON context
-aleph run "Extract all names" --provider cli --model claude --context '{"users": [{"name": "Alice"}, {"name": "Bob"}]}'
+aleph run "Extract all names" --provider cli --model claude \
+  --context '{"users": [{"name": "Alice"}, {"name": "Bob"}]}'
 
 # Full JSON output with trajectory
-aleph run "Analyze this data" --provider cli --model claude --context-file data.json --json --include-trajectory
+aleph run "Analyze this data" --provider cli --model claude \
+  --context-file data.json --json --include-trajectory
 ```
 
-### With Sub-Queries (Multi-Claude Recursion)
+### Sub-Queries (Multi-Claude Recursion)
 
 Enable recursive sub-queries where the LLM spawns additional Claude calls:
 
@@ -155,100 +196,110 @@ Enable recursive sub-queries where the LLM spawns additional Claude calls:
 export ALEPH_SUB_QUERY_BACKEND=claude
 
 # Run a complex analysis that uses sub_query()
-aleph run "For each item in the context, use sub_query to summarize it, then combine results" \
+aleph run "For each item, use sub_query to summarize it, then combine results" \
   --provider cli --model claude \
   --context '{"items": [{"name": "Alice", "score": 95}, {"name": "Bob", "score": 87}]}' \
   --max-iterations 10
 ```
 
 The RLM loop will:
+
 1. Execute Python code blocks to explore the context
-2. Call `sub_query()` which spawns additional Claude CLI processes
+2. Call `sub_query()` which spawns additional CLI processes
 3. Iterate until `FINAL(answer)` is reached
 
 ### CLI Options
 
-| Flag | Description |
-|------|-------------|
-| `--provider cli` | Use local CLI tools instead of API |
-| `--model claude\|codex\|gemini` | Which CLI backend to use |
-| `--context "..."` | Inline context string |
-| `--context-file path` | Load context from file |
-| `--context-stdin` | Read context from stdin |
-| `--json` | Output JSON response |
-| `--include-trajectory` | Include full reasoning trace in JSON |
-| `--max-iterations N` | Limit RLM loop iterations |
+| Flag                     | Description                             |
+|--------------------------|-----------------------------------------|
+| `--provider cli`         | Use local CLI tools instead of API      |
+| `--model claude\|codex\|gemini` | Which CLI backend to use          |
+| `--context "..."`        | Inline context string                   |
+| `--context-file path`    | Load context from file                  |
+| `--context-stdin`        | Read context from stdin                 |
+| `--json`                 | Output JSON response                    |
+| `--include-trajectory`   | Include full reasoning trace in JSON    |
+| `--max-iterations N`     | Limit RLM loop iterations               |
 
 ### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `ALEPH_SUB_QUERY_BACKEND` | Backend for `sub_query()`: `claude`, `codex`, `gemini`, or `api` |
-| `ALEPH_SUB_QUERY_SHARE_SESSION` | Share MCP session with sub-agents (set to `1`) |
-| `ALEPH_CLI_TIMEOUT` | Timeout for CLI calls (default: 120s) |
+| Variable                          | Description                                                        |
+|-----------------------------------|--------------------------------------------------------------------|
+| `ALEPH_SUB_QUERY_BACKEND`        | Backend for `sub_query()`: `claude`, `codex`, `gemini`, or `api`   |
+| `ALEPH_SUB_QUERY_SHARE_SESSION`  | Share MCP session with sub-agents (set to `1`)                     |
+| `ALEPH_CLI_TIMEOUT`              | Timeout for CLI calls (default: 120s)                              |
 
 ---
 
 ## Swarm Mode
 
-Aleph enables multi-agent coordination through shared contexts. Multiple agents can read and write to the same context IDs, creating a distributed memory layer for swarm architectures.
+Aleph enables multi-agent coordination through shared contexts. Multiple agents
+can read and write to the same context IDs, creating a distributed memory layer
+for swarm architectures.
 
 ### How It Works
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  Agent A    │     │  Agent B    │     │  Agent C    │
-│  (Explorer) │     │  (Analyst)  │     │  (Writer)   │
-└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
-       │                   │                   │
-       └───────────────────┼───────────────────┘
-                           │
-                    ┌──────▼──────┐
-                    │   Aleph     │
-                    │  Contexts   │
-                    │ (Shared RAM)│
-                    └─────────────┘
++---------------+     +---------------+     +---------------+
+|   Agent A     |     |   Agent B     |     |   Agent C     |
+|  (Explorer)   |     |  (Analyst)    |     |  (Writer)     |
++-------+-------+     +-------+-------+     +-------+-------+
+        |                      |                     |
+        +----------------------+---------------------+
+                               |
+                        +------+------+
+                        |    Aleph    |
+                        |  Contexts   |
+                        | (Shared RAM)|
+                        +-------------+
 ```
 
-Agents coordinate by reading/writing to shared context IDs. No message passing needed for data—agents simply load, search, and write to the same contexts.
+Agents coordinate by reading and writing to shared context IDs. No message
+passing needed for data -- agents simply load, search, and write to the same
+contexts.
 
 ### Context Naming Conventions
 
-| Pattern | Purpose | Example |
-|---------|---------|---------|
-| `swarm-{name}-kb` | Shared knowledge base | `swarm-docs-kb` |
-| `task-{id}-spec` | Task requirements | `task-42-spec` |
-| `task-{id}-findings` | Shared discoveries | `task-42-findings` |
-| `{agent}-workspace` | Private agent workspace | `explorer-workspace` |
+| Pattern                 | Purpose                    | Example                |
+|-------------------------|----------------------------|------------------------|
+| `swarm-{name}-kb`       | Shared knowledge base      | `swarm-docs-kb`        |
+| `task-{id}-spec`        | Task requirements          | `task-42-spec`         |
+| `task-{id}-findings`    | Shared discoveries         | `task-42-findings`     |
+| `{agent}-workspace`     | Private agent workspace    | `explorer-workspace`   |
 
-### Basic Swarm Workflow
+### Basic Workflow
 
 **1. Leader creates shared context:**
+
 ```python
 load_context(content="Project: Analyze auth system", context_id="swarm-auth-kb")
 ```
 
 **2. Spawn agents with Aleph access:**
+
 ```bash
 # Each agent connects to the same Aleph MCP server
 # They can all access "swarm-auth-kb"
 ```
 
 **3. Agents write findings to shared context:**
+
 ```python
 # Agent A finds something
 exec_python(code="""
 finding = "Auth uses JWT with RS256"
-ctx_append(finding)  # Appends to current context
+ctx_append(finding)
 """, context_id="task-42-findings")
 ```
 
 **4. Agents read each other's work:**
+
 ```python
 search_context(pattern="JWT|token", context_id="task-42-findings")
 ```
 
 **5. Diff and merge contexts:**
+
 ```python
 diff_contexts(a="agent-a-workspace", b="agent-b-workspace")
 ```
@@ -274,16 +325,10 @@ ctx_append(learning)
 save_session(context_id="swarm-kb", path="swarm_learnings.json")
 ```
 
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `ALEPH_SUB_QUERY_SHARE_SESSION` | Set to `1` to let sub-agents access parent's MCP session |
-| `ALEPH_SUB_QUERY_BACKEND` | Backend for `sub_query()`: `claude`, `codex`, `gemini`, or `api` |
-
 ### Key Patterns
 
-**Parallel Exploration:**
+**Parallel exploration:**
+
 ```python
 # Spawn multiple agents, each with a different context_id
 # Agent 1: context_id="explore-frontend"
@@ -291,25 +336,33 @@ save_session(context_id="swarm-kb", path="swarm_learnings.json")
 # All write findings to: context_id="task-findings"
 ```
 
-**Consensus Building:**
+**Consensus building:**
+
 ```python
 # Each agent writes proposal to task-proposals
 # Use diff_contexts to compare
 # Synthesize with sub_aleph
 ```
 
-**Knowledge Propagation:**
+**Knowledge propagation:**
+
 ```
-Discovery → Private Workspace → Validate → Shared Context → Knowledge Base
+Discovery -> Private Workspace -> Validate -> Shared Context -> Knowledge Base
 ```
 
-See the `/swarm` skill for detailed prompts and examples.
+### Environment Variables
+
+| Variable                          | Description                                                        |
+|-----------------------------------|--------------------------------------------------------------------|
+| `ALEPH_SUB_QUERY_SHARE_SESSION`  | Set to `1` to let sub-agents access parent's MCP session           |
+| `ALEPH_SUB_QUERY_BACKEND`        | Backend for `sub_query()`: `claude`, `codex`, `gemini`, or `api`   |
 
 ---
 
-## AI Assistant Setup (MCP + `/aleph` Skill) — Copy/Paste
+## AI Assistant Setup (Copy/Paste)
 
-Paste this into any AI coding assistant or agentic coder to add Aleph (MCP server + `/aleph` skill):
+Paste this into any AI coding assistant to add Aleph (MCP server + `/aleph`
+skill):
 
 ```
 You are an AI coding assistant. Please set up Aleph (Model Context Protocol / MCP).
@@ -326,8 +379,8 @@ You are an AI coding assistant. Please set up Aleph (Model Context Protocol / MC
 
 2) Install the /aleph skill prompt:
 - Claude Code: copy docs/prompts/aleph.md -> ~/.claude/commands/aleph.md
-- Codex CLI: copy docs/prompts/aleph.md -> ~/.codex/skills/aleph/SKILL.md
-- Gemini CLI: copy docs/prompts/aleph.md -> ~/.gemini/skills/aleph/SKILL.md
+- Codex CLI:   copy docs/prompts/aleph.md -> ~/.codex/skills/aleph/SKILL.md
+- Gemini CLI:  copy docs/prompts/aleph.md -> ~/.gemini/skills/aleph/SKILL.md
   Ensure ~/.gemini/settings.json has "experimental": { "skills": true } and restart.
 If this client uses a different skill/command folder, ask me where to place it.
 
@@ -335,22 +388,27 @@ If this client uses a different skill/command folder, ask me where to place it.
 If tools are namespaced, use mcp__aleph__get_status or mcp__aleph__list_contexts.
 
 4) (Optional) Enable sub_query (recursive sub-agent):
-- Quick: just say "use claude backend" — the LLM will run set_backend("claude")
+- Quick: just say "use claude backend" -- the LLM will run set_backend("claude")
 - Env var: set ALEPH_SUB_QUERY_BACKEND=claude|codex|gemini|api
 - API backend: set ALEPH_SUB_QUERY_API_KEY + ALEPH_SUB_QUERY_MODEL
-Runtime switching: the LLM can call set_backend() or configure() anytime—no restart needed.
+Runtime switching: the LLM can call set_backend() or configure() anytime -- no restart.
 
 5) Use the skill: /aleph (Claude Code) or $aleph (Codex CLI).
 Gemini CLI: /skills list (use /skills enable aleph if disabled).
 ```
 
+---
+
 ## The `/aleph` Skill
 
-The `/aleph` skill is a prompt that teaches your LLM how to use Aleph effectively. It provides workflow patterns, tool guidance, and troubleshooting tips.
+The `/aleph` skill is a prompt that teaches your LLM how to use Aleph
+effectively. It provides workflow patterns, tool guidance, and troubleshooting
+tips.
 
-**Note:** Aleph works best when paired with the skill prompt + MCP server together.
+**Note:** Aleph works best when paired with the skill prompt + MCP server
+together.
 
-### What it does
+### What It Does
 
 - Loads files into searchable in-memory contexts
 - Tracks evidence with citations as you reason
@@ -361,43 +419,52 @@ The `/aleph` skill is a prompt that teaches your LLM how to use Aleph effectivel
 ### Simplest Use Case
 
 Just point at a file:
+
 ```
 /aleph path/to/huge_log.txt
 ```
 
-The LLM will load it into Aleph's external memory and immediately start analyzing using RLM patterns—no extra setup needed.
+The LLM will load it into Aleph's external memory and immediately start
+analyzing using RLM patterns -- no extra setup needed.
 
-### How to invoke
+### How to Invoke
 
-| Client | Command |
-|--------|---------|
-| Claude Code | `/aleph` |
-| Codex CLI | `$aleph` |
+| Client      | Command   |
+|-------------|-----------|
+| Claude Code | `/aleph`  |
+| Codex CLI   | `$aleph`  |
 
-For other clients, copy [`docs/prompts/aleph.md`](docs/prompts/aleph.md) and paste it at session start.
+For other clients, copy [`docs/prompts/aleph.md`](docs/prompts/aleph.md) and
+paste it at session start.
 
-### Installing the skill
+### Installing the Skill
 
-**Option 1: Direct download** (simplest)
+**Option 1 -- Direct download** (simplest)
 
 Download [`docs/prompts/aleph.md`](docs/prompts/aleph.md) and save it to:
-- **Claude Code:** `~/.claude/commands/aleph.md` (macOS/Linux) or `%USERPROFILE%\.claude\commands\aleph.md` (Windows)
-- **Codex CLI:** `~/.codex/skills/aleph/SKILL.md` (macOS/Linux) or `%USERPROFILE%\.codex\skills\aleph\SKILL.md` (Windows)
 
-**Option 2: From installed package**
+- **Claude Code:** `~/.claude/commands/aleph.md`
+  (Windows: `%USERPROFILE%\.claude\commands\aleph.md`)
+- **Codex CLI:** `~/.codex/skills/aleph/SKILL.md`
+  (Windows: `%USERPROFILE%\.codex\skills\aleph\SKILL.md`)
+
+**Option 2 -- From installed package**
 
 <details>
-<summary>macOS/Linux</summary>
+<summary>macOS / Linux</summary>
 
 ```bash
 # Claude Code
 mkdir -p ~/.claude/commands
-cp "$(python -c "import aleph; print(aleph.__path__[0])")/../docs/prompts/aleph.md" ~/.claude/commands/aleph.md
+cp "$(python -c "import aleph; print(aleph.__path__[0])")/../docs/prompts/aleph.md" \
+  ~/.claude/commands/aleph.md
 
 # Codex CLI
 mkdir -p ~/.codex/skills/aleph
-cp "$(python -c "import aleph; print(aleph.__path__[0])")/../docs/prompts/aleph.md" ~/.codex/skills/aleph/SKILL.md
+cp "$(python -c "import aleph; print(aleph.__path__[0])")/../docs/prompts/aleph.md" \
+  ~/.codex/skills/aleph/SKILL.md
 ```
+
 </details>
 
 <details>
@@ -409,139 +476,164 @@ New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.claude\commands"
 $alephPath = python -c "import aleph; print(aleph.__path__[0])"
 Copy-Item "$alephPath\..\docs\prompts\aleph.md" "$env:USERPROFILE\.claude\commands\aleph.md"
 
-# Codex CLI  
+# Codex CLI
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.codex\skills\aleph"
 Copy-Item "$alephPath\..\docs\prompts\aleph.md" "$env:USERPROFILE\.codex\skills\aleph\SKILL.md"
 ```
+
 </details>
+
+---
 
 ## How It Works
 
 ```
-┌───────────────┐    tool calls     ┌────────────────────────┐
-│   LLM client  │ ────────────────► │  Aleph (Python, RAM)   │
-│ (limited ctx) │ ◄──────────────── │  search/peek/exec      │
-└───────────────┘    small results  └────────────────────────┘
++-----------------+    tool calls     +--------------------------+
+|   LLM client    | ---------------> |  Aleph (Python, RAM)     |
+|  (limited ctx)  | <--------------- |  search / peek / exec    |
++-----------------+   small results  +--------------------------+
 ```
 
-1. **Load** — `load_context` (paste text) or `load_file` (from disk)
-2. **Explore** — `search_context`, `semantic_search`, `peek_context`
-3. **Compute** — `exec_python` with 100+ built-in helpers
-4. **Reason** — `think`, `evaluate_progress`, `get_evidence`
-5. **Persist** — `save_session` to resume later
+1. **Load**    -- `load_context` (paste text) or `load_file` (from disk)
+2. **Explore** -- `search_context`, `semantic_search`, `peek_context`
+3. **Compute** -- `exec_python` with 100+ built-in helpers
+4. **Reason**  -- `think`, `evaluate_progress`, `get_evidence`
+5. **Persist** -- `save_session` to resume later
 
 ### Quick Example
 
 ```python
 # Load log data
 load_context(content=logs, context_id="logs")
-# → "Context loaded 'logs': 445 chars, 7 lines, ~111 tokens"
+# -> "Context loaded 'logs': 445 chars, 7 lines, ~111 tokens"
 
 # Search for errors
 search_context(pattern="ERROR", context_id="logs")
-# → Found 2 match(es):
-#   Line 1: 2026-01-15 10:23:45 ERROR [auth] Failed login...
-#   Line 4: 2026-01-15 10:24:15 ERROR [db] Connection timeout...
+# -> Found 2 match(es):
+#    Line 1: 2026-01-15 10:23:45 ERROR [auth] Failed login...
+#    Line 4: 2026-01-15 10:24:15 ERROR [db] Connection timeout...
 
 # Extract structured data
 exec_python(code="emails = extract_emails(); print(emails)", context_id="logs")
-# → [{'value': 'user@example.com', 'line_num': 0, 'start': 50, 'end': 66}, ...]
+# -> [{'value': 'user@example.com', 'line_num': 0, 'start': 50, 'end': 66}, ...]
 ```
 
 ### Advanced Workflows
 
-**Multi-Context Workflow (code + docs + diffs)**
-
-Load multiple sources, then compare or reconcile them:
+**Multi-context workflow (code + docs + diffs):**
 
 ```python
-# Load a design doc and a repo snapshot (or any two sources)
+# Load a design doc and a repo snapshot
 load_context(content=design_doc_text, context_id="spec")
-rg_search(pattern="AuthService|JWT|token", paths=["."], load_context_id="repo_hits", confirm=true)
+rg_search(pattern="AuthService|JWT|token", paths=["."],
+          load_context_id="repo_hits", confirm=True)
 
 # Compare or reconcile
 diff_contexts(a="spec", b="repo_hits")
 search_context(pattern="missing|TODO|mismatch", context_id="repo_hits")
 ```
 
-**Advanced Querying with `exec_python`**
-
-Treat `exec_python` as a reasoning tool, not just code execution:
+**Advanced querying with `exec_python`:**
 
 ```python
-# Example: extract class names or key sections programmatically
+# Treat exec_python as a reasoning tool, not just code execution
 exec_python(code="print(extract_classes())", context_id="repo_hits")
 ```
 
+---
+
 ## Tools
 
-**Core** (always available):
-- `load_context`, `list_contexts`, `diff_contexts` — manage in-memory data
-- `search_context`, `semantic_search`, `peek_context`, `chunk_context` — explore data; use `semantic_search` for concepts/fuzzy queries, `search_context` for precise regex
-- `exec_python`, `get_variable` — compute in sandbox (100+ built-in helpers)
-- `think`, `evaluate_progress`, `summarize_so_far`, `get_evidence`, `finalize` — structured reasoning
-- `tasks` — lightweight task tracking per context
-- `get_status` — session state
-- `sub_query` — spawn recursive sub-agents (CLI or API backend)
-- `sub_aleph` — nested Aleph recursion (RLM -> RLM)
+### Core (always available)
+
+| Category          | Tools                                                                                       |
+|-------------------|---------------------------------------------------------------------------------------------|
+| **Context**       | `load_context`, `list_contexts`, `diff_contexts`                                            |
+| **Search**        | `search_context`, `semantic_search`, `peek_context`, `chunk_context`                        |
+| **Compute**       | `exec_python`, `get_variable`                                                               |
+| **Reasoning**     | `think`, `evaluate_progress`, `summarize_so_far`, `get_evidence`, `finalize`                |
+| **Tasks**         | `tasks` -- lightweight task tracking per context                                            |
+| **Status**        | `get_status`                                                                                |
+| **Recursion**     | `sub_query` (spawn sub-agents), `sub_aleph` (nested RLM)                                   |
+
+### Action Tools (requires `--enable-actions`)
+
+| Category          | Tools                                                                                       |
+|-------------------|---------------------------------------------------------------------------------------------|
+| **File I/O**      | `load_file`, `read_file`, `write_file` (PDFs, Word, HTML, .gz supported)                    |
+| **Shell**         | `run_command`, `run_tests`, `rg_search`                                                     |
+| **Sessions**      | `save_session`, `load_session` -- persist state (memory packs)                              |
+| **MCP orchestration** | `add_remote_server`, `list_remote_tools`, `call_remote_tool`                            |
 
 <details>
-<summary><strong>exec_python helpers</strong></summary>
+<summary><strong>exec_python helpers (100+)</strong></summary>
 
 The sandbox includes 100+ helpers that operate on the loaded context:
 
-| Category | Examples |
-|----------|----------|
-| **Extractors** (25) | `extract_emails()`, `extract_urls()`, `extract_dates()`, `extract_ips()`, `extract_functions()` |
-| **Statistics** (8) | `word_count()`, `line_count()`, `word_frequency()`, `ngrams()` |
-| **Line operations** (12) | `head()`, `tail()`, `grep()`, `sort_lines()`, `columns()` |
-| **Text manipulation** (15) | `replace_all()`, `between()`, `truncate()`, `slugify()` |
-| **Validation** (7) | `is_email()`, `is_url()`, `is_json()`, `is_numeric()` |
-| **Core** | `peek()`, `lines()`, `search()`, `chunk()`, `cite()`, `sub_query()`, `sub_aleph()`, `sub_query_map()`, `sub_query_batch()`, `sub_query_strict()`, `ctx_append()`, `ctx_set()` |
+| Category              | Examples                                                                  |
+|-----------------------|---------------------------------------------------------------------------|
+| **Extractors** (25)   | `extract_emails()`, `extract_urls()`, `extract_dates()`, `extract_ips()`, `extract_functions()` |
+| **Statistics** (8)    | `word_count()`, `line_count()`, `word_frequency()`, `ngrams()`            |
+| **Line operations** (12) | `head()`, `tail()`, `grep()`, `sort_lines()`, `columns()`             |
+| **Text manipulation** (15) | `replace_all()`, `between()`, `truncate()`, `slugify()`              |
+| **Validation** (7)    | `is_email()`, `is_url()`, `is_json()`, `is_numeric()`                    |
+| **Core**              | `peek()`, `lines()`, `search()`, `chunk()`, `cite()`, `sub_query()`, `sub_aleph()`, `sub_query_map()`, `sub_query_batch()`, `sub_query_strict()`, `ctx_append()`, `ctx_set()` |
 
 Extractors return `list[dict]` with keys: `value`, `line_num`, `start`, `end`.
 
 </details>
 
-**Action tools** (requires `--enable-actions`):
-- `load_file`, `read_file`, `write_file` — filesystem (PDFs, Word, HTML, .gz supported)
-- `run_command`, `run_tests`, `rg_search` — shell + fast repo search
-- `save_session`, `load_session` — persist state (memory packs)
-- `add_remote_server`, `list_remote_tools`, `call_remote_tool` — MCP orchestration
+---
 
 ## Configuration
 
-**Workspace controls:**
-- `--workspace-root <path>` — root for relative paths (default: git root from invocation cwd)
-- `--workspace-mode <fixed|git|any>` — path restrictions
-- `--require-confirmation` — require `confirm=true` on action calls
-- `ALEPH_WORKSPACE_ROOT` — override workspace root via environment
+### Workspace Controls
 
-**Limits:**
-- `--max-file-size` — max file read (default: 1GB)
-- `--max-write-bytes` — max file write (default: 100MB)  
-- `--timeout` — sandbox/command timeout (default: 60s)
-- `--max-output` — max command output (default: 50,000 chars)
+| Flag / Variable                  | Description                                                          |
+|----------------------------------|----------------------------------------------------------------------|
+| `--workspace-root <path>`        | Root for relative paths (default: git root from invocation cwd)      |
+| `--workspace-mode <fixed\|git\|any>` | Path restrictions                                               |
+| `--require-confirmation`         | Require `confirm=true` on action calls                               |
+| `ALEPH_WORKSPACE_ROOT`           | Override workspace root via environment                              |
 
-**Recursion budgets (depth/time/detail):**
-- `ALEPH_MAX_DEPTH` (default: 2) — max `sub_aleph` nesting depth
-- `ALEPH_MAX_ITERATIONS` (default: 100) — total RLM loop steps (root + recursion)
-- `ALEPH_MAX_WALL_TIME` (default: 300s) — wall-time cap per Aleph run
-- `ALEPH_MAX_SUB_QUERIES` (default: 100) — total `sub_query` calls allowed
-- `ALEPH_MAX_TOKENS` (default: unset) — optional per-call output cap
+### Limits
 
-Override these via env vars above or per-call args on `sub_aleph`. CLI backends run
-`sub_aleph` as a single-shot call; use the API backend for full multi-iteration recursion.
+| Flag                  | Default       | Description                   |
+|-----------------------|---------------|-------------------------------|
+| `--max-file-size`     | 1 GB          | Max file read                 |
+| `--max-write-bytes`   | 100 MB        | Max file write                |
+| `--timeout`           | 60 s          | Sandbox / command timeout     |
+| `--max-output`        | 50,000 chars  | Max command output            |
+
+### Recursion Budgets
+
+| Variable                  | Default | Description                                    |
+|---------------------------|---------|------------------------------------------------|
+| `ALEPH_MAX_DEPTH`         | 2       | Max `sub_aleph` nesting depth                  |
+| `ALEPH_MAX_ITERATIONS`    | 100     | Total RLM loop steps (root + recursion)        |
+| `ALEPH_MAX_WALL_TIME`     | 300 s   | Wall-time cap per Aleph run                    |
+| `ALEPH_MAX_SUB_QUERIES`   | 100     | Total `sub_query` calls allowed                |
+| `ALEPH_MAX_TOKENS`        | unset   | Optional per-call output cap                   |
+
+Override via environment variables or per-call args on `sub_aleph`. CLI backends
+run `sub_aleph` as a single-shot call; use the API backend for full
+multi-iteration recursion.
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all options.
 
+---
+
 ## Documentation
 
-- [MCP_SETUP.md](MCP_SETUP.md) — client configuration
-- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — CLI flags and environment variables
-- [docs/prompts/aleph.md](docs/prompts/aleph.md) — skill prompt and tool reference
-- [CHANGELOG.md](CHANGELOG.md) — release history
-- [DEVELOPMENT.md](DEVELOPMENT.md) — contributing guide
+| Document                                                 | Description                            |
+|----------------------------------------------------------|----------------------------------------|
+| [MCP_SETUP.md](MCP_SETUP.md)                            | Client configuration                   |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md)          | CLI flags and environment variables    |
+| [docs/prompts/aleph.md](docs/prompts/aleph.md)          | Skill prompt and tool reference        |
+| [CHANGELOG.md](CHANGELOG.md)                            | Release history                        |
+| [DEVELOPMENT.md](DEVELOPMENT.md)                        | Contributing guide                     |
+
+---
 
 ## Development
 
@@ -552,10 +644,12 @@ pip install -e ".[dev,mcp]"
 pytest
 ```
 
+---
+
 ## References
 
-> **Recursive Language Models**  
-> Zhang, A. L., Kraska, T., & Khattab, O. (2025)  
+> **Recursive Language Models**
+> Zhang, A. L., Kraska, T., & Khattab, O. (2025)
 > [arXiv:2512.24601](https://arxiv.org/abs/2512.24601)
 
 ## License

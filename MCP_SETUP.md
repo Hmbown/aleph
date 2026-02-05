@@ -1,7 +1,9 @@
 # MCP Server Configuration Guide
 
-This guide explains how to properly configure aleph as an MCP server in **all major MCP-compatible clients**: Cursor, VS Code, Claude Desktop, OpenAI Codex, Windsurf, and others.
-It focuses on `aleph`, which supports action tools and workspace scoping.
+How to configure Aleph as an MCP server in **all major MCP-compatible clients**:
+Cursor, VS Code, Claude Desktop, Codex CLI, Windsurf, Kimi CLI, and others.
+
+---
 
 ## Quick Start (Full Power Mode)
 
@@ -19,14 +21,18 @@ For maximum capability without needing to configure workspace roots:
 ```
 
 This enables:
+
 - **All action tools** (`read_file`, `write_file`, `run_command`, `run_tests`)
 - **Any git repo access** (not limited to a single workspace root)
 - **Concise tool descriptions** (cleaner MCP tool list)
 
+---
+
 ## Shared Sub-Query Sessions (Live Sandbox)
 
-If you want CLI sub-agents spawned via `sub_query` to access the **same live Aleph session**
-(tools, contexts, and sandbox state), enable streamable HTTP sharing:
+If you want CLI sub-agents spawned via `sub_query` to access the **same live
+Aleph session** (tools, contexts, and sandbox state), enable streamable HTTP
+sharing:
 
 ```json
 {
@@ -45,36 +51,41 @@ If you want CLI sub-agents spawned via `sub_query` to access the **same live Ale
 ```
 
 Notes:
-- The Aleph server will spin up a **local streamable HTTP endpoint** on demand.
-- CLI sub-agents (claude/codex/gemini) will be pointed at that live server automatically.
-- Customize host/path with `ALEPH_SUB_QUERY_HTTP_HOST` and `ALEPH_SUB_QUERY_HTTP_PATH` if needed.
-- Tools will be exposed under the server name you choose (default: `aleph_shared`).
-- `aleph_shared` avoids conflicts with an existing `aleph` stdio entry in Codex config.
-- For Claude, the shared session is passed via `--mcp-config` and `--strict-mcp-config` flags.
+
+- The Aleph server spins up a **local streamable HTTP endpoint** on demand.
+- CLI sub-agents (claude/codex/gemini) are pointed at that live server
+  automatically.
+- Customize host/path with `ALEPH_SUB_QUERY_HTTP_HOST` and
+  `ALEPH_SUB_QUERY_HTTP_PATH` if needed.
+- Tools are exposed under the server name you choose (default: `aleph_shared`).
+- `aleph_shared` avoids conflicts with an existing `aleph` stdio entry in Codex
+  config.
+- For Claude, the shared session is passed via `--mcp-config` and
+  `--strict-mcp-config` flags.
 
 For even higher limits:
+
 ```json
 {
-  "args": ["--enable-actions", "--workspace-mode", "any", "--tool-docs", "concise", "--timeout", "120", "--max-output", "100000"]
+  "args": [
+    "--enable-actions", "--workspace-mode", "any", "--tool-docs", "concise",
+    "--timeout", "120", "--max-output", "100000"
+  ]
 }
 ```
 
-If you need stricter workspace scoping (single project only), continue below.
+---
 
-## The Workspace Root Issue
+## Per-Client Configuration
 
-**Problem:** The aleph MCP server defaults to using the current working directory as the workspace root. If you launch Cursor/VS Code from your home directory, aleph will block file operations with:
+Every client below uses the same core args. Only the file location and format
+differ. Replace `/path/to/your-project` with your actual project root.
 
-```
-Error: Path '/path/to/your-project/aleph/mcp/local_server.py' escapes workspace root '/path/to/your-home'
-```
+### Cursor
 
-**Solution:** Explicitly set the workspace root in your MCP configuration.
+Config file:
 
-## Cursor Configuration
-
-Create or edit your Cursor MCP config:
-- **macOS/Linux:** `~/.cursor/mcp.json`
+- **macOS / Linux:** `~/.cursor/mcp.json`
 - **Windows:** `%USERPROFILE%\.cursor\mcp.json`
 
 ```json
@@ -83,21 +94,20 @@ Create or edit your Cursor MCP config:
     "aleph": {
       "command": "aleph",
       "args": [
-        "--workspace-root",
-        "/path/to/your-project",
+        "--workspace-root", "/path/to/your-project",
         "--enable-actions",
-        "--tool-docs",
-        "concise"
+        "--tool-docs", "concise"
       ]
     }
   }
 }
 ```
 
-## VS Code Configuration
+### VS Code
 
-Create or edit your VS Code MCP config:
-- **macOS/Linux:** `~/.vscode/mcp.json`
+Config file:
+
+- **macOS / Linux:** `~/.vscode/mcp.json`
 - **Windows:** `%USERPROFILE%\.vscode\mcp.json`
 
 ```json
@@ -106,32 +116,31 @@ Create or edit your VS Code MCP config:
     "aleph": {
       "command": "aleph",
       "args": [
-        "--workspace-root",
-        "/path/to/your-project",
+        "--workspace-root", "/path/to/your-project",
         "--enable-actions",
-        "--tool-docs",
-        "concise"
+        "--tool-docs", "concise"
       ]
     }
   }
 }
 ```
 
-## Claude Desktop Configuration
+### Claude Desktop
 
-Claude Desktop auto-discovers MCP servers. To configure:
+Config file:
 
-**Option 1: Auto-discovery (Simplest)**
+- **macOS / Linux:** `~/.claude/settings.json`
+- **Windows:** `%USERPROFILE%\.claude\settings.json`
+
+**Auto-discovery (simplest):**
+
 ```bash
 aleph-rlm install claude-code
 ```
 
-Then restart Claude Desktop - it will auto-discover aleph.
+Then restart Claude Desktop.
 
-**Option 2: Manual Configuration**
-Add to your Claude settings file:
-- **macOS/Linux:** `~/.claude/settings.json`
-- **Windows:** `%USERPROFILE%\.claude\settings.json`
+**Manual:**
 
 ```json
 {
@@ -139,52 +148,49 @@ Add to your Claude settings file:
     "aleph": {
       "command": "aleph",
       "args": [
-        "--workspace-root",
-        "/path/to/your-project",
+        "--workspace-root", "/path/to/your-project",
         "--enable-actions",
-        "--tool-docs",
-        "concise"
+        "--tool-docs", "concise"
       ]
     }
   }
 }
 ```
 
-### Installing Claude Desktop Skill
+<details>
+<summary><strong>Installing the Claude Desktop skill</strong></summary>
 
-For RLM workflow prompts, install the `/aleph` skill:
+**Option 1:** Download [`docs/prompts/aleph.md`](docs/prompts/aleph.md) and
+save to:
 
-**Option 1:** Download [`docs/prompts/aleph.md`](docs/prompts/aleph.md) and save to:
-- macOS/Linux: `~/.claude/commands/aleph.md`
+- macOS / Linux: `~/.claude/commands/aleph.md`
 - Windows: `%USERPROFILE%\.claude\commands\aleph.md`
 
 **Option 2:** From installed package:
 
-<details>
-<summary>macOS/Linux</summary>
-
 ```bash
+# macOS / Linux
 mkdir -p ~/.claude/commands
-cp "$(python -c "import aleph; print(aleph.__path__[0])")/../docs/prompts/aleph.md" ~/.claude/commands/aleph.md
+cp "$(python -c "import aleph; print(aleph.__path__[0])")/../docs/prompts/aleph.md" \
+  ~/.claude/commands/aleph.md
 ```
-</details>
-
-<details>
-<summary>Windows (PowerShell)</summary>
 
 ```powershell
+# Windows (PowerShell)
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.claude\commands"
 $alephPath = python -c "import aleph; print(aleph.__path__[0])"
 Copy-Item "$alephPath\..\docs\prompts\aleph.md" "$env:USERPROFILE\.claude\commands\aleph.md"
 ```
+
+This enables the `/aleph` command for structured reasoning workflows.
+
 </details>
 
-This enables the `/aleph` command for structured reasoning workflow.
+### Codex CLI
 
-## Codex CLI Configuration
+Config file:
 
-Add to your Codex config:
-- **macOS/Linux:** `~/.codex/config.toml`
+- **macOS / Linux:** `~/.codex/config.toml`
 - **Windows:** `%USERPROFILE%\.codex\config.toml`
 
 ```toml
@@ -193,172 +199,247 @@ command = "aleph"
 args = ["--enable-actions", "--tool-docs", "concise"]
 ```
 
-To enable actions (read_file, write_file, etc.), use:
+With a fixed workspace root:
 
 ```toml
 [mcp_servers.aleph]
 command = "aleph"
-args = ["--workspace-root", "/path/to/your-project", "--enable-actions", "--tool-docs", "concise"]
+args = [
+  "--workspace-root", "/path/to/your-project",
+  "--enable-actions",
+  "--tool-docs", "concise"
+]
 ```
 
-### Installing Codex Skill
+<details>
+<summary><strong>Installing the Codex skill</strong></summary>
 
-For RLM workflow prompts, install the `$aleph` skill:
+**Option 1:** Download [`docs/prompts/aleph.md`](docs/prompts/aleph.md) and
+save to:
 
-**Option 1:** Download [`docs/prompts/aleph.md`](docs/prompts/aleph.md) and save to:
-- macOS/Linux: `~/.codex/skills/aleph/SKILL.md`
+- macOS / Linux: `~/.codex/skills/aleph/SKILL.md`
 - Windows: `%USERPROFILE%\.codex\skills\aleph\SKILL.md`
 
 **Option 2:** From installed package:
 
-<details>
-<summary>macOS/Linux</summary>
-
 ```bash
+# macOS / Linux
 mkdir -p ~/.codex/skills/aleph
-cp "$(python -c "import aleph; print(aleph.__path__[0])")/../docs/prompts/aleph.md" ~/.codex/skills/aleph/SKILL.md
+cp "$(python -c "import aleph; print(aleph.__path__[0])")/../docs/prompts/aleph.md" \
+  ~/.codex/skills/aleph/SKILL.md
 ```
-</details>
-
-<details>
-<summary>Windows (PowerShell)</summary>
 
 ```powershell
+# Windows (PowerShell)
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.codex\skills\aleph"
 $alephPath = python -c "import aleph; print(aleph.__path__[0])"
 Copy-Item "$alephPath\..\docs\prompts\aleph.md" "$env:USERPROFILE\.codex\skills\aleph\SKILL.md"
 ```
-</details>
 
 This enables the `$aleph` command in Codex.
 
-### Installing Kimi CLI Skill
+</details>
+
+### Kimi CLI
+
+Add via the command line:
+
+```bash
+kimi mcp add --transport stdio aleph -- \
+  aleph --enable-actions --tool-docs concise --workspace-root /path/to/your-project
+```
+
+Or edit `~/.kimi/mcp.json` directly:
+
+```json
+{
+  "mcpServers": {
+    "aleph": {
+      "transport": "stdio",
+      "command": "aleph",
+      "args": [
+        "--enable-actions", "--tool-docs", "concise",
+        "--workspace-root", "/path/to/your-project"
+      ]
+    }
+  }
+}
+```
+
+<details>
+<summary><strong>Installing the Kimi skill</strong></summary>
 
 Kimi CLI searches for skills in these locations (in order):
 
-- `~/.config/agents/skills/`
-- `.agents/skills/` (project root)
-- `~/.agents/skills/`
-- `~/.kimi/skills/`
-- `~/.claude/skills/`
-- `~/.codex/skills/`
-- `.kimi/skills/` (project root)
-- `.claude/skills/` (project root)
-- `.codex/skills/` (project root)
+1. `~/.config/agents/skills/`
+2. `.agents/skills/` (project root)
+3. `~/.agents/skills/`
+4. `~/.kimi/skills/`
+5. `~/.claude/skills/`
+6. `~/.codex/skills/`
+7. `.kimi/skills/` (project root)
+8. `.claude/skills/` (project root)
+9. `.codex/skills/` (project root)
 
-For RLM workflow prompts, install the Aleph skill in one of the first two locations:
+**User-level (recommended):**
 
-**Option 1 (recommended, user-level):**
 ```bash
 mkdir -p ~/.config/agents/skills/aleph
-cp "$(python -c "import aleph; print(aleph.__path__[0])")/../docs/prompts/aleph.md" ~/.config/agents/skills/aleph/SKILL.md
+cp "$(python -c "import aleph; print(aleph.__path__[0])")/../docs/prompts/aleph.md" \
+  ~/.config/agents/skills/aleph/SKILL.md
 ```
 
-**Option 2 (project-level):**
+**Project-level:**
+
 ```bash
 mkdir -p .agents/skills/aleph
-cp "$(python -c "import aleph; print(aleph.__path__[0])")/../docs/prompts/aleph.md" .agents/skills/aleph/SKILL.md
+cp "$(python -c "import aleph; print(aleph.__path__[0])")/../docs/prompts/aleph.md" \
+  .agents/skills/aleph/SKILL.md
 ```
 
-You can also override the search path with `--skills-dir`.
+Override the search path with `--skills-dir`.
 
-## Parameters Explained
+</details>
 
-These parameters apply to `aleph`:
+### Windsurf
 
-- `--workspace-root <path>` - The root directory for file operations (read_file, write_file, run_command, etc.)
-- `--workspace-mode <fixed|git|any>` - Path scope for actions: `fixed` (workspace root only), `git` (any git repo), `any` (no path restriction)
-- `--enable-actions` - Enable action tools (read_file, write_file, run_command, run_tests, etc.)
-- `--require-confirmation` - Require `confirm=true` on all action tool calls
-- `--timeout <seconds>` - Sandbox execution timeout (default: 60)
-- `--max-output <chars>` - Maximum output characters from commands (default: 50000)
-- `--tool-docs <concise|full>` - Tool description verbosity for MCP clients (default: concise). Set `ALEPH_TOOL_DOCS=full` for full docs.
-- `--max-file-size <bytes>` - Maximum file size for read operations (default: 1000000000)
-- `--max-write-bytes <bytes>` - Maximum file size for write operations (default: 100000000)
+Standard MCP configuration:
 
-## Sub-query backends
+```json
+{
+  "mcpServers": {
+    "aleph": {
+      "command": "aleph",
+      "args": [
+        "--workspace-root", "/path/to/your-project",
+        "--enable-actions",
+        "--tool-docs", "concise"
+      ]
+    }
+  }
+}
+```
 
-`sub_query` can use an API backend or a local CLI backend. When `ALEPH_SUB_QUERY_BACKEND` is `auto` (default), Aleph chooses the first available backend:
+### Cline / Continue.dev
 
-1. **codex CLI** - if installed
-2. **gemini CLI** - if installed
-3. **claude CLI** - if installed (deprioritized in MCP/sandbox contexts)
-4. **API** - if API credentials are available (fallback)
+These clients support standard MCP configuration. Check their documentation for
+exact file locations and format.
+
+### Generic MCP Client
+
+Key parameters:
+
+| Parameter              | Value                                            |
+|------------------------|--------------------------------------------------|
+| Command                | `aleph`                                          |
+| Required args          | `--workspace-root /path/to/project`              |
+| Optional args          | `--enable-actions`, `--tool-docs concise`, `--require-confirmation`, `--timeout N` |
+
+---
+
+## Parameters Reference
+
+| Flag                                 | Default          | Description                                         |
+|--------------------------------------|------------------|-----------------------------------------------------|
+| `--workspace-root <path>`            | auto-detect      | Root directory for file operations                   |
+| `--workspace-mode <fixed\|git\|any>` | `fixed`          | Path scope: single dir, any git repo, or unrestricted|
+| `--enable-actions`                   | off              | Enable action tools (read/write/run)                 |
+| `--require-confirmation`             | off              | Require `confirm=true` on action calls               |
+| `--tool-docs <concise\|full>`        | `concise`        | Tool description verbosity                           |
+| `--timeout <seconds>`                | 60               | Sandbox execution timeout                            |
+| `--max-output <chars>`               | 50,000           | Max output characters from commands                  |
+| `--max-file-size <bytes>`            | 1,000,000,000    | Max file size for read operations (1 GB)             |
+| `--max-write-bytes <bytes>`          | 100,000,000      | Max file size for write operations (100 MB)          |
+
+---
+
+## Sub-Query Backends
+
+`sub_query` can use an API backend or a local CLI backend. When
+`ALEPH_SUB_QUERY_BACKEND` is `auto` (default), Aleph chooses the first
+available:
+
+1. **codex CLI** -- if installed
+2. **gemini CLI** -- if installed
+3. **claude CLI** -- if installed (deprioritized in MCP/sandbox contexts)
+4. **API** -- if API credentials are available (fallback)
 
 ### API Configuration
 
-The API backend uses **OpenAI-compatible endpoints only**. Configure with these environment variables:
+The API backend uses **OpenAI-compatible endpoints only**:
 
-| Variable | Fallback | Description |
-|----------|----------|-------------|
-| `ALEPH_SUB_QUERY_API_KEY` | `OPENAI_API_KEY` | API key |
-| `ALEPH_SUB_QUERY_URL` | `OPENAI_BASE_URL` | Base URL (default: `https://api.openai.com/v1`) |
-| `ALEPH_SUB_QUERY_MODEL` | - | Model name (**required**) |
-
-**Precedence:** `ALEPH_SUB_QUERY_URL` overrides `OPENAI_BASE_URL`. If neither is set, Aleph uses `https://api.openai.com/v1`.
+| Variable                  | Fallback          | Description                                   |
+|---------------------------|-------------------|-----------------------------------------------|
+| `ALEPH_SUB_QUERY_API_KEY` | `OPENAI_API_KEY` | API key                                       |
+| `ALEPH_SUB_QUERY_URL`     | `OPENAI_BASE_URL`| Base URL (default: `https://api.openai.com/v1`)|
+| `ALEPH_SUB_QUERY_MODEL`   | --                | Model name (**required**)                     |
 
 ### Quick Setup Examples
 
-**OpenAI:**
 ```bash
+# OpenAI
 export ALEPH_SUB_QUERY_API_KEY=sk-...
 export ALEPH_SUB_QUERY_MODEL=your-model-name
-```
 
-**Groq (fast inference):**
-```bash
+# Groq (fast inference)
 export ALEPH_SUB_QUERY_API_KEY=gsk_...
 export ALEPH_SUB_QUERY_URL=https://api.groq.com/openai/v1
 export ALEPH_SUB_QUERY_MODEL=llama-3.3-70b-versatile
-```
 
-**Local LLM (Ollama, LM Studio, etc.):**
-Make sure your local server is running and the model is available before configuring the endpoint.
-```bash
-export ALEPH_SUB_QUERY_API_KEY=ollama  # Any non-empty value works
+# Local LLM (Ollama, LM Studio, etc.)
+# Make sure your local server is running and the model is available.
+export ALEPH_SUB_QUERY_API_KEY=ollama   # any non-empty value
 export ALEPH_SUB_QUERY_URL=http://localhost:11434/v1
 export ALEPH_SUB_QUERY_MODEL=llama3.2
 ```
 
-### Configuration Options
+### All Sub-Query Variables
 
-| Environment Variable | Description |
-|---------------------|-------------|
-| `ALEPH_SUB_QUERY_BACKEND` | Force backend: `api`, `claude`, `codex`, `gemini` |
-| `ALEPH_SUB_QUERY_API_KEY` | API key (fallback: `OPENAI_API_KEY`) |
-| `ALEPH_SUB_QUERY_URL` | API base URL (fallback: `OPENAI_BASE_URL`) |
-| `ALEPH_SUB_QUERY_MODEL` | Model name (required for API backend) |
+| Variable                          | Description                                                    |
+|-----------------------------------|----------------------------------------------------------------|
+| `ALEPH_SUB_QUERY_BACKEND`        | Force backend: `api`, `claude`, `codex`, `gemini`              |
+| `ALEPH_SUB_QUERY_API_KEY`        | API key (fallback: `OPENAI_API_KEY`)                           |
+| `ALEPH_SUB_QUERY_URL`            | API base URL (fallback: `OPENAI_BASE_URL`)                     |
+| `ALEPH_SUB_QUERY_MODEL`          | Model name (required for API backend)                          |
 
-Use `ALEPH_SUB_QUERY_BACKEND` when you want to pin a backend or bypass auto-detection; otherwise leave it unset to use the default `auto` selection order above.
+Use `ALEPH_SUB_QUERY_BACKEND` to pin a backend or bypass auto-detection;
+otherwise leave it unset for the default `auto` selection order.
 
-> **Note:** Some MCP clients don't reliably pass `env` vars from their config to the server process. If `sub_query` reports "API key not found" despite your client's MCP settings, add the exports to your shell profile:
-> - **macOS/Linux:** `~/.zshrc` or `~/.bashrc`
+> **Note:** Some MCP clients don't reliably pass `env` vars from their config to
+> the server process. If `sub_query` reports "API key not found" despite your
+> client's MCP settings, add the exports to your shell profile:
+>
+> - **macOS / Linux:** `~/.zshrc` or `~/.bashrc`
 > - **Windows:** System Environment Variables or `$PROFILE` in PowerShell
 >
 > Then restart your terminal/client.
 
-For a full list of options, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full list.
 
-## Finding Your Workspace Root
+---
 
-The workspace root should be the directory containing:
-- Your `.git` folder (for git repositories)
-- Your `pyproject.toml`, `package.json`, etc.
-- The root of your project
+## Workspace Root
 
-**Automatic Detection:** If you don't set `--workspace-root`, aleph will:
+The workspace root should be the directory containing your `.git` folder,
+`pyproject.toml`, `package.json`, etc.
+
+**Automatic detection:** if you don't set `--workspace-root`, Aleph will:
+
 1. Use `ALEPH_WORKSPACE_ROOT` if set
-2. Otherwise prefer `PWD` (falls back to `INIT_CWD`) when present
+2. Prefer `PWD` (falls back to `INIT_CWD`) when present
 3. Check if `.git` exists in that directory
 4. If not, search parent directories until finding `.git`
 5. Use that directory as the workspace root
 
-**Recommended:** Always set `--workspace-root` explicitly to avoid ambiguity.
-If you need to work across multiple repos in one MCP server, prefer `--workspace-mode git` and use absolute paths (or a broad workspace root).
+**Recommended:** always set `--workspace-root` explicitly to avoid ambiguity.
+For multi-repo work, prefer `--workspace-mode git` and use absolute paths (or a
+broad workspace root).
+
+---
 
 ## Example Scenarios
 
-### Scenario 1: Python Project
+### Python Project
 
 ```json
 {
@@ -366,20 +447,16 @@ If you need to work across multiple repos in one MCP server, prefer `--workspace
     "aleph": {
       "command": "aleph",
       "args": [
-        "--workspace-root",
-        "/Users/yourname/projects/my-python-app",
+        "--workspace-root", "/Users/yourname/projects/my-python-app",
         "--enable-actions",
-        "--tool-docs",
-        "concise"
+        "--tool-docs", "concise"
       ]
     }
   }
 }
 ```
 
-### Scenario 2: Monorepo
-
-For a monorepo, set workspace to a subdirectory:
+### Monorepo (scoped to a subdirectory)
 
 ```json
 {
@@ -387,20 +464,16 @@ For a monorepo, set workspace to a subdirectory:
     "aleph": {
       "command": "aleph",
       "args": [
-        "--workspace-root",
-        "/Users/yourname/monorepo/packages/frontend",
+        "--workspace-root", "/Users/yourname/monorepo/packages/frontend",
         "--enable-actions",
-        "--tool-docs",
-        "concise"
+        "--tool-docs", "concise"
       ]
     }
   }
 }
 ```
 
-### Scenario 3: Remote Development
-
-For development on remote machines:
+### Any Git Repo
 
 ```json
 {
@@ -408,22 +481,16 @@ For development on remote machines:
     "aleph": {
       "command": "aleph",
       "args": [
-        "--workspace-root",
-        "/remote/path/to/project",
         "--enable-actions",
-        "--tool-docs",
-        "concise",
-        "--timeout",
-        "60"
+        "--tool-docs", "concise",
+        "--workspace-mode", "git"
       ]
     }
   }
 }
 ```
 
-### Scenario 4: Increased Limits
-
-Customize limits for your use case:
+### Increased Limits
 
 ```json
 {
@@ -433,8 +500,7 @@ Customize limits for your use case:
       "args": [
         "--workspace-root", "/path/to/project",
         "--enable-actions",
-        "--tool-docs",
-        "concise",
+        "--tool-docs", "concise",
         "--timeout", "60",
         "--max-output", "100000",
         "--max-file-size", "5000000000",
@@ -445,212 +511,73 @@ Customize limits for your use case:
 }
 ```
 
-Default limits:
-- Timeout: 60 seconds
-- Max command output: 50,000 characters
-- Max file read: 1,000,000,000 bytes (1GB)
-- Max file write: 100,000,000 bytes (100MB)
+---
 
-### Scenario 5: Any Git Repo
-
-Allow action tools to operate in any git repo on the machine:
-
-```json
-{
-  "mcpServers": {
-    "aleph": {
-      "command": "aleph",
-      "args": [
-        "--enable-actions",
-        "--tool-docs",
-        "concise",
-        "--workspace-mode",
-        "git"
-      ]
-    }
-  }
-}
-```
-Use absolute paths in tool calls (or set `--workspace-root` to a broad parent) when working across repos.
-
-## Security Considerations
+## Security
 
 ### Actions Mode
 
-When you enable `--enable-actions`, you grant aleph permission to:
-- **Read files** - Read any file in workspace (up to 1GB by default)
-- **Write files** - Create/modify files in workspace (up to 100MB by default)
-- **Run commands** - Execute shell commands (30s timeout by default)
-- **Run tests** - Execute test commands
-Use `--workspace-mode git` to limit access to git repos, or `--workspace-mode any` to remove path restrictions.
+When you enable `--enable-actions`, you grant Aleph permission to:
+
+| Capability        | Default Limit |
+|-------------------|---------------|
+| **Read files**    | Up to 1 GB    |
+| **Write files**   | Up to 100 MB  |
+| **Run commands**  | 60 s timeout  |
+| **Run tests**     | 60 s timeout  |
+
+Use `--workspace-mode git` to limit access to git repos, or
+`--workspace-mode any` to remove path restrictions.
 
 ### Confirmation Mode
 
-Use `--require-confirmation` for safer operation:
-
-```json
-{
-  "args": [
-    "--workspace-root",
-        "/path/to/project",
-        "--enable-actions",
-        "--tool-docs",
-        "concise",
-        "--require-confirmation"
-  ]
-}
-```
-
-When enabled, all action tools require `confirm=true` in the call.
-
-### Adjusting Limits
-
-Customize limits for your use case:
+Use `--require-confirmation` for safer operation. When enabled, all action tools
+require `confirm=true` in the call:
 
 ```json
 {
   "args": [
     "--workspace-root", "/path/to/project",
     "--enable-actions",
-    "--tool-docs",
-    "concise",
-    "--timeout", "60",
-    "--max-output", "100000",
-    "--max-file-size", "5000000000",
-    "--max-write-bytes", "500000000"
+    "--tool-docs", "concise",
+    "--require-confirmation"
   ]
 }
 ```
 
-Default limits:
-- Timeout: 60 seconds
-- Max command output: 50,000 characters
-- Max file read: 1,000,000,000 bytes (1GB)
-- Max file write: 100,000,000 bytes (100MB)
+---
 
 ## Troubleshooting
 
-### "Path escapes workspace root" Error
+### "Path escapes workspace root"
 
-**Symptom:** File operations fail with path validation error.
+**Cause:** workspace root not set or incorrect.
 
-**Cause:** Workspace root not set or incorrect.
+**Fix:** add `--workspace-root` with the correct path, or use
+`--workspace-mode git` / `--workspace-mode any` for multi-repo access.
 
-**Solution:** Add `--workspace-root` to MCP configuration with the correct path.
-If you intentionally want multi-repo access, use `--workspace-mode git` or `--workspace-mode any`.
-
-**Examples:**
-
-**Cursor:**
-```json
-{
-  "mcpServers": {
-    "aleph": {
-      "args": [
-        "--workspace-root",
-        "/path/to/your-project",
-        "--enable-actions",
-        "--tool-docs",
-        "concise"
-      ]
-    }
-  }
-}
-```
-
-**VS Code:**
-```json
-{
-  "mcpServers": {
-    "aleph": {
-      "args": [
-        "--workspace-root",
-        "/path/to/your-project",
-        "--enable-actions",
-        "--tool-docs",
-        "concise"
-      ]
-    }
-  }
-}
-```
-
-**Claude Desktop:**
-```json
-{
-  "mcpServers": {
-    "aleph": {
-      "args": [
-        "--workspace-root",
-        "/path/to/your-project",
-        "--enable-actions",
-        "--tool-docs",
-        "concise"
-      ]
-    }
-  }
-}
-```
-
-**Codex:**
-```toml
-[mcp_servers.aleph]
-command = "aleph"
-args = ["--workspace-root", "/path/to/your-project", "--enable-actions", "--tool-docs", "concise"]
-```
-
-### "Actions are disabled" Error
-
-**Symptom:** Action tools (read_file, write_file, etc.) return "Actions are disabled."
+### "Actions are disabled"
 
 **Cause:** `--enable-actions` flag not set.
 
-**Solution:** Add `--enable-actions` to MCP configuration.
-
-**Examples for each client:**
-
-All clients require adding `--enable-actions`:
-- Cursor: Add to `args` array
-- VS Code: Add to `args` array
-- Claude Desktop: Add to `args` array
-- Codex CLI: Add to `args` array
+**Fix:** add `--enable-actions` to the `args` array in your MCP config.
 
 ### MCP Server Not Starting
 
-**Symptom:** Tools don't appear in Cursor/VS Code.
+Check in order:
 
-**Possible causes:**
-1. aleph not installed: `pip install "aleph-rlm[mcp]"`
-2. Entry point not available: Run `aleph --help` to test
-3. Python not in PATH: Use full path to python/python3
-4. Workspace root path incorrect
-5. MCP client not restarted after config changes
-
-**Debug steps:**
-```bash
-# Test if command works
-aleph --help
-
-# Check installation
-pip show aleph-rlm
-
-# Test server manually
-python3 -m aleph.mcp.server --help
-
-# Restart MCP client (Cursor/VS Code/Claude Desktop)
-```
+1. Aleph is installed: `pip install "aleph-rlm[mcp]"`
+2. Entry point works: `aleph --help`
+3. Python is in PATH: try the full path to `python3`
+4. Workspace root path is correct
+5. MCP client was restarted after config changes
 
 ### sub_query Timed Out
 
-**Symptom:** `sub_query` calls fail with a timeout error.
+Increase the timeout and/or reduce context size:
 
-**Causes:** Backend latency, large context slices, or low timeout settings.
-
-**Solution:** Increase the sub-query timeout and/or reduce context size.
-
-**Examples:**
 ```bash
-# Env var
+# Environment variable
 export ALEPH_SUB_QUERY_TIMEOUT=120
 
 # CLI flag
@@ -658,107 +585,53 @@ aleph --sub-query-timeout 120
 ```
 
 **Runtime (MCP tool):**
+
 ```python
 mcp__aleph__configure(sub_query_timeout=120)
 ```
 
-If you're passing very large context slices, consider chunking (e.g., `chunk(100000)` + `sub_query_batch`).
+For very large context slices, chunk first (e.g., `chunk(100000)` +
+`sub_query_batch`).
 
 ### sub_query Reports "API Key Not Found"
 
-**Symptom:** `sub_query` tool returns "API key not found" errors despite having credentials configured.
+**Cause:** some MCP clients don't pass `env` vars reliably.
 
-**Cause:** Some MCP clients don't reliably pass `env` vars from their config to the server process.
+**Fix:** add credentials to your shell profile:
 
-**Solution:** Add credentials to your shell profile:
-
-**macOS/Linux** (add to `~/.zshrc` or `~/.bashrc`):
 ```bash
+# macOS / Linux (~/.zshrc or ~/.bashrc)
 export ALEPH_SUB_QUERY_API_KEY=sk-...
 export ALEPH_SUB_QUERY_MODEL=your-model-name
 ```
 
-**Windows** (add to System Environment Variables, or PowerShell `$PROFILE`):
 ```powershell
+# Windows (PowerShell $PROFILE)
 $env:ALEPH_SUB_QUERY_API_KEY = "sk-..."
 $env:ALEPH_SUB_QUERY_MODEL = "your-model-name"
 ```
 
 Then restart your terminal/MCP client.
 
-**Note:** This is a client-side limitation, not an aleph bug.
-
-## Other MCP Clients
-
-### Kimi CLI
-
-Kimi CLI can manage MCP servers from the command line:
-
-```bash
-kimi mcp add --transport stdio aleph -- \
-  aleph --enable-actions --tool-docs concise --workspace-root /path/to/your-project
-```
-
-You can also edit the MCP config directly:
-
-- Config file: `~/.kimi/mcp.json`
-
-```json
-{
-  "mcpServers": {
-    "aleph": {
-      "transport": "stdio",
-      "command": "aleph",
-      "args": ["--enable-actions", "--tool-docs", "concise", "--workspace-root", "/path/to/your-project"]
-    }
-  }
-}
-```
-
-### Windsurf
-
-Windsurf uses standard MCP configuration files. Add to your MCP settings:
-
-```json
-{
-  "mcpServers": {
-    "aleph": {
-      "command": "aleph",
-      "args": [
-        "--workspace-root",
-        "/path/to/your-project",
-        "--enable-actions",
-        "--tool-docs",
-        "concise"
-      ]
-    }
-  }
-}
-```
-
-### Cline / Continue.dev
-
-These clients support standard MCP configuration. Check their documentation for exact file locations and format.
-
-### Generic MCP Client
-
-If your MCP client uses a different configuration system, the key parameters are:
-- Command: `aleph`
-- Required args: `--workspace-root /path/to/project`
-- Optional args: `--enable-actions`, `--tool-docs <concise|full>`, `--require-confirmation`, `--timeout`, etc.
+---
 
 ## Related Documentation
 
-- [REMOTE_MCP_DIAGNOSIS.md](REMOTE_MCP_DIAGNOSIS.md) - Debugging remote MCP server issues
-- [README.md](README.md) - Project overview and installation
-- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) - Full aleph configuration reference
-- [docs/openai.md](docs/openai.md) - OpenAI-specific configuration
+| Document                                                | Description                        |
+|---------------------------------------------------------|------------------------------------|
+| [README.md](README.md)                                  | Project overview and installation  |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md)          | Full configuration reference       |
+| [DEVELOPMENT.md](DEVELOPMENT.md)                        | Architecture and contributing      |
+
+---
 
 ## Support
 
-For issues specific to MCP configuration, please check:
-1. Your MCP client documentation (Cursor, VS Code, Claude Desktop, Codex, Windsurf, etc.)
-2. This configuration guide
-3. Remote MCP diagnosis guide
+For MCP configuration issues, check:
 
-For aleph-specific bugs or feature requests, please open an issue on GitHub.
+1. Your MCP client documentation (Cursor, VS Code, Claude Desktop, Codex, etc.)
+2. This configuration guide
+3. [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
+
+For Aleph-specific bugs or feature requests, open an issue on
+[GitHub](https://github.com/Hmbown/aleph).
