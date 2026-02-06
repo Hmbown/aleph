@@ -208,6 +208,15 @@ class TestSandboxExecution:
         result = repl.execute("is_import_allowed('json')")
         assert result.return_value is True
 
+    def test_recipe_dsl_helpers_available(self, repl: REPLEnvironment) -> None:
+        result = repl.execute(
+            "recipe = (Recipe() | Search('error') | Take(1) | Finalize()).to_dict(); recipe"
+        )
+        assert result.error is None
+        assert isinstance(result.return_value, dict)
+        assert result.return_value["steps"][0]["op"] == "search"
+        assert result.return_value["steps"][-1]["op"] == "finalize"
+
     def test_sub_query_batch_helpers(self, repl: REPLEnvironment) -> None:
         def fake_sub_query(prompt: str, context_slice: str | None = None) -> str:
             return f"{prompt}|{context_slice}"

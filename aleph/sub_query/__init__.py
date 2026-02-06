@@ -36,7 +36,7 @@ __all__ = [
 ]
 
 
-BackendType = Literal["claude", "codex", "gemini", "api", "auto"]
+BackendType = Literal["claude", "codex", "gemini", "kimi", "api", "auto"]
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_API_KEY_ENV = "ALEPH_SUB_QUERY_API_KEY"
@@ -164,15 +164,17 @@ def detect_backend(config: SubQueryConfig | None = None) -> BackendType:
     """
     # Check for explicit backend override
     explicit_backend = os.environ.get("ALEPH_SUB_QUERY_BACKEND", "").lower().strip()
-    if explicit_backend in ("api", "claude", "codex", "gemini"):
+    if explicit_backend in ("api", "claude", "codex", "gemini", "kimi"):
         return explicit_backend  # type: ignore
 
-    # Priority 2-4: CLI backends (codex/gemini preferred over claude)
+    # Priority 2-5: CLI backends (codex/gemini/kimi preferred over claude)
     # Note: claude CLI hangs in MCP/sandbox contexts, so it's deprioritized
     if shutil.which("codex"):
         return "codex"
     if shutil.which("gemini"):
         return "gemini"
+    if shutil.which("kimi"):
+        return "kimi"
     if shutil.which("claude"):
         return "claude"
 

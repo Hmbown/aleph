@@ -508,32 +508,33 @@ class REPLEnvironment:
 
             sub = _require_sub_query()
 
+            # Use the raw async function for parallel execution to avoid
+            # deadlocking the sync bridge (which calls run_coroutine_threadsafe
+            # on the same loop we'd be running on).
+            raw_async_fn = self._sub_query_fn
+
             # Parallel execution using asyncio.gather() for better performance
-            if parallel and self._loop is not None and len(prompt_list) > 1:
+            if parallel and self._loop is not None and raw_async_fn is not None and len(prompt_list) > 1:
                 async def _run_parallel() -> list[str]:
                     async def _call_sub(idx: int) -> str:
                         slice_val = slices_list[idx] if slices_list is not None else None
-                        # sub() may be sync or async; handle both
-                        result = sub(prompt_list[idx], slice_val)
+                        result = raw_async_fn(prompt_list[idx], slice_val)
                         if inspect.isawaitable(result):
                             result = await result
                         return str(result)
 
-                    # Execute all prompts concurrently
                     tasks = [_call_sub(i) for i in range(len(prompt_list))]
                     return list(await asyncio.gather(*tasks))
 
                 # Bridge to async execution
                 if threading.current_thread() is not threading.main_thread():
-                    # Called from worker thread - safe to use run_coroutine_threadsafe
                     fut = asyncio.run_coroutine_threadsafe(_run_parallel(), self._loop)
                     return fut.result()
                 elif not self._loop.is_running():
-                    # Loop not running - use run_until_complete
                     return self._loop.run_until_complete(_run_parallel())
                 # Fall through to sequential if we can't safely parallelize
 
-            # Sequential fallback (original behavior)
+            # Sequential fallback — uses the sync-bridged version
             results: list[str] = []
             for idx, prompt in enumerate(prompt_list):
                 slice_val = slices_list[idx] if slices_list is not None else None

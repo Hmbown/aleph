@@ -19,6 +19,11 @@ Tools:
 - chunk_context: Split context into chunks with metadata for navigation
 - evaluate_progress: Self-evaluate progress with convergence tracking
 - summarize_so_far: Compress reasoning history to manage context window
+- validate_recipe: Validate recipe pipelines before execution
+- estimate_recipe: Static estimate of recipe cost/shape
+- run_recipe: Execute declarative recipe pipelines
+- compile_recipe: Compile Recipe DSL code into recipe payload
+- run_recipe_code: Compile + execute Recipe DSL code
 - run_command: Run a shell command (action tool)
 - read_file: Read file contents (action tool)
 - write_file: Write file contents (action tool)
@@ -55,7 +60,10 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Literal, cast
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, cast
+
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import Context
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 
@@ -63,11 +71,14 @@ from ..config import AlephConfig
 from ..core import Aleph
 from ..prompts.system import DEFAULT_SYSTEM_PROMPT
 from ..providers.registry import get_provider
+from ..repl import helpers as repl_helpers
 from ..repl.sandbox import REPLEnvironment, SandboxConfig
-from ..types import AlephResponse, Budget, ContentFormat, ContextMetadata, ContextType, ExecutionResult
+from ..types import AlephResponse, ContentFormat, ContextMetadata, ContextType, ExecutionResult
 from ..sub_query import SubQueryConfig, detect_backend
 from ..sub_query.cli_backend import run_cli_sub_query, CLI_BACKENDS
 from ..sub_query.api_backend import run_api_sub_query
+from .recipes import estimate_recipe as _estimate_recipe
+from .recipes import validate_recipe as _validate_recipe
 
 __all__ = ["AlephMCPServerLocal", "main", "mcp"]
 
@@ -788,12 +799,16 @@ class AlephMCPServerLocal:
 
         # Import MCP lazily so it's an optional dependency
         try:
-            from mcp.server.fastmcp import FastMCP
+            from mcp.server.fastmcp import Context as _MCPContext, FastMCP
         except Exception as e:
             raise RuntimeError(
                 "MCP support requires the `mcp` package. Install with `pip install \"aleph-rlm[mcp]\"`."
             ) from e
 
+        self._MCPContext = _MCPContext
+        # Inject into module globals so PEP 563 stringified 'Context' annotations
+        # resolve at runtime for FastMCP's context auto-injection.
+        globals()["Context"] = _MCPContext
         self.server = FastMCP("aleph-local")
         self._register_tools()
 
@@ -1019,7 +1034,7 @@ class AlephMCPServerLocal:
                     mcp_server_url = None
                     server_name = "aleph_shared"
                     share_session = _get_env_bool("ALEPH_SUB_QUERY_SHARE_SESSION", False)
-                    if share_session and resolved_backend in {"claude", "codex", "gemini"}:
+                    if share_session and resolved_backend in {"claude", "codex", "gemini", "kimi"}:
                         host = os.environ.get("ALEPH_SUB_QUERY_HTTP_HOST", "127.0.0.1")
                         port = _get_env_int("ALEPH_SUB_QUERY_HTTP_PORT", 8765)
                         path = os.environ.get("ALEPH_SUB_QUERY_HTTP_PATH", "/mcp")
@@ -1173,7 +1188,7 @@ class AlephMCPServerLocal:
             mcp_server_url = None
             server_name = "aleph_shared"
             share_session = _get_env_bool("ALEPH_SUB_QUERY_SHARE_SESSION", False)
-            if share_session and resolved_backend in {"claude", "codex", "gemini"}:
+            if share_session and resolved_backend in {"claude", "codex", "gemini", "kimi"}:
                 host = os.environ.get("ALEPH_SUB_QUERY_HTTP_HOST", "127.0.0.1")
                 port = _get_env_int("ALEPH_SUB_QUERY_HTTP_PORT", 8765)
                 path = os.environ.get("ALEPH_SUB_QUERY_HTTP_PATH", "/mcp")
@@ -1319,6 +1334,368 @@ class AlephMCPServerLocal:
             "truncated_context": truncated_context,
         }
         return response, meta
+
+    @staticmethod
+    def _recipe_preview(value: Any, limit: int = 180) -> str:
+        text = _coerce_context_to_text(value)
+        if len(text) <= limit:
+            return text
+        return text[: limit - 3] + "..."
+
+    @staticmethod
+    def _recipe_context_slice(value: Any, context_field: str | None) -> str:
+        selected = value
+        if context_field:
+            if isinstance(value, dict):
+                selected = value.get(context_field)
+            elif isinstance(value, list):
+                extracted: list[Any] = []
+                for item in value:
+                    if isinstance(item, dict):
+                        extracted.append(item.get(context_field))
+                    else:
+                        extracted.append(item)
+                selected = extracted
+        return _coerce_context_to_text(selected)
+
+    async def _execute_recipe(
+        self,
+        *,
+        recipe: dict[str, Any],
+        context_id_override: str | None = None,
+        dry_run: bool = False,
+        progress_callback: Callable[[float, float | None, str | None], Any] | None = None,
+    ) -> tuple[bool, dict[str, Any]]:
+        normalized, errors = _validate_recipe(recipe)
+        if errors:
+            return False, {"errors": errors}
+        assert normalized is not None
+
+        resolved_context_id = context_id_override or normalized["context_id"]
+        if resolved_context_id not in self._sessions:
+            return False, {"error": f"No context loaded with ID '{resolved_context_id}'."}
+
+        estimate = _estimate_recipe(normalized)
+        if dry_run:
+            return True, {
+                "context_id": resolved_context_id,
+                "mode": "dry_run",
+                "recipe": normalized,
+                "estimate": estimate,
+            }
+
+        session = self._sessions[resolved_context_id]
+        budget = normalized["budget"]
+        max_steps = int(budget["max_steps"])
+        max_sub_queries = int(budget["max_sub_queries"])
+
+        current: Any = session.repl.get_variable("ctx")
+        variables: dict[str, Any] = {"ctx": current}
+        trace: list[dict[str, Any]] = []
+        sub_queries_used = 0
+        total_steps = float(len(normalized["steps"]))
+
+        async def _report(progress: float, total: float | None = None, message: str | None = None) -> None:
+            if progress_callback is not None:
+                try:
+                    result = progress_callback(progress, total, message)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    pass
+
+        for step_index, step in enumerate(normalized["steps"], 1):
+            if step_index > max_steps:
+                return False, {
+                    "error": f"Recipe exceeded budget.max_steps ({step_index} > {max_steps})",
+                    "failed_step": step_index,
+                    "trace": trace,
+                }
+
+            session.iterations += 1
+
+            input_name = step.get("input")
+            if input_name:
+                if input_name not in variables:
+                    return False, {
+                        "error": f"Step {step_index}: input variable '{input_name}' not found.",
+                        "failed_step": step_index,
+                        "trace": trace,
+                    }
+                current = variables[input_name]
+
+            op = step["op"]
+            step_trace: dict[str, Any] = {
+                "step": step_index,
+                "op": op,
+            }
+
+            try:
+                if op == "search":
+                    current = repl_helpers.search(
+                        current,
+                        step["pattern"],
+                        context_lines=step.get("context_lines", 2),
+                        max_results=step.get("max_results", 20),
+                    )
+                    step_trace["result_count"] = len(current) if isinstance(current, list) else 0
+
+                elif op == "peek":
+                    current = repl_helpers.peek(
+                        current,
+                        start=step.get("start", 0),
+                        end=step.get("end"),
+                    )
+
+                elif op == "lines":
+                    current = repl_helpers.lines(
+                        current,
+                        start=step.get("start", 0),
+                        end=step.get("end"),
+                    )
+
+                elif op == "take":
+                    count = int(step["count"])
+                    if isinstance(current, str):
+                        current = current[:count]
+                    elif isinstance(current, (list, tuple)):
+                        current = list(current)[:count]
+                    else:
+                        raise ValueError("take requires a list/tuple/string value")
+
+                elif op == "chunk":
+                    text = _coerce_context_to_text(current)
+                    chunk_size = int(step["chunk_size"])
+                    overlap = int(step.get("overlap", 0))
+                    current = repl_helpers.chunk(text, chunk_size, overlap)
+                    step_trace["result_count"] = len(current)
+
+                elif op == "filter":
+                    if not isinstance(current, list):
+                        raise ValueError("filter requires current value to be a list")
+                    field_name = step.get("field")
+                    pattern = step.get("pattern")
+                    contains = step.get("contains")
+                    rx = re.compile(pattern) if pattern else None
+                    out: list[Any] = []
+                    for item in current:
+                        candidate: Any = item
+                        if field_name:
+                            if isinstance(item, dict):
+                                candidate = item.get(field_name)
+                            else:
+                                candidate = None
+                        candidate_text = _coerce_context_to_text(candidate)
+                        matched = True
+                        if rx is not None:
+                            matched = bool(rx.search(candidate_text))
+                        if contains is not None:
+                            matched = matched and contains in candidate_text
+                        if matched:
+                            out.append(item)
+                    current = out
+                    step_trace["result_count"] = len(current)
+
+                elif op == "assign":
+                    variables[step["name"]] = current
+
+                elif op == "load":
+                    name = step["name"]
+                    if name not in variables:
+                        raise ValueError(f"variable '{name}' not found")
+                    current = variables[name]
+
+                elif op == "map_sub_query":
+                    if not isinstance(current, list):
+                        raise ValueError("map_sub_query requires current value to be a list")
+
+                    limit = step.get("limit")
+                    items = current[:limit] if isinstance(limit, int) else current
+                    outputs: list[str] = []
+
+                    for item in items:
+                        if sub_queries_used >= max_sub_queries:
+                            raise RuntimeError(
+                                "Recipe sub-query budget exceeded "
+                                f"({sub_queries_used} >= {max_sub_queries})"
+                            )
+                        context_slice = self._recipe_context_slice(item, step.get("context_field"))
+                        success, output, _truncated, _backend = await self._run_sub_query(
+                            prompt=step["prompt"],
+                            context_slice=context_slice,
+                            context_id=resolved_context_id,
+                            backend=step.get("backend", "auto"),
+                        )
+                        sub_queries_used += 1
+                        if not success and not step.get("continue_on_error", False):
+                            raise RuntimeError(f"sub_query failed: {output}")
+                        outputs.append(output if success else f"[ERROR] {output}")
+                        await _report(
+                            float(step_index - 1) + len(outputs) / len(items),
+                            total_steps,
+                            f"Sub-query {len(outputs)}/{len(items)} complete",
+                        )
+
+                    current = outputs
+                    step_trace["sub_queries"] = len(outputs)
+
+                elif op in {"sub_query", "aggregate"}:
+                    if sub_queries_used >= max_sub_queries:
+                        raise RuntimeError(
+                            "Recipe sub-query budget exceeded "
+                            f"({sub_queries_used} >= {max_sub_queries})"
+                        )
+
+                    if op == "aggregate" and isinstance(current, list):
+                        context_slice = "\n\n".join(
+                            _coerce_context_to_text(item) for item in current
+                        )
+                    else:
+                        context_slice = self._recipe_context_slice(
+                            current, step.get("context_field")
+                        )
+
+                    success, output, _truncated, _backend = await self._run_sub_query(
+                        prompt=step["prompt"],
+                        context_slice=context_slice,
+                        context_id=resolved_context_id,
+                        backend=step.get("backend", "auto"),
+                    )
+                    sub_queries_used += 1
+                    if not success:
+                        raise RuntimeError(f"sub_query failed: {output}")
+                    current = output
+                    step_trace["sub_queries"] = 1
+
+                elif op == "finalize":
+                    step_trace["status"] = "finalized"
+                    trace.append(step_trace)
+                    break
+
+                else:
+                    raise ValueError(f"unsupported op: {op}")
+            except Exception as e:
+                step_trace["status"] = "error"
+                step_trace["error"] = str(e)
+                trace.append(step_trace)
+                session.evidence.append(
+                    _Evidence(
+                        source="exec",
+                        line_range=None,
+                        pattern=None,
+                        note=f"run_recipe failed at step {step_index}",
+                        snippet=f"{op}: {str(e)[:180]}",
+                    )
+                )
+                return False, {
+                    "error": f"Step {step_index} ({op}) failed: {e}",
+                    "failed_step": step_index,
+                    "trace": trace,
+                    "sub_queries_used": sub_queries_used,
+                    "budget": budget,
+                    "estimate": estimate,
+                }
+
+            store_name = step.get("store")
+            if store_name:
+                variables[store_name] = current
+
+            step_trace["status"] = "ok"
+            step_trace["preview"] = self._recipe_preview(current)
+            trace.append(step_trace)
+            await _report(float(step_index), total_steps, f"Step {step_index}/{int(total_steps)} ({op}) done")
+
+        session.evidence.append(
+            _Evidence(
+                source="exec",
+                line_range=None,
+                pattern=None,
+                note=f"run_recipe completed ({len(trace)} steps)",
+                snippet=self._recipe_preview(current),
+            )
+        )
+
+        payload = {
+            "context_id": resolved_context_id,
+            "recipe_version": normalized["version"],
+            "step_count": len(normalized["steps"]),
+            "sub_queries_used": sub_queries_used,
+            "budget": budget,
+            "estimate": estimate,
+            "trace": trace,
+            "value": _to_jsonable(current),
+            "variables": sorted(variables.keys()),
+        }
+        return True, payload
+
+    async def _compile_recipe_code(
+        self,
+        *,
+        code: str,
+        context_id: str = "default",
+    ) -> tuple[bool, dict[str, Any]]:
+        if context_id not in self._sessions:
+            return False, {"error": f"No context loaded with ID '{context_id}'."}
+
+        session = self._sessions[context_id]
+        session.iterations += 1
+        result = await session.repl.execute_async(code)
+        if result.error:
+            return False, {
+                "error": f"Recipe code execution failed: {result.error}",
+                "execution": {
+                    "stderr": result.stderr,
+                    "stdout": result.stdout,
+                },
+            }
+
+        candidate = result.return_value
+        if candidate is None:
+            candidate = session.repl.get_variable("recipe")
+
+        if candidate is None:
+            return False, {
+                "error": (
+                    "Recipe code did not return a recipe value. "
+                    "Return a RecipeBuilder/dict or assign to variable `recipe`."
+                ),
+            }
+
+        compiled: Any = candidate
+        if isinstance(candidate, dict):
+            compiled = dict(candidate)
+        elif hasattr(candidate, "compile") and callable(getattr(candidate, "compile")):
+            compiled = candidate.compile()  # type: ignore[call-arg]
+        elif hasattr(candidate, "to_dict") and callable(getattr(candidate, "to_dict")):
+            compiled = candidate.to_dict()  # type: ignore[call-arg]
+        else:
+            return False, {
+                "error": (
+                    "Recipe code returned unsupported type. "
+                    "Expected dict or object with compile()/to_dict()."
+                ),
+                "type": str(type(candidate)),
+            }
+
+        normalized, errors = _validate_recipe(compiled)
+        if errors or normalized is None:
+            return False, {
+                "error": "Compiled recipe is invalid.",
+                "errors": errors,
+                "compiled": _to_jsonable(compiled),
+            }
+
+        return True, {
+            "context_id": context_id,
+            "recipe": normalized,
+            "estimate": _estimate_recipe(normalized),
+            "execution": {
+                "variables_updated": result.variables_updated,
+                "execution_time_ms": result.execution_time_ms,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            },
+        }
 
     def _get_sub_query_config_snapshot(self) -> dict[str, Any]:
         backend_env = os.environ.get("ALEPH_SUB_QUERY_BACKEND", "").strip().lower() or "auto"
@@ -2544,7 +2921,7 @@ class AlephMCPServerLocal:
                         line_range=None,
                         pattern=None,
                         note=f"semantic search: {query}",
-                        snippet=str(results[0].get("text", ""))[:200] if results else "",
+                        snippet=str(results[0].get("preview", ""))[:200] if results else "",
                     )
                 )
 
@@ -2560,7 +2937,7 @@ class AlephMCPServerLocal:
             for r in results:
                 if isinstance(r, dict):
                     score = r.get("score", 0.0)
-                    text = r.get("text", "")
+                    text = r.get("preview", "")
                     res.append(f"### Score: {score:.4f}")
                     res.append(f"```\n{text}\n```")
             return "\n".join(res)
@@ -2910,20 +3287,250 @@ class AlephMCPServerLocal:
 
             return f"## Summary So Far\n\n{summary}\n\n*Use this summary to keep your focus sharp.*"
 
+        @_tool()
+        async def validate_recipe(
+            recipe: dict[str, Any],
+            output: Literal["markdown", "json", "object"] = "markdown",
+        ) -> str | dict[str, Any]:
+            """Validate recipe structure and return normalized payload/errors."""
+            normalized, errors = _validate_recipe(recipe)
+            payload: dict[str, Any] = {
+                "valid": not errors,
+                "errors": errors,
+            }
+            if normalized is not None:
+                payload["recipe"] = normalized
+                payload["estimate"] = _estimate_recipe(normalized)
+
+            if output == "object":
+                return payload
+            if output == "json":
+                return json.dumps(payload, indent=2)
+            if errors:
+                lines = ["## Recipe Validation", "", "**Status:** invalid", "", "**Errors:**"]
+                lines.extend(f"- {err}" for err in errors)
+                return "\n".join(lines)
+            return "## Recipe Validation\n\n**Status:** valid"
+
+        @_tool()
+        async def estimate_recipe(
+            recipe: dict[str, Any],
+            context_id: str | None = None,
+            output: Literal["markdown", "json", "object"] = "markdown",
+        ) -> str | dict[str, Any]:
+            """Static estimate for recipe execution cost and shape."""
+            normalized, errors = _validate_recipe(recipe)
+            if errors or normalized is None:
+                return _format_error(
+                    "Invalid recipe: " + "; ".join(errors),
+                    output=output,
+                )
+
+            estimate = _estimate_recipe(normalized)
+            resolved_context_id = context_id or normalized["context_id"]
+            payload: dict[str, Any] = {
+                "context_id": resolved_context_id,
+                "estimate": estimate,
+                "budget": normalized["budget"],
+            }
+            if resolved_context_id in self._sessions:
+                session = self._sessions[resolved_context_id]
+                payload["context_size"] = {
+                    "chars": session.meta.size_chars,
+                    "lines": session.meta.size_lines,
+                }
+
+            if output == "object":
+                return payload
+            if output == "json":
+                return json.dumps(payload, indent=2)
+            lines = [
+                "## Recipe Estimate",
+                "",
+                f"- Context: `{resolved_context_id}`",
+                f"- Steps: {estimate['step_count']}",
+                f"- Projected sub-queries: {estimate['projected_sub_queries']}",
+                f"- Projected max search hits: {estimate['projected_max_search_hits']}",
+            ]
+            warnings = estimate.get("warnings", [])
+            if warnings:
+                lines.append("")
+                lines.append("**Warnings:**")
+                lines.extend(f"- {w}" for w in warnings)
+            return "\n".join(lines)
+
+        @_tool()
+        async def run_recipe(
+            recipe: dict[str, Any],
+            context_id: str | None = None,
+            dry_run: bool = False,
+            output: Literal["markdown", "json", "object"] = "markdown",
+            ctx: Context = None,  # type: ignore[assignment]
+        ) -> str | dict[str, Any]:
+            """Execute a declarative recipe pipeline."""
+            _progress_cb = ctx.report_progress if ctx is not None else None
+            ok, payload = await self._execute_recipe(
+                recipe=recipe,
+                context_id_override=context_id,
+                dry_run=dry_run,
+                progress_callback=_progress_cb,
+            )
+            full_payload: dict[str, Any] = {"success": ok, **payload}
+            if output == "object":
+                return full_payload
+            if output == "json":
+                return json.dumps(full_payload, indent=2)
+            if not ok:
+                message = payload.get("error")
+                if not message and "errors" in payload:
+                    message = "; ".join(str(e) for e in payload.get("errors", []))
+                return _format_error(str(message or "Recipe execution failed"), output=output)
+
+            trace = payload.get("trace", [])
+            lines = [
+                "## Recipe Run",
+                "",
+                f"- Context: `{payload.get('context_id')}`",
+                f"- Steps executed: {len(trace)}",
+                f"- Sub-queries used: {payload.get('sub_queries_used', 0)}",
+                "",
+                "**Final Value Preview:**",
+                "```",
+                self._recipe_preview(payload.get("value")),
+                "```",
+            ]
+            return "\n".join(lines)
+
+        @_tool()
+        async def compile_recipe(
+            code: str,
+            context_id: str = "default",
+            output: Literal["markdown", "json", "object"] = "markdown",
+        ) -> str | dict[str, Any]:
+            """Compile Recipe DSL code into a validated recipe payload."""
+            ok, payload = await self._compile_recipe_code(code=code, context_id=context_id)
+            full_payload: dict[str, Any] = {"success": ok, **payload}
+            if output == "object":
+                return full_payload
+            if output == "json":
+                return json.dumps(full_payload, indent=2)
+            if not ok:
+                return _format_error(str(payload.get("error", "Recipe compile failed")), output=output)
+
+            recipe_payload = payload.get("recipe", {})
+            estimate = payload.get("estimate", {})
+            lines = [
+                "## Recipe Compile",
+                "",
+                f"- Context: `{context_id}`",
+                f"- Steps: {estimate.get('step_count', 0)}",
+                f"- Projected sub-queries: {estimate.get('projected_sub_queries', 0)}",
+                "",
+                "**Recipe JSON:**",
+                "```json",
+                json.dumps(recipe_payload, indent=2),
+                "```",
+            ]
+            return "\n".join(lines)
+
+        @_tool()
+        async def run_recipe_code(
+            code: str,
+            context_id: str = "default",
+            dry_run: bool = False,
+            output: Literal["markdown", "json", "object"] = "markdown",
+            ctx: Context = None,  # type: ignore[assignment]
+        ) -> str | dict[str, Any]:
+            """Compile Recipe DSL code and execute it."""
+            ok_compile, compile_payload = await self._compile_recipe_code(
+                code=code,
+                context_id=context_id,
+            )
+            if not ok_compile:
+                if output == "object":
+                    return {"success": False, **compile_payload}
+                if output == "json":
+                    return json.dumps({"success": False, **compile_payload}, indent=2)
+                return _format_error(
+                    str(compile_payload.get("error", "Recipe compile failed")),
+                    output=output,
+                )
+
+            _progress_cb = ctx.report_progress if ctx is not None else None
+            compiled_recipe = cast(dict[str, Any], compile_payload["recipe"])
+            ok_run, run_payload = await self._execute_recipe(
+                recipe=compiled_recipe,
+                context_id_override=context_id,
+                dry_run=dry_run,
+                progress_callback=_progress_cb,
+            )
+            full_payload = {
+                "success": ok_run,
+                "compiled": compile_payload,
+                "run": run_payload,
+            }
+            if output == "object":
+                return full_payload
+            if output == "json":
+                return json.dumps(full_payload, indent=2)
+            if not ok_run:
+                return _format_error(
+                    str(run_payload.get("error", "Recipe execution failed")),
+                    output=output,
+                )
+
+            trace = run_payload.get("trace", [])
+            lines = [
+                "## Recipe Code Run",
+                "",
+                f"- Context: `{run_payload.get('context_id')}`",
+                f"- Steps executed: {len(trace)}",
+                f"- Sub-queries used: {run_payload.get('sub_queries_used', 0)}",
+                "",
+                "**Final Value Preview:**",
+                "```",
+                self._recipe_preview(run_payload.get("value")),
+                "```",
+            ]
+            return "\n".join(lines)
+
     def _register_mcp_tools(self) -> None:
         _tool = self._tool_decorator
 
         @_tool()
         async def configure(
-            sub_query_backend: Literal["api", "claude", "codex", "gemini", "auto"] | None = None,
+            sub_query_backend: Literal["api", "claude", "codex", "gemini", "kimi", "auto"] | None = None,
+            sub_query_share_session: bool | None = None,
+            sub_query_timeout: float | None = None,
             max_cmd_seconds: float | None = None,
+            sandbox_timeout: float | None = None,
             tool_docs_mode: Literal["concise", "full"] | None = None,
         ) -> str:
-            """Update runtime configuration."""
-            if sub_query_backend:
-                self.sub_query_config.backend = sub_query_backend
+            """Update runtime configuration.
+
+            Args:
+                sub_query_backend: Backend for sub-queries (kimi, claude, codex, gemini, api, auto).
+                sub_query_share_session: Share live MCP session with CLI sub-agents.
+                sub_query_timeout: Timeout in seconds for sub-query CLI/API calls.
+                max_cmd_seconds: Timeout for shell commands (run_command).
+                sandbox_timeout: Timeout in seconds for exec_python sandbox execution.
+                tool_docs_mode: Tool documentation verbosity (concise or full).
+            """
+            ok, msg = self._apply_sub_query_runtime_config(
+                sub_query_backend=sub_query_backend,
+                sub_query_timeout=sub_query_timeout,
+                sub_query_share_session=sub_query_share_session,
+            )
+            if not ok:
+                return msg
             if max_cmd_seconds is not None:
                 self.action_config.max_cmd_seconds = max_cmd_seconds
+            if sandbox_timeout is not None:
+                if sandbox_timeout <= 0:
+                    return "sandbox_timeout must be greater than 0."
+                for session in self._sessions.values():
+                    session.repl.config.timeout_seconds = sandbox_timeout
+                self.sandbox_config.timeout_seconds = sandbox_timeout
             if tool_docs_mode:
                 self.tool_docs_mode = tool_docs_mode
 
@@ -3187,7 +3794,7 @@ def main() -> None:
         type=str,
         choices=["codex", "claude", "gemini", "api", "auto"],
         default=None,
-        help="Override sub-query backend (codex|claude|gemini|api|auto).",
+        help="Override sub-query backend (codex|claude|gemini|kimi|api|auto).",
     )
     parser.add_argument(
         "--sub-query-timeout",

@@ -1066,6 +1066,427 @@ def slugify(text: str) -> str:
     return text.strip('-')
 
 
+# =============================================================================
+# Recipe DSL helpers (L1 sugar over recipe IR)
+# =============================================================================
+
+RECIPE_DSL_VERSION = "aleph.recipe.v1"
+
+
+class RecipeStep:
+    """Single recipe step used by the pipe/fluent DSL."""
+
+    def __init__(self, op: str, **kwargs: Any) -> None:
+        self._payload: dict[str, Any] = {"op": op}
+        for key, value in kwargs.items():
+            if value is not None:
+                self._payload[key] = value
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self._payload)
+
+    def __repr__(self) -> str:
+        return f"RecipeStep({self._payload!r})"
+
+
+class RecipeBuilder:
+    """Composable recipe builder.
+
+    Supports:
+    - Pipe style: Recipe() | Search("ERROR") | Take(5)
+    - Fluent style: Recipe().search("ERROR").take(5)
+    """
+
+    def __init__(
+        self,
+        context_id: str = "default",
+        *,
+        version: str = RECIPE_DSL_VERSION,
+        steps: Sequence[dict[str, Any]] | None = None,
+        budget: dict[str, int] | None = None,
+    ) -> None:
+        self.version = version
+        self.context_id = context_id
+        self._steps: list[dict[str, Any]] = [dict(step) for step in (steps or [])]
+        self._budget: dict[str, int] = dict(budget or {})
+
+    @property
+    def steps(self) -> list[dict[str, Any]]:
+        """Return a copy of the current step list."""
+        return list(self._steps)
+
+    def _clone(self) -> "RecipeBuilder":
+        return RecipeBuilder(
+            context_id=self.context_id,
+            version=self.version,
+            steps=self._steps,
+            budget=self._budget,
+        )
+
+    def _append(self, step: RecipeStep | dict[str, Any]) -> "RecipeBuilder":
+        payload = step.to_dict() if isinstance(step, RecipeStep) else dict(step)
+        next_builder = self._clone()
+        next_builder._steps.append(payload)
+        return next_builder
+
+    def __or__(self, other: object) -> "RecipeBuilder":
+        if isinstance(other, RecipeStep):
+            return self._append(other)
+        if isinstance(other, dict):
+            return self._append(other)
+        raise TypeError("RecipeBuilder only supports piping RecipeStep or dict step payloads")
+
+    def with_budget(
+        self,
+        *,
+        max_steps: int | None = None,
+        max_sub_queries: int | None = None,
+    ) -> "RecipeBuilder":
+        next_builder = self._clone()
+        if max_steps is not None:
+            next_builder._budget["max_steps"] = max_steps
+        if max_sub_queries is not None:
+            next_builder._budget["max_sub_queries"] = max_sub_queries
+        return next_builder
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "version": self.version,
+            "context_id": self.context_id,
+            "steps": [dict(step) for step in self._steps],
+        }
+        if self._budget:
+            payload["budget"] = dict(self._budget)
+        return payload
+
+    def compile(self) -> dict[str, Any]:
+        """Alias for to_dict()."""
+        return self.to_dict()
+
+    def step(self, op: str, **kwargs: Any) -> "RecipeBuilder":
+        return self | Step(op, **kwargs)
+
+    def search(
+        self,
+        pattern: str,
+        *,
+        context_lines: int = 2,
+        max_results: int = 20,
+        input_name: str | None = None,
+        store: str | None = None,
+    ) -> "RecipeBuilder":
+        return self | Search(
+            pattern,
+            context_lines=context_lines,
+            max_results=max_results,
+            input_name=input_name,
+            store=store,
+        )
+
+    def peek(
+        self,
+        *,
+        start: int = 0,
+        end: int | None = None,
+        input_name: str | None = None,
+        store: str | None = None,
+    ) -> "RecipeBuilder":
+        return self | Peek(
+            start=start,
+            end=end,
+            input_name=input_name,
+            store=store,
+        )
+
+    def lines(
+        self,
+        *,
+        start: int = 0,
+        end: int | None = None,
+        input_name: str | None = None,
+        store: str | None = None,
+    ) -> "RecipeBuilder":
+        return self | Lines(
+            start=start,
+            end=end,
+            input_name=input_name,
+            store=store,
+        )
+
+    def take(
+        self,
+        count: int,
+        *,
+        input_name: str | None = None,
+        store: str | None = None,
+    ) -> "RecipeBuilder":
+        return self | Take(count, input_name=input_name, store=store)
+
+    def filter(
+        self,
+        *,
+        pattern: str | None = None,
+        contains: str | None = None,
+        field: str | None = None,
+        input_name: str | None = None,
+        store: str | None = None,
+    ) -> "RecipeBuilder":
+        return self | Filter(
+            pattern=pattern,
+            contains=contains,
+            field=field,
+            input_name=input_name,
+            store=store,
+        )
+
+    def map_sub_query(
+        self,
+        prompt: str,
+        *,
+        backend: str = "auto",
+        context_field: str | None = None,
+        limit: int | None = None,
+        continue_on_error: bool = False,
+        input_name: str | None = None,
+        store: str | None = None,
+    ) -> "RecipeBuilder":
+        return self | MapSubQuery(
+            prompt,
+            backend=backend,
+            context_field=context_field,
+            limit=limit,
+            continue_on_error=continue_on_error,
+            input_name=input_name,
+            store=store,
+        )
+
+    def sub_query(
+        self,
+        prompt: str,
+        *,
+        backend: str = "auto",
+        context_field: str | None = None,
+        input_name: str | None = None,
+        store: str | None = None,
+    ) -> "RecipeBuilder":
+        return self | SubQuery(
+            prompt,
+            backend=backend,
+            context_field=context_field,
+            input_name=input_name,
+            store=store,
+        )
+
+    def aggregate(
+        self,
+        prompt: str,
+        *,
+        backend: str = "auto",
+        context_field: str | None = None,
+        input_name: str | None = None,
+        store: str | None = None,
+    ) -> "RecipeBuilder":
+        return self | Aggregate(
+            prompt,
+            backend=backend,
+            context_field=context_field,
+            input_name=input_name,
+            store=store,
+        )
+
+    def chunk(
+        self,
+        chunk_size: int,
+        overlap: int = 0,
+        *,
+        input_name: str | None = None,
+        store: str | None = None,
+    ) -> "RecipeBuilder":
+        return self | Chunk(chunk_size, overlap=overlap, input_name=input_name, store=store)
+
+    def assign(self, name: str, *, input_name: str | None = None) -> "RecipeBuilder":
+        return self | Assign(name, input_name=input_name)
+
+    def load(self, name: str, *, store: str | None = None) -> "RecipeBuilder":
+        return self | Load(name, store=store)
+
+    def finalize(self) -> "RecipeBuilder":
+        return self | Finalize()
+
+    def __repr__(self) -> str:
+        return f"RecipeBuilder(context_id={self.context_id!r}, steps={self._steps!r}, budget={self._budget!r})"
+
+
+def Recipe(
+    context_id: str = "default",
+    *,
+    max_steps: int | None = None,
+    max_sub_queries: int | None = None,
+) -> RecipeBuilder:
+    """Create a new RecipeBuilder."""
+    builder = RecipeBuilder(context_id=context_id)
+    return builder.with_budget(max_steps=max_steps, max_sub_queries=max_sub_queries)
+
+
+def Step(op: str, **kwargs: Any) -> RecipeStep:
+    """Create a generic recipe step payload."""
+    return RecipeStep(op, **kwargs)
+
+
+def Search(
+    pattern: str,
+    *,
+    context_lines: int = 2,
+    max_results: int = 20,
+    input_name: str | None = None,
+    store: str | None = None,
+) -> RecipeStep:
+    return RecipeStep(
+        "search",
+        pattern=pattern,
+        context_lines=context_lines,
+        max_results=max_results,
+        input=input_name,
+        store=store,
+    )
+
+
+def Peek(
+    *,
+    start: int = 0,
+    end: int | None = None,
+    input_name: str | None = None,
+    store: str | None = None,
+) -> RecipeStep:
+    return RecipeStep("peek", start=start, end=end, input=input_name, store=store)
+
+
+def Lines(
+    *,
+    start: int = 0,
+    end: int | None = None,
+    input_name: str | None = None,
+    store: str | None = None,
+) -> RecipeStep:
+    return RecipeStep("lines", start=start, end=end, input=input_name, store=store)
+
+
+def Take(
+    count: int,
+    *,
+    input_name: str | None = None,
+    store: str | None = None,
+) -> RecipeStep:
+    return RecipeStep("take", count=count, input=input_name, store=store)
+
+
+def Chunk(
+    chunk_size: int,
+    *,
+    overlap: int = 0,
+    input_name: str | None = None,
+    store: str | None = None,
+) -> RecipeStep:
+    return RecipeStep("chunk", chunk_size=chunk_size, overlap=overlap, input=input_name, store=store)
+
+
+def Filter(
+    *,
+    pattern: str | None = None,
+    contains: str | None = None,
+    field: str | None = None,
+    input_name: str | None = None,
+    store: str | None = None,
+) -> RecipeStep:
+    return RecipeStep(
+        "filter",
+        pattern=pattern,
+        contains=contains,
+        field=field,
+        input=input_name,
+        store=store,
+    )
+
+
+def MapSubQuery(
+    prompt: str,
+    *,
+    backend: str = "auto",
+    context_field: str | None = None,
+    limit: int | None = None,
+    continue_on_error: bool = False,
+    input_name: str | None = None,
+    store: str | None = None,
+) -> RecipeStep:
+    return RecipeStep(
+        "map_sub_query",
+        prompt=prompt,
+        backend=backend,
+        context_field=context_field,
+        limit=limit,
+        continue_on_error=continue_on_error,
+        input=input_name,
+        store=store,
+    )
+
+
+def SubQuery(
+    prompt: str,
+    *,
+    backend: str = "auto",
+    context_field: str | None = None,
+    input_name: str | None = None,
+    store: str | None = None,
+) -> RecipeStep:
+    return RecipeStep(
+        "sub_query",
+        prompt=prompt,
+        backend=backend,
+        context_field=context_field,
+        input=input_name,
+        store=store,
+    )
+
+
+def Aggregate(
+    prompt: str,
+    *,
+    backend: str = "auto",
+    context_field: str | None = None,
+    input_name: str | None = None,
+    store: str | None = None,
+) -> RecipeStep:
+    return RecipeStep(
+        "aggregate",
+        prompt=prompt,
+        backend=backend,
+        context_field=context_field,
+        input=input_name,
+        store=store,
+    )
+
+
+def Assign(name: str, *, input_name: str | None = None) -> RecipeStep:
+    return RecipeStep("assign", name=name, input=input_name)
+
+
+def Load(name: str, *, store: str | None = None) -> RecipeStep:
+    return RecipeStep("load", name=name, store=store)
+
+
+def Finalize() -> RecipeStep:
+    return RecipeStep("finalize")
+
+
+def as_recipe(value: RecipeBuilder | dict[str, Any]) -> dict[str, Any]:
+    """Convert builder/dict into recipe dict payload."""
+    if isinstance(value, RecipeBuilder):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return dict(value)
+    raise TypeError("as_recipe expects RecipeBuilder or dict")
+
+
 CONTEXT_HELPER_NAMES: tuple[str, ...] = (
     "peek",
     "lines",
@@ -1175,6 +1596,23 @@ STANDALONE_HELPER_NAMES: tuple[str, ...] = (
     "to_pascal_case",
     "to_kebab_case",
     "slugify",
+    "RecipeStep",
+    "RecipeBuilder",
+    "Recipe",
+    "Step",
+    "Search",
+    "Peek",
+    "Lines",
+    "Take",
+    "Chunk",
+    "Filter",
+    "MapSubQuery",
+    "SubQuery",
+    "Aggregate",
+    "Assign",
+    "Load",
+    "Finalize",
+    "as_recipe",
 )
 
 LINE_NUMBER_HELPERS: set[str] = {"search"}

@@ -102,6 +102,78 @@ semantic_search(query="login failure", context_id="doc", top_k=3)
 peek_context(start=1200, end=1600, unit="chars", context_id="doc")
 ```
 
+### 6) Recipe Pipelines (Declarative + DSL)
+Use recipes when you want reusable, inspectable workflows.
+
+**A) Run JSON recipe directly**
+```
+run_recipe(
+  recipe={
+    "version": "aleph.recipe.v1",
+    "context_id": "doc",
+    "budget": {"max_steps": 8, "max_sub_queries": 5},
+    "steps": [
+      {"op": "search", "pattern": "ERROR|WARN", "max_results": 10},
+      {"op": "map_sub_query", "prompt": "Root cause?", "context_field": "context"},
+      {"op": "aggregate", "prompt": "Synthesize causes"},
+      {"op": "finalize"}
+    ]
+  }
+)
+```
+
+**B) Compile + run DSL code**
+```
+run_recipe_code(
+  context_id="doc",
+  code="""
+recipe = (
+    Recipe(context_id='doc', max_sub_queries=5)
+    .search('ERROR|WARN', max_results=10)
+    .map_sub_query('Root cause?', context_field='context')
+    .aggregate('Synthesize causes')
+    .finalize()
+)
+"""
+)
+```
+
+**C) Chunk & Summarize (large docs)**
+```
+run_recipe_code(
+  context_id="doc",
+  code="""
+recipe = (
+    Recipe(context_id='doc', max_sub_queries=5)
+    .chunk(100000)
+    .map_sub_query('Summarize this section')
+    .aggregate('Combine into a unified summary')
+    .finalize()
+)
+"""
+)
+```
+
+**D) Needle-in-Haystack (no sub-queries)**
+```
+run_recipe_code(
+  context_id="codebase",
+  code="""
+recipe = (
+    Recipe(context_id='codebase')
+    .search('TODO|FIXME|HACK|XXX', max_results=50)
+    .filter(field='match', contains='HACK')
+    .take(5)
+    .finalize()
+)
+"""
+)
+```
+
+Recommended flow: `validate_recipe` -> `estimate_recipe` -> `run_recipe`.
+
+Ops: `search`, `peek`, `lines`, `take`, `chunk`, `filter`, `map_sub_query`, `sub_query`, `aggregate`, `assign`, `load`, `finalize`.
+
 ## Sub-Query Guidance (RLM Best Practices)
 
 Use sub-queries inside `exec_python` so the recursion is driven by code (symbolic loops),
@@ -218,17 +290,19 @@ Sub-queries require a backend. Configure once per session:
 
 **Quick switch (REPL helper inside exec_python):**
 ```
-exec_python(code="set_backend('claude')")  # or 'codex', 'gemini', 'api'
+exec_python(code="set_backend('kimi')")  # or 'claude', 'codex', 'gemini', 'api'
 exec_python(code="print(get_config())")    # verify current settings
 ```
 
 **MCP tool (direct call):**
 ```
-configure(sub_query_backend="claude")
-configure(sub_query_timeout=90, sub_query_share_session=True)
+configure(sub_query_backend="kimi")
+configure(sub_query_share_session=false)
+configure(sub_query_timeout=300)
+configure(sandbox_timeout=300)  # increase exec_python timeout for sub-query loops
 ```
 
-**Backend priority (auto mode):** codex → gemini → claude → api
+**Backend priority (auto mode):** codex → gemini → kimi → claude → api
 
 **Per-call overrides:** `validate_regex` and `max_retries` in `sub_query_strict()` override env defaults.
 
@@ -267,6 +341,11 @@ When a user says "use claude backend" or "switch to gemini", call `set_backend()
 | `tasks` | Track tasks attached to a context |
 | `sub_query` | Spawn a sub-agent for a chunk |
 | `sub_aleph` | Run a nested Aleph call |
+| `validate_recipe` | Validate recipe payload and normalize schema |
+| `estimate_recipe` | Static estimate for recipe cost/shape |
+| `run_recipe` | Execute a recipe payload |
+| `compile_recipe` | Compile Recipe DSL code to JSON recipe |
+| `run_recipe_code` | Compile and execute Recipe DSL code |
 
 ### Action Tools (requires `--enable-actions`)
 
@@ -314,6 +393,7 @@ When a user says "use claude backend" or "switch to gemini", call `set_backend()
 - `sub_query_map(prompts, context_slices=None, limit=None)` for batch sub-queries
 - `sub_query_batch(prompt, context_slices, limit=None)` for one prompt over many slices
 - `sub_query_strict(prompt, context_slice=None, validate_regex=None, max_retries=0)` for strict output validation
+- Recipe DSL: `Recipe()`, `Search()`, `Chunk()`, `Filter()`, `MapSubQuery()`, `Aggregate()`, `Finalize()`, `as_recipe()`
 
 **100+ built-in helpers** including:
 - Extractors: `extract_emails()`, `extract_urls()`, `extract_dates()`, `extract_ips()`, `extract_functions()`
@@ -322,6 +402,21 @@ When a user says "use claude backend" or "switch to gemini", call `set_backend()
 - Validation: `is_email()`, `is_url()`, `is_json()`, `is_numeric()`
 
 Extractors return `list[dict]` with keys: `value`, `line_num`, `start`, `end`.
+
+## Configure Reference
+
+The `configure()` tool adjusts runtime settings without restarting:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `sub_query_backend` | string | `kimi`, `claude`, `codex`, `gemini`, `api`, `auto` |
+| `sub_query_share_session` | bool | Share live MCP context with sub-agents |
+| `sub_query_timeout` | float | Timeout in seconds for sub-query calls |
+| `sandbox_timeout` | float | Timeout in seconds for `exec_python` execution |
+| `max_cmd_seconds` | float | Timeout for `run_command` shell commands |
+| `tool_docs_mode` | string | `concise` or `full` tool documentation |
+
+**Important:** Set `sub_query_share_session=false` unless you specifically need sub-agents to access parent Aleph contexts. Session sharing adds complexity and can cause issues with some backends.
 
 ## Troubleshooting
 

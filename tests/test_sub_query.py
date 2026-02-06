@@ -185,6 +185,22 @@ class TestCliBackend:
             assert "timeout" in output.lower()
 
     @pytest.mark.asyncio
+    async def test_cli_nonzero_exit_with_stdout_returns_failure(self):
+        """Non-zero exit code should return failure even if stdout has content."""
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate = AsyncMock(return_value=(b"echoed prompt text", b"some error"))
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            success, output = await run_cli_sub_query(
+                prompt="test prompt",
+                backend="claude",
+                timeout=10.0,
+            )
+            assert success is False
+            assert "CLI error" in output
+
+    @pytest.mark.asyncio
     async def test_cli_with_context(self):
         mock_proc = AsyncMock()
         mock_proc.returncode = 0

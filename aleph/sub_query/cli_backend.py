@@ -17,7 +17,7 @@ from typing import Literal
 __all__ = ["run_cli_sub_query", "CLI_BACKENDS"]
 
 
-CLI_BACKENDS = ("claude", "codex", "gemini")
+CLI_BACKENDS = ("claude", "codex", "gemini", "kimi")
 
 _KEEP_MCP_CONFIG_ENV = "ALEPH_SUB_QUERY_KEEP_MCP_CONFIG"
 
@@ -39,7 +39,7 @@ def _track_cleanup(path: Path, cleanup_paths: list[Path]) -> None:
 async def run_cli_sub_query(
     prompt: str,
     context_slice: str | None = None,
-    backend: Literal["claude", "codex", "gemini"] = "claude",
+    backend: Literal["claude", "codex", "gemini", "kimi"] = "claude",
     timeout: float = 300.0,
     cwd: Path | None = None,
     max_output_chars: int = 50_000,
@@ -198,9 +198,15 @@ async def _run_with_arg(
             )
             _track_cleanup(settings_path, cleanup_paths)
         cmd = ["gemini", "-y", prompt]
+    elif backend == "kimi":
+        # Kimi CLI: --print --final-message-only for clean text output (implies --yolo)
+        mcp_args_kimi: list[str] = []
+        if mcp_server_url:
+            mcp_args_kimi = ["--mcp-config", json.dumps({"mcpServers": {mcp_server_name: {"type": "http", "url": mcp_server_url}}})]
+        cmd = ["kimi", "--print", "--final-message-only", *mcp_args_kimi, "-p", prompt]
     else:
         return False, f"Unknown CLI backend: {backend}"
-    
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -218,11 +224,11 @@ async def _run_with_arg(
         
         if proc.returncode != 0:
             err = stderr.decode("utf-8", errors="replace")
-            # Some CLIs write to stderr even on success, check if we got output
             if output.strip():
-                return True, output
+                # Non-zero exit but got stdout — include both in error for debugging.
+                return False, f"CLI error (exit {proc.returncode}): {err[:500]}\nOutput: {output[:500]}"
             return False, f"CLI error (exit {proc.returncode}): {err[:1000]}"
-        
+
         return True, output
     except asyncio.TimeoutError:
         proc.kill()
@@ -280,6 +286,13 @@ async def _run_with_tempfile(
                 _track_cleanup(settings_path, cleanup_paths)
             cmd = ["gemini", "-y"]
             stdin_data = prompt.encode("utf-8")
+        elif backend == "kimi":
+            # Kimi: --print --final-message-only for clean text, reads prompt via stdin
+            mcp_args_kimi: list[str] = []
+            if mcp_server_url:
+                mcp_args_kimi = ["--mcp-config", json.dumps({"mcpServers": {mcp_server_name: {"type": "http", "url": mcp_server_url}}})]
+            cmd = ["kimi", "--print", "--final-message-only", *mcp_args_kimi]
+            stdin_data = prompt.encode("utf-8")
         else:
             return False, f"Unknown CLI backend: {backend}"
         
@@ -305,9 +318,9 @@ async def _run_with_tempfile(
             if proc.returncode != 0:
                 err = stderr.decode("utf-8", errors="replace")
                 if output.strip():
-                    return True, output
+                    return False, f"CLI error (exit {proc.returncode}): {err[:500]}\nOutput: {output[:500]}"
                 return False, f"CLI error (exit {proc.returncode}): {err[:1000]}"
-            
+
             return True, output
         except asyncio.TimeoutError:
             proc.kill()

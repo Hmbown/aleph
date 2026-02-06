@@ -540,44 +540,171 @@ search_context(pattern="missing|TODO|mismatch", context_id="repo_hits")
 exec_python(code="print(extract_classes())", context_id="repo_hits")
 ```
 
+## Recipe Pipelines
+
+Recipes are declarative, multi-step pipelines that chain search, filter, sub-query, and aggregation operations. They can be defined as JSON payloads or built with a fluent Python DSL.
+
+### Architecture
+
+```
+validate_recipe ──► estimate_recipe ──► run_recipe
+       │                   │                 │
+  normalize &         projected           execute
+  check schema      cost/shape           pipeline
+```
+
+Recommended flow: **validate** (catch errors early) → **estimate** (preview cost) → **run** (execute).
+
+### MCP Tools
+
+| Tool | Purpose |
+|------|---------|
+| `validate_recipe` | Validate and normalize a recipe payload |
+| `estimate_recipe` | Static cost/shape estimate (sub-query count, search hits) |
+| `run_recipe` | Execute a JSON recipe pipeline |
+| `compile_recipe` | Compile Recipe DSL code into a JSON recipe |
+| `run_recipe_code` | Compile and execute DSL code in one call |
+
+### JSON Recipe Example
+
+```python
+run_recipe(recipe={
+    "version": "aleph.recipe.v1",
+    "context_id": "logs",
+    "budget": {"max_steps": 4, "max_sub_queries": 5},
+    "steps": [
+        {"op": "search", "pattern": "ERROR|WARN", "max_results": 10},
+        {"op": "filter", "field": "match", "contains": "ERROR"},
+        {"op": "take", "count": 1},
+        {"op": "finalize"}
+    ]
+})
+```
+
+### Recipe DSL Example
+
+The DSL provides a fluent builder that compiles to the same JSON format:
+
+```python
+run_recipe_code(
+    context_id="logs",
+    code="""
+recipe = (
+    Recipe(context_id='logs', max_sub_queries=5)
+    .search('ERROR|WARN', max_results=10)
+    .filter(field='match', contains='ERROR')
+    .take(1)
+    .finalize()
+)
+"""
+)
+```
+
+DSL helpers available in `exec_python`: `Recipe`, `Search`, `Filter`, `MapSubQuery`, `Aggregate`, `Finalize`, `as_recipe`. Pipe syntax is also supported: `Recipe() | Search("ERROR") | Take(5) | Finalize()`.
+
+### Supported Operations
+
+| Op | Description |
+|----|-------------|
+| `search` | Regex search over context |
+| `peek` / `lines` | Slice by char/line range |
+| `take` | Limit result count |
+| `chunk` | Split text into sized chunks (with optional `overlap`) |
+| `filter` | Filter by regex `pattern` or `contains` on a `field` |
+| `map_sub_query` | Fan-out: run a sub-query per result item |
+| `sub_query` | Single sub-query on accumulated results |
+| `aggregate` | Synthesize results via sub-query |
+| `assign` / `load` | Store/retrieve named intermediate values |
+| `finalize` | Mark pipeline complete |
+
+### Recipe Cookbook
+
+**Log Triage** — find errors, classify root causes:
+```python
+Recipe(context_id='logs', max_sub_queries=10)
+    .search('ERROR|FATAL', max_results=10)
+    .take(5)
+    .map_sub_query('What is the root cause?', context_field='context')
+    .aggregate('Prioritize these root causes')
+    .finalize()
+```
+
+**Chunk & Summarize** — process large documents in pieces:
+```python
+Recipe(context_id='doc', max_sub_queries=5)
+    .chunk(100000)
+    .map_sub_query('Summarize this section')
+    .aggregate('Combine into a unified summary')
+    .finalize()
+```
+
+**Needle-in-Haystack** — search, narrow, extract (no sub-queries):
+```python
+Recipe(context_id='codebase')
+    .search('TODO|FIXME|HACK|XXX', max_results=50)
+    .filter(field='match', contains='HACK')
+    .take(5)
+    .finalize()
+```
+
+**Search & Summarize** — find all mentions, synthesize:
+```python
+Recipe(context_id='doc', max_sub_queries=1)
+    .search('authentication|auth|login|JWT', max_results=15)
+    .aggregate('How does authentication work?')
+    .finalize()
+```
+
+**Multi-Perspective** — branch analysis with assign/load:
+```python
+Recipe(context_id='logs', max_sub_queries=3)
+    .search('ERROR|WARN', max_results=20)
+    .assign('all_issues')
+    .filter(field='match', contains='ERROR')
+    .sub_query('What patterns in these errors?')
+    .assign('error_analysis')
+    .load('all_issues')
+    .filter(field='match', contains='WARN')
+    .sub_query('What patterns in these warnings?')
+    .aggregate('Compare error vs warning patterns')
+    .finalize()
+```
+
 ---
 
 ## Tools
 
-### Core (always available)
+**Core** (always available):
+- `load_context`, `list_contexts`, `diff_contexts` — manage in-memory data
+- `search_context`, `semantic_search`, `peek_context`, `chunk_context` — explore data; use `semantic_search` for concepts/fuzzy queries, `search_context` for precise regex
+- `exec_python`, `get_variable` — compute in sandbox (100+ built-in helpers)
+- `think`, `evaluate_progress`, `summarize_so_far`, `get_evidence`, `finalize` — structured reasoning
+- `tasks` — lightweight task tracking per context
+- `get_status` — session state
+- `sub_query` — spawn recursive sub-agents (CLI or API backend)
+- `sub_aleph` — nested Aleph recursion (RLM -> RLM)
+- `validate_recipe`, `estimate_recipe`, `run_recipe`, `compile_recipe`, `run_recipe_code` — declarative recipe pipelines
 
-| Category          | Tools                                                                                       |
-|-------------------|---------------------------------------------------------------------------------------------|
-| **Context**       | `load_context`, `list_contexts`, `diff_contexts`                                            |
-| **Search**        | `search_context`, `semantic_search`, `peek_context`, `chunk_context`                        |
-| **Compute**       | `exec_python`, `get_variable`                                                               |
-| **Reasoning**     | `think`, `evaluate_progress`, `summarize_so_far`, `get_evidence`, `finalize`                |
-| **Tasks**         | `tasks` -- lightweight task tracking per context                                            |
-| **Status**        | `get_status`                                                                                |
-| **Recursion**     | `sub_query` (spawn sub-agents), `sub_aleph` (nested RLM)                                   |
-
-### Action Tools (requires `--enable-actions`)
-
-| Category          | Tools                                                                                       |
-|-------------------|---------------------------------------------------------------------------------------------|
-| **File I/O**      | `load_file`, `read_file`, `write_file` (PDFs, Word, HTML, .gz supported)                    |
-| **Shell**         | `run_command`, `run_tests`, `rg_search`                                                     |
-| **Sessions**      | `save_session`, `load_session` -- persist state (memory packs)                              |
-| **MCP orchestration** | `add_remote_server`, `list_remote_tools`, `call_remote_tool`                            |
+**Action Tools** (requires `--enable-actions`):
+- `load_file`, `read_file`, `write_file` — file I/O (PDFs, Word, HTML, .gz supported)
+- `run_command`, `run_tests`, `rg_search` — shell tools
+- `save_session`, `load_session` — persist state (memory packs)
+- `add_remote_server`, `list_remote_tools`, `call_remote_tool` — MCP orchestration
 
 <details>
 <summary><strong>exec_python helpers (100+)</strong></summary>
 
 The sandbox includes 100+ helpers that operate on the loaded context:
 
-| Category              | Examples                                                                  |
-|-----------------------|---------------------------------------------------------------------------|
-| **Extractors** (25)   | `extract_emails()`, `extract_urls()`, `extract_dates()`, `extract_ips()`, `extract_functions()` |
-| **Statistics** (8)    | `word_count()`, `line_count()`, `word_frequency()`, `ngrams()`            |
-| **Line operations** (12) | `head()`, `tail()`, `grep()`, `sort_lines()`, `columns()`             |
-| **Text manipulation** (15) | `replace_all()`, `between()`, `truncate()`, `slugify()`              |
-| **Validation** (7)    | `is_email()`, `is_url()`, `is_json()`, `is_numeric()`                    |
-| **Core**              | `peek()`, `lines()`, `search()`, `chunk()`, `cite()`, `sub_query()`, `sub_aleph()`, `sub_query_map()`, `sub_query_batch()`, `sub_query_strict()`, `ctx_append()`, `ctx_set()` |
+| Category | Examples |
+|----------|----------|
+| **Extractors** (25) | `extract_emails()`, `extract_urls()`, `extract_dates()`, `extract_ips()`, `extract_functions()` |
+| **Statistics** (8) | `word_count()`, `line_count()`, `word_frequency()`, `ngrams()` |
+| **Line operations** (12) | `head()`, `tail()`, `grep()`, `sort_lines()`, `columns()` |
+| **Text manipulation** (15) | `replace_all()`, `between()`, `truncate()`, `slugify()` |
+| **Validation** (7) | `is_email()`, `is_url()`, `is_json()`, `is_numeric()` |
+| **Core** | `peek()`, `lines()`, `search()`, `chunk()`, `cite()`, `sub_query()`, `sub_aleph()`, `sub_query_map()`, `sub_query_batch()`, `sub_query_strict()`, `ctx_append()`, `ctx_set()` |
+| **Recipe DSL** | `Recipe()`, `Search()`, `Chunk()`, `Filter()`, `MapSubQuery()`, `Aggregate()`, `Finalize()`, `as_recipe()` |
 
 Extractors return `list[dict]` with keys: `value`, `line_num`, `start`, `end`.
 

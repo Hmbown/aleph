@@ -4,7 +4,21 @@ from __future__ import annotations
 
 import pytest
 
-from aleph.repl.helpers import peek, lines, search, chunk, extract_routes, semantic_search
+from aleph.repl.helpers import (
+    Aggregate,
+    Filter,
+    Finalize,
+    MapSubQuery,
+    Recipe,
+    Search,
+    as_recipe,
+    chunk,
+    extract_routes,
+    lines,
+    peek,
+    search,
+    semantic_search,
+)
 
 
 class TestPeek:
@@ -223,3 +237,36 @@ class TestSemanticSearch:
         results = semantic_search(text, "rocket", chunk_size=30, overlap=0, top_k=1)
         assert results
         assert "rocket" in results[0]["preview"].lower()
+
+
+class TestRecipeDsl:
+    """Tests for recipe DSL helper composition."""
+
+    def test_pipe_composition_to_recipe_dict(self) -> None:
+        recipe = (
+            Recipe(context_id="logs", max_sub_queries=3)
+            | Search("ERROR|WARN", max_results=5)
+            | Filter(field="match", contains="ERROR")
+            | MapSubQuery("Summarize root cause", context_field="context")
+            | Aggregate("Combine summaries")
+            | Finalize()
+        ).to_dict()
+
+        assert recipe["context_id"] == "logs"
+        assert recipe["budget"]["max_sub_queries"] == 3
+        assert recipe["steps"][0]["op"] == "search"
+        assert recipe["steps"][2]["op"] == "map_sub_query"
+        assert recipe["steps"][-1]["op"] == "finalize"
+
+    def test_fluent_composition_and_as_recipe(self) -> None:
+        builder = (
+            Recipe()
+            .search("TODO|FIXME", max_results=10)
+            .map_sub_query("Classify issue", context_field="match", limit=2)
+            .aggregate("Create final report")
+            .finalize()
+        )
+        recipe = as_recipe(builder)
+        assert recipe["version"] == "aleph.recipe.v1"
+        assert len(recipe["steps"]) == 4
+        assert recipe["steps"][1]["limit"] == 2
