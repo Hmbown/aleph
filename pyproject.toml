@@ -41,6 +41,9 @@ aleph-rlm = "aleph.cli:main"
 aleph = "aleph.mcp.local_server:main"
 alef = "aleph.alef_cli:main"
 
+[tool.hatch.build.targets.sdist]
+exclude = [".venv*", ".claude", ".gemini", "rsi"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["aleph"]
 
