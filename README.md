@@ -399,14 +399,15 @@ Gemini CLI: /skills list (use /skills enable aleph if disabled).
 
 ---
 
-## The `/aleph` Skill
+## The `/aleph` Skill (`$aleph` in Codex CLI)
 
-The `/aleph` skill is a prompt that teaches your LLM how to use Aleph
-effectively. It provides workflow patterns, tool guidance, and troubleshooting
-tips.
+The skill prompt teaches your LLM how to use Aleph effectively. It provides
+workflow patterns, tool guidance, and troubleshooting tips for both:
 
-**Note:** Aleph works best when paired with the skill prompt + MCP server
-together.
+- `/aleph` in Claude Code
+- `$aleph` in Codex CLI
+
+Aleph works best when skill prompt + MCP server are both configured.
 
 ### What It Does
 
@@ -418,21 +419,40 @@ together.
 
 ### Simplest Use Case
 
-Just point at a file:
+Just point at a file in your prompt:
 
-```
+```bash
 /aleph path/to/huge_log.txt
+# or in Codex CLI:
+$aleph path/to/huge_log.txt
 ```
 
-The LLM will load it into Aleph's external memory and immediately start
-analyzing using RLM patterns -- no extra setup needed.
+Expected behavior: the model loads the file into Aleph memory and immediately
+starts analysis (search/peek/exec) without manually copying file contents.
+
+### Expected `$aleph` Behavior (Codex CLI)
+
+When `$aleph` is working correctly, this should happen in one flow:
+
+1. You run `$aleph <file-path>`.
+2. The model calls `load_file(path=...)`.
+3. It begins analysis with tools like `search_context`, `peek_context`, and
+   `exec_python`.
+4. It returns findings rather than asking you to paste the file manually.
+
+Quick verification prompt:
+
+```text
+$aleph path/to/large_file.log
+Then call list_contexts() and show the loaded context_id before analysis.
+```
 
 ### How to Invoke
 
-| Client      | Command   |
-|-------------|-----------|
-| Claude Code | `/aleph`  |
-| Codex CLI   | `$aleph`  |
+| Client      | Command   | Typical form                |
+|-------------|-----------|-----------------------------|
+| Claude Code | `/aleph`  | `/aleph path/to/file`       |
+| Codex CLI   | `$aleph`  | `$aleph path/to/file`       |
 
 For other clients, copy [`docs/prompts/aleph.md`](docs/prompts/aleph.md) and
 paste it at session start.

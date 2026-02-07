@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1
+
+- Docs: Rewrote README `$aleph` sections to document the intended Codex flow
+  (file path -> load into Aleph memory -> immediate analysis).
+- Docs: Clarified `/aleph` vs `$aleph` invocation and added explicit verification
+  checks for skill + MCP wiring.
+- Release: Bumped package version metadata to 0.8.1.
+
 ## 0.7.11
 
 - Fixed: MCP `rg_search` now accepts `paths` as string or list; previously a
