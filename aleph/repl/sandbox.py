@@ -105,7 +105,7 @@ class SandboxConfig:
 
     allowed_imports: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_IMPORTS))
     max_output_chars: int = 50_000
-    timeout_seconds: float = 60.0
+    timeout_seconds: float = 180.0
     enable_code_execution: bool = True
     unrestricted: bool = False  # Bypass all sandbox restrictions when True
 

@@ -3736,8 +3736,8 @@ def main() -> None:
     parser.add_argument(
         "--timeout",
         type=float,
-        default=60.0,
-        help="Code execution timeout in seconds (default: 60)",
+        default=180.0,
+        help="Code execution timeout in seconds (default: 180)",
     )
     parser.add_argument(
         "--max-output",

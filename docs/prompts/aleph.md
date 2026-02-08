@@ -43,6 +43,21 @@ finalize(answer="...", context_id="doc")
 
 When a user says `/aleph myfile.py` or `$aleph myfile.py`, load it and immediately begin this pattern.
 
+### Depth Invocation
+
+Users can request a specific recursion depth: `/aleph N file` where N controls strategy.
+
+| Invocation | Depth | Strategy |
+|-----------|-------|----------|
+| `/aleph file.py` | 1 | Direct analysis — search/peek/exec_python, no sub-agents |
+| `/aleph 2 file.py` | 2 | Parallel fan-out — `sub_query_batch`/`sub_query_map` over chunks |
+| `/aleph 3 file.py` | 3 | Recursive (RLM^2) — sub-agents use exec_python+sub_query internally |
+| `/aleph 4 file.py` | 4 | Deep recursion (RLM^3) — sub-agents spawning sub-agents |
+
+For depth 3+, bump timeouts: `configure(sub_query_timeout=300, sandbox_timeout=300)`.
+
+**Dynamic escalation:** Start at depth 1. If results are insufficient or the data is too large (>500K chars), escalate to depth 2. If sub-queries reveal more complexity, go to depth 3.
+
 ## Practical Defaults
 
 - Use `output="json"` for structured results and `output="markdown"` for human-readable output.
@@ -102,7 +117,87 @@ semantic_search(query="login failure", context_id="doc", top_k=3)
 peek_context(start=1200, end=1600, unit="chars", context_id="doc")
 ```
 
-### 6) Recipe Pipelines (Declarative + DSL)
+### 6) Recursion Strategies
+
+Aleph supports recursive sub-agents at multiple depths. Choose based on data size and problem complexity.
+
+**Depth 1: Direct Analysis** — No sub-agents. Use search/peek/exec_python directly.
+Best for: < 200K chars, simple questions, targeted extraction.
+
+```
+load_file(path="file.py", context_id="doc")
+search_context(pattern="def.*error", context_id="doc")
+exec_python(code="print(extract_functions())", context_id="doc")
+finalize(answer="Found 3 error handlers", context_id="doc")
+```
+
+**Depth 2: Parallel Fan-Out** — One level of sub-agents via `sub_query_batch`/`sub_query_map`.
+Best for: 200K-2M chars, summarization, multi-section analysis.
+
+```
+exec_python(code="""
+chunks = chunk(200000)  # ~200K per sub-agent
+summaries = sub_query_batch("Summarize key findings:", chunks)
+final = sub_query("Synthesize into 5 bullets:\\n" + "\\n".join(summaries))
+print(final)
+""", context_id="doc")
+```
+
+**Depth 3: Recursive (RLM^2)** — Sub-agents themselves use exec_python + sub_query.
+Best for: 2M+ chars, complex multi-step reasoning, cross-referencing.
+
+```
+exec_python(code="""
+result = sub_aleph(
+    query="Find all security vulnerabilities and rank by severity",
+    context_slice=ctx[:500000],
+    max_depth=2
+)
+print(result)
+""", context_id="doc")
+```
+
+**Depth 4: Deep Recursion (RLM^3)** — Sub-agents spawning their own sub-agents.
+Best for: Massive datasets, hierarchical analysis, multi-pass verification.
+Requires: `configure(sub_query_timeout=600, sandbox_timeout=600)`
+
+```
+exec_python(code="""
+# Each sub_aleph agent can spawn its own sub-agents
+sections = chunk(500000)
+results = sub_query_map(
+    [f"Deep-analyze section {i} for architectural patterns, "
+     "using sub_query to verify each finding" for i in range(len(sections))],
+    context_slices=sections,
+    limit=5
+)
+final = sub_query("Synthesize all architectural findings:\\n" + "\\n".join(results))
+print(final)
+""", context_id="doc")
+```
+
+**Choosing a Strategy:**
+
+| Data Size | Problem Type | Recommended Depth |
+|-----------|-------------|-------------------|
+| < 200K | Simple lookup, extraction | 1 (direct) |
+| 200K-1M | Summarization, overview | 2 (parallel) |
+| 1M-5M | Cross-referencing, analysis | 2-3 (parallel/recursive) |
+| 5M+ | Deep investigation | 3-4 (recursive) |
+| Any | Verification/debate | 3 (adversarial sub-agents) |
+
+**Shared Session Context:** When sub-agents need access to the parent's loaded contexts:
+```
+configure(sub_query_share_session=true)
+exec_python(code="""
+# Sub-agents can now peek/search the parent's contexts
+result = sub_query("Search for 'TODO' in the parent context and summarize")
+print(result)
+""", context_id="doc")
+```
+This is opt-in. Default is `false`. Only enable when sub-agents need parent state.
+
+### 7) Recipe Pipelines (Declarative + DSL)
 Use recipes when you want reusable, inspectable workflows.
 
 **A) Run JSON recipe directly**
@@ -174,7 +269,7 @@ Recommended flow: `validate_recipe` -> `estimate_recipe` -> `run_recipe`.
 
 Ops: `search`, `peek`, `lines`, `take`, `chunk`, `filter`, `map_sub_query`, `sub_query`, `aggregate`, `assign`, `load`, `finalize`.
 
-## Sub-Query Guidance (RLM Best Practices)
+## Sub-Query Guidance (Single-Agent Patterns)
 
 Use sub-queries inside `exec_python` so the recursion is driven by code (symbolic loops),
 not by repeated tool calls. This follows the Recursive Language Model (RLM) paradigm.
@@ -346,6 +441,7 @@ When a user says "use claude backend" or "switch to gemini", call `set_backend()
 | `run_recipe` | Execute a recipe payload |
 | `compile_recipe` | Compile Recipe DSL code to JSON recipe |
 | `run_recipe_code` | Compile and execute Recipe DSL code |
+| `configure` | Adjust runtime settings (timeouts, backends, etc.) |
 
 ### Action Tools (requires `--enable-actions`)
 

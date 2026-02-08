@@ -85,7 +85,7 @@ class SubQueryConfig:
     backend: BackendType = "auto"
 
     # CLI options
-    cli_timeout_seconds: float = 300.0
+    cli_timeout_seconds: float = 180.0
     cli_max_output_chars: int = 50_000
 
     # API options

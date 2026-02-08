@@ -42,7 +42,7 @@ class AlephConfig:
     # Sandbox
     enable_code_execution: bool = True
     allowed_imports: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_IMPORTS))
-    sandbox_timeout_seconds: float = 60.0
+    sandbox_timeout_seconds: float = 180.0
     max_output_chars: int = 50_000
     unrestricted_sandbox: bool = False  # Bypass all sandbox restrictions
 
