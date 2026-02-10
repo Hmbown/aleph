@@ -4,28 +4,31 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI version](https://img.shields.io/pypi/v/aleph-rlm.svg)](https://pypi.org/project/aleph-rlm/)
 
-**Your RAM is the new context window.**
+Aleph is an [MCP server](https://modelcontextprotocol.io/) plus companion skill
+workflow (`/aleph` in Claude Code, `$aleph` in Codex CLI) for recursive LLM work.
+It stores working data in a Python process and exposes tools so the model can
+retrieve slices, run code, and iterate without repeatedly injecting full files
+into prompt context.
 
-Aleph is an [MCP server](https://modelcontextprotocol.io/) for recursive LLM workflows.
-Instead of forcing large files into prompt context, Aleph keeps data in a Python
-process and gives the model tools to inspect and reason over it.
+Core capabilities:
 
-- Load big files and codebases into external memory
-- Search, slice, and compute with `exec_python`
-- Run recursive sub-queries and recipe pipelines
-- Save sessions and resume later
+- Load large files and codebases into process memory
+- Search and inspect targeted ranges (`search_context`, `peek_context`)
+- Run computation over context with `exec_python`
+- Orchestrate recursive sub-queries and recipe pipelines
+- Save and restore sessions for long investigations
 
-Based on the [Recursive Language Model](https://arxiv.org/abs/2512.24601) (RLM)
-architecture.
+Design is based on the
+[Recursive Language Model](https://arxiv.org/abs/2512.24601) (RLM) architecture.
 
 ```text
 +-----------------+    tool calls     +--------------------------+
-|   LLM client    | ---------------> |  Aleph (Python, RAM)     |
-|  (limited ctx)  | <--------------- |  search / peek / exec    |
+|   LLM client    | ---------------> |  Aleph (Python process)  |
+| (context budget)| <--------------- |  search / peek / exec    |
 +-----------------+   small results  +--------------------------+
 ```
 
-## Start Here (2 Minutes)
+## Quick Start
 
 1. Install:
 
@@ -47,7 +50,7 @@ get_status()
 list_contexts()
 ```
 
-4. Use the skill flow on a real file:
+4. Run the skill flow on a real file:
 
 ```bash
 /aleph path/to/large_file.log
@@ -55,10 +58,11 @@ list_contexts()
 $aleph path/to/large_file.log
 ```
 
-Expected behavior: Aleph loads the file into memory and immediately begins
-analysis (search/peek/exec), without asking you to paste raw file content.
+Expected behavior: Aleph loads the file into process memory, then begins
+analysis with tool calls (`search_context`, `peek_context`, `exec_python`)
+without requesting pasted raw content.
 
-## Use Cases
+## Common Workloads
 
 | Scenario | What Aleph Does |
 |---|---|
@@ -79,13 +83,13 @@ Installing `aleph-rlm` gives you three commands:
 | `aleph-rlm` | Installer/config helper (also supports `run` / `shell`) |
 | `alef` | Legacy standalone CLI (deprecated) |
 
-Mental model:
+How to think about it:
 
 - Run `aleph-rlm install` once to configure clients.
 - MCP clients should run `aleph` as the server command.
 - Use `aleph run` (or `aleph-rlm run`) for terminal-only mode.
 
-## MCP Mode (Recommended)
+## MCP Mode
 
 ### Automatic Setup
 
@@ -138,7 +142,7 @@ More per-client setup details are in [MCP_SETUP.md](MCP_SETUP.md).
 
 ## The `/aleph` and `$aleph` Skill
 
-Aleph works best with both:
+For skill-based usage, configure both:
 
 1. MCP server configured in the client
 2. Skill prompt installed (`docs/prompts/aleph.md`)
