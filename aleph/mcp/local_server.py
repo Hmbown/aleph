@@ -2421,8 +2421,9 @@ class AlephMCPServerLocal:
                     skipped.append({"id": "<missing>", "error": "missing session identifier"})
                     continue
                 try:
-                    self._sessions[sid] = _session_from_payload(sp, sid, self.sandbox_config, asyncio.get_running_loop())
-                    self._configure_session(self._sessions[sid], sid, loop=asyncio.get_running_loop())
+                    session = _session_from_payload(sp, sid, self.sandbox_config, asyncio.get_running_loop())
+                    self._configure_session(session, sid, loop=asyncio.get_running_loop())
+                    self._sessions[sid] = session
                     loaded.append(sid)
                 except Exception as e:
                     skipped.append({"id": sid, "error": str(e)})
