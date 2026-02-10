@@ -720,6 +720,43 @@ def _resolve_line_number_base(
         return DEFAULT_LINE_NUMBER_BASE
     return _validate_line_number_base(value)
 
+
+def _to_internal_line_index(index: int | None, base: LineNumberBase) -> int | None:
+    """Convert external line indices (line_number_base) to internal 0-based indices."""
+
+    if index is None or index < 0:
+        return index
+    if base == 0:
+        return index
+    if index == 0:
+        # Backward-compatible handling for older callers that still pass 0-based values.
+        return 0
+    return index - 1
+
+
+def _resolve_session_payload_id(session_payload: Any) -> str | None:
+    """Resolve a session identifier from a memory-pack session payload."""
+
+    if not isinstance(session_payload, dict):
+        return None
+    for key in ("id", "context_id", "session_id"):
+        value = session_payload.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    return None
+
+
+def _get_repl_helper(repl: REPLEnvironment, name: str) -> object | None:
+    """Return a helper callable, preferring stable helper references."""
+
+    get_helper = getattr(repl, "get_helper", None)
+    if callable(get_helper):
+        helper = get_helper(name)
+        if helper is not None:
+            return helper
+    return repl.get_variable(name)
+
+
 def _to_jsonable(obj: Any) -> Any:
     """Best-effort conversion of MCP/Pydantic objects into JSON-serializable data."""
     if obj is None or isinstance(obj, (str, int, float, bool)):
@@ -2377,21 +2414,27 @@ class AlephMCPServerLocal:
                 return _format_error("Invalid memory pack schema", output=output)
 
             loaded = []
+            skipped: list[dict[str, str]] = []
             for sp in payload.get("sessions", []):
-                sid = sp.get("id")
-                if sid:
-                    try:
-                        self._sessions[sid] = _session_from_payload(sp, sid, self.sandbox_config, asyncio.get_running_loop())
-                        self._configure_session(self._sessions[sid], sid, loop=asyncio.get_running_loop())
-                        loaded.append(sid)
-                    except Exception:
-                        pass
+                sid = _resolve_session_payload_id(sp)
+                if not sid:
+                    skipped.append({"id": "<missing>", "error": "missing session identifier"})
+                    continue
+                try:
+                    session = _session_from_payload(sp, sid, self.sandbox_config, asyncio.get_running_loop())
+                    self._configure_session(session, sid, loop=asyncio.get_running_loop())
+                    self._sessions[sid] = session
+                    loaded.append(sid)
+                except Exception as e:
+                    skipped.append({"id": sid, "error": str(e)})
 
             msg = f"Loaded {len(loaded)} session(s) from {path}."
+            if skipped:
+                msg += f" Skipped {len(skipped)} invalid session(s)."
             if output == "object":
-                return {"status": "success", "loaded": loaded}
+                return {"status": "success", "loaded": loaded, "skipped": skipped}
             if output == "json":
-                return json.dumps({"status": "success", "loaded": loaded})
+                return json.dumps({"status": "success", "loaded": loaded, "skipped": skipped})
             return msg
 
     def _register_action_tools(self) -> None:
@@ -2787,12 +2830,23 @@ class AlephMCPServerLocal:
             repl = session.repl
             session.iterations += 1
 
-            fn = repl.get_variable("peek") if unit == "chars" else repl.get_variable("lines")
+            fn = _get_repl_helper(repl, "peek") if unit == "chars" else _get_repl_helper(repl, "lines")
             if not callable(fn):
                 return f"Error: {unit} helper is not available"
 
             try:
-                res = fn(start, end)
+                if unit == "lines":
+                    # Backward compatibility: preserve historical 0-based slices
+                    # when callers pass start=0 under 1-based sessions.
+                    if session.line_number_base == 1 and start == 0:
+                        start_idx = 0
+                        end_idx = end
+                    else:
+                        start_idx = _to_internal_line_index(start, session.line_number_base)
+                        end_idx = _to_internal_line_index(end, session.line_number_base)
+                    res = fn(start_idx, end_idx)
+                else:
+                    res = fn(start, end)
             except Exception as e:
                 return f"Error: {e}"
 
@@ -2829,7 +2883,7 @@ class AlephMCPServerLocal:
             repl = session.repl
             session.iterations += 1
 
-            fn = repl.get_variable("search")
+            fn = _get_repl_helper(repl, "search")
             if not callable(fn):
                 return "Error: search() helper is not available"
 
@@ -2896,7 +2950,7 @@ class AlephMCPServerLocal:
             repl = session.repl
             session.iterations += 1
 
-            fn = repl.get_variable("semantic_search")
+            fn = _get_repl_helper(repl, "semantic_search")
             if not callable(fn):
                 return "Error: semantic_search() helper is not available"
 

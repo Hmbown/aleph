@@ -668,6 +668,9 @@ class REPLEnvironment:
             helpers_ns[name] = getattr(_helpers, name)
 
         self._namespace.update(helpers_ns)
+        # Preserve stable helper references so MCP tools can resolve helpers
+        # even if user code rebinds names in the REPL namespace.
+        self._helpers: dict[str, object] = dict(helpers_ns)
 
         self._sub_query_fn: SubQueryFn | None = None
         self._sub_aleph_fn: SubAlephFn | None = None
@@ -720,6 +723,11 @@ class REPLEnvironment:
 
     def get_variable(self, name: str) -> object | None:
         return self._namespace.get(name)
+
+    def get_helper(self, name: str) -> object | None:
+        """Return the original helper callable by name."""
+
+        return self._helpers.get(name)
 
     def set_variable(self, name: str, value: object) -> None:
         self._namespace[name] = value

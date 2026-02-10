@@ -25,7 +25,13 @@ import pytest
 import asyncio
 from unittest.mock import AsyncMock, patch
 
-from aleph.mcp.local_server import AlephMCPServerLocal, _detect_format, _analyze_text_context
+from aleph.mcp.local_server import (
+    AlephMCPServerLocal,
+    _analyze_text_context,
+    _detect_format,
+    _resolve_session_payload_id,
+    _to_internal_line_index,
+)
 from aleph.repl.sandbox import SandboxConfig
 from aleph.types import AlephResponse, ContentFormat
 from aleph.sub_query import SubQueryConfig
@@ -386,6 +392,37 @@ class TestAnalyzeContext:
         long_text = "x" * 1000
         meta = _analyze_text_context(long_text, ContentFormat.TEXT)
         assert len(meta.sample_preview) == 500
+
+
+class TestSessionPayloadHelpers:
+    """Tests for session payload compatibility helpers."""
+
+    def test_resolve_session_payload_id_prefers_id(self):
+        payload = {"id": "sid-id", "context_id": "sid-context", "session_id": "sid-session"}
+        assert _resolve_session_payload_id(payload) == "sid-id"
+
+    def test_resolve_session_payload_id_compatibility_fields(self):
+        assert _resolve_session_payload_id({"context_id": "ctx-1"}) == "ctx-1"
+        assert _resolve_session_payload_id({"session_id": "sess-1"}) == "sess-1"
+
+    def test_resolve_session_payload_id_invalid_payload(self):
+        assert _resolve_session_payload_id({}) is None
+        assert _resolve_session_payload_id("not-a-dict") is None
+
+
+class TestLineIndexHelpers:
+    """Tests for line index normalization between tool and helper semantics."""
+
+    def test_to_internal_line_index_base_1(self):
+        assert _to_internal_line_index(1, 1) == 0
+        assert _to_internal_line_index(2, 1) == 1
+        assert _to_internal_line_index(0, 1) == 0
+        assert _to_internal_line_index(-1, 1) == -1
+        assert _to_internal_line_index(None, 1) is None
+
+    def test_to_internal_line_index_base_0(self):
+        assert _to_internal_line_index(0, 0) == 0
+        assert _to_internal_line_index(3, 0) == 3
 
 
 # ---------------------------------------------------------------------------
