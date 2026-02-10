@@ -204,6 +204,23 @@ class TestSandboxExecution:
         assert isinstance(result.return_value, list)
         assert len(result.return_value) > 0
 
+    def test_get_helper_stable_after_name_rebind(self, repl_multiline: REPLEnvironment) -> None:
+        lines_helper = repl_multiline.get_helper("lines")
+        search_helper = repl_multiline.get_helper("search")
+        semantic_helper = repl_multiline.get_helper("semantic_search")
+        assert callable(lines_helper)
+        assert callable(search_helper)
+        assert callable(semantic_helper)
+
+        result = repl_multiline.execute("lines = 123\nsearch = 456\nsemantic_search = 789")
+        assert result.error is None
+        assert repl_multiline.get_variable("lines") == 123
+        assert repl_multiline.get_variable("search") == 456
+        assert repl_multiline.get_variable("semantic_search") == 789
+        assert callable(repl_multiline.get_helper("lines"))
+        assert callable(repl_multiline.get_helper("search"))
+        assert callable(repl_multiline.get_helper("semantic_search"))
+
     def test_helper_import_introspection(self, repl: REPLEnvironment) -> None:
         result = repl.execute("is_import_allowed('json')")
         assert result.return_value is True
