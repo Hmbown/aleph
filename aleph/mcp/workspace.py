@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
+from urllib.parse import unquote, urlparse
 
 
 LineNumberBase = Literal[0, 1]
@@ -91,3 +92,51 @@ def _validate_line_number_base(value: int) -> LineNumberBase:
     if value not in (0, 1):
         raise ValueError("line_number_base must be 0 or 1")
     return cast(LineNumberBase, value)
+
+
+def _uri_to_path(uri: str) -> Path | None:
+    """Convert a file:// URI to a Path, or return None for non-file URIs."""
+    try:
+        parsed = urlparse(uri)
+    except Exception:
+        return None
+    if parsed.scheme != "file":
+        return None
+    decoded = unquote(parsed.path)
+    if not decoded:
+        return None
+    p = Path(decoded)
+    try:
+        p = p.resolve()
+    except Exception:
+        pass
+    return p
+
+
+def roots_to_workspace_root(roots: list[Any]) -> Path | None:
+    """Pick the best workspace root from MCP Root objects.
+
+    Each root has a ``uri`` (``file://`` URI) and optional ``name``.
+    Prefers a root that contains a ``.git`` directory; otherwise uses the first
+    valid directory.
+    """
+    paths: list[Path] = []
+    for root in roots:
+        uri = getattr(root, "uri", None)
+        if not isinstance(uri, str):
+            continue
+        p = _uri_to_path(uri)
+        if p is None:
+            continue
+        if p.is_dir():
+            paths.append(p)
+
+    if not paths:
+        return None
+
+    # Prefer a root with a .git directory
+    for p in paths:
+        if (p / ".git").exists():
+            return p
+
+    return paths[0]

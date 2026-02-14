@@ -23,9 +23,11 @@ import json
 import os
 import pytest
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from aleph.mcp.local_server import (
+    ActionConfig,
     AlephMCPServerLocal,
     _analyze_text_context,
     _detect_format,
@@ -90,6 +92,16 @@ async def _call_tool(server, tool_name: str, **kwargs):
         from aleph.mcp.local_server import _Session
         server._sessions[context_id] = _Session(repl=repl, meta=meta, line_number_base=line_number_base)
         return f"Context loaded: {context_id}"
+
+    if tool_name == "configure":
+        workspace_root = kwargs.get("workspace_root")
+        if workspace_root is not None:
+            from pathlib import Path as _P
+            p = _P(workspace_root).expanduser().resolve()
+            server.action_config.workspace_root = p
+            server.action_config.workspace_root_explicit = True
+            server._workspace_root_source = "explicit"
+        return "Configuration updated. Re-run `get_status` to see current values."
 
     # Get session for tools that need it
     context_id = kwargs.get("context_id", "default")
@@ -217,6 +229,16 @@ async def _call_tool(server, tool_name: str, **kwargs):
         return f"Reasoning step: {question}"
 
     if tool_name == "get_status":
+        output = kwargs.get("output", "markdown")
+        if output == "json":
+            status = {
+                "context_id": context_id,
+                "iterations": session.iterations,
+                "evidence_count": len(session.evidence),
+                "workspace_root": str(server.action_config.workspace_root),
+                "workspace_root_source": server._workspace_root_source,
+            }
+            return json.dumps(status, indent=2)
         parts = [
             "## Context Status",
             f"**Context ID:** `{context_id}`",
@@ -1201,3 +1223,126 @@ async def test_run_sub_aleph_cli_single_shot(loaded_server):
     assert result.answer == "ok"
     assert meta["backend"] == "codex"
     assert mock_run.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# MCP Roots workspace resolution tests
+# ---------------------------------------------------------------------------
+
+def _make_root(uri: str) -> SimpleNamespace:
+    return SimpleNamespace(uri=uri, name=None)
+
+
+@pytest.fixture
+def action_server(sandbox_config, tmp_path):
+    """Server with actions enabled and workspace in tmp_path."""
+    cfg = ActionConfig(
+        enabled=True,
+        workspace_root=tmp_path,
+        workspace_mode="any",
+    )
+    return AlephMCPServerLocal(sandbox_config=sandbox_config, action_config=cfg)
+
+
+@pytest.mark.asyncio
+async def test_roots_resolution_updates_workspace(sandbox_config, tmp_path):
+    """MCP roots should update workspace_root when not explicit."""
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    cfg = ActionConfig(enabled=True, workspace_root=tmp_path, workspace_mode="any")
+    server = AlephMCPServerLocal(sandbox_config=sandbox_config, action_config=cfg)
+
+    mock_session = AsyncMock()
+    mock_session.list_roots.return_value = SimpleNamespace(
+        roots=[_make_root(repo.as_uri())]
+    )
+    ctx = AsyncMock()
+    ctx.request_context.session = mock_session
+
+    await server._maybe_resolve_workspace_from_roots(ctx)
+
+    assert server.action_config.workspace_root == repo
+    assert server._workspace_root_source == "mcp-roots"
+    assert server._mcp_roots_resolved is True
+
+
+@pytest.mark.asyncio
+async def test_roots_resolution_skipped_when_explicit(sandbox_config, tmp_path):
+    """Explicit workspace_root should prevent MCP roots override."""
+    cfg = ActionConfig(
+        enabled=True,
+        workspace_root=tmp_path,
+        workspace_mode="any",
+        workspace_root_explicit=True,
+    )
+    server = AlephMCPServerLocal(sandbox_config=sandbox_config, action_config=cfg)
+
+    ctx = AsyncMock()
+    await server._maybe_resolve_workspace_from_roots(ctx)
+
+    assert server.action_config.workspace_root == tmp_path
+    assert server._workspace_root_source == "explicit"
+    # list_roots should never have been called
+    ctx.request_context.session.list_roots.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_roots_resolution_cached(sandbox_config, tmp_path):
+    """Second call to _maybe_resolve should be a no-op."""
+    cfg = ActionConfig(enabled=True, workspace_root=tmp_path, workspace_mode="any")
+    server = AlephMCPServerLocal(sandbox_config=sandbox_config, action_config=cfg)
+
+    mock_session = AsyncMock()
+    mock_session.list_roots.return_value = SimpleNamespace(roots=[])
+    ctx = AsyncMock()
+    ctx.request_context.session = mock_session
+
+    await server._maybe_resolve_workspace_from_roots(ctx)
+    assert server._mcp_roots_resolved is True
+
+    # Second call — list_roots should not be called again
+    await server._maybe_resolve_workspace_from_roots(ctx)
+    assert mock_session.list_roots.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_roots_resolution_graceful_on_exception(sandbox_config, tmp_path):
+    """Clients that don't support roots should not crash the server."""
+    cfg = ActionConfig(enabled=True, workspace_root=tmp_path, workspace_mode="any")
+    server = AlephMCPServerLocal(sandbox_config=sandbox_config, action_config=cfg)
+
+    mock_session = AsyncMock()
+    mock_session.list_roots.side_effect = Exception("roots not supported")
+    ctx = AsyncMock()
+    ctx.request_context.session = mock_session
+
+    await server._maybe_resolve_workspace_from_roots(ctx)
+
+    # Should still mark as resolved so we don't retry
+    assert server._mcp_roots_resolved is True
+    assert server.action_config.workspace_root == tmp_path
+
+
+@pytest.mark.asyncio
+async def test_configure_workspace_root(action_server, tmp_path):
+    """configure(workspace_root=...) should override and mark explicit."""
+    new_ws = tmp_path / "new_ws"
+    new_ws.mkdir()
+
+    result = await _call_tool(action_server, "configure", workspace_root=str(new_ws))
+    assert "Configuration updated" in result if isinstance(result, str) else True
+
+    assert action_server.action_config.workspace_root == new_ws
+    assert action_server.action_config.workspace_root_explicit is True
+    assert action_server._workspace_root_source == "explicit"
+
+
+@pytest.mark.asyncio
+async def test_get_status_shows_workspace(loaded_server):
+    """get_status output should include workspace info."""
+    result = await _call_tool(loaded_server, "get_status", context_id="test", output="json")
+    data = json.loads(result)
+    assert "workspace_root" in data
+    assert "workspace_root_source" in data

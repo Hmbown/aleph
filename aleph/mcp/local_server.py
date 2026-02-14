@@ -79,6 +79,7 @@ from ..sub_query.cli_backend import run_cli_sub_query, CLI_BACKENDS
 from ..sub_query.api_backend import run_api_sub_query
 from .recipes import estimate_recipe as _estimate_recipe
 from .recipes import validate_recipe as _validate_recipe
+from .workspace import roots_to_workspace_root
 
 __all__ = ["AlephMCPServerLocal", "main", "mcp"]
 
@@ -788,6 +789,7 @@ class ActionConfig:
     max_output_chars: int = 50_000
     max_read_bytes: int = 1_000_000_000   # Default 1GB. Increase if you have more RAM - the LLM only sees query results, not the file.
     max_write_bytes: int = 100_000_000    # 100 MB
+    workspace_root_explicit: bool = False  # True when set via CLI arg, env var, or configure()
 
 
 @dataclass
@@ -833,6 +835,12 @@ class AlephMCPServerLocal:
         self._streamable_http_port: int | None = None
         self._streamable_http_path: str | None = None
         self._streamable_http_lock = asyncio.Lock()
+
+        # MCP roots-based workspace resolution (lazy, first action tool call)
+        self._mcp_roots_resolved: bool = False
+        self._workspace_root_source: str = (
+            "explicit" if self.action_config.workspace_root_explicit else "auto-detected"
+        )
 
         # Import MCP lazily so it's an optional dependency
         try:
@@ -2087,6 +2095,27 @@ class AlephMCPServerLocal:
             return "Confirmation required. Re-run with confirm=true."
         return None
 
+    async def _maybe_resolve_workspace_from_roots(self, ctx: "Context") -> None:
+        """Try to resolve workspace root from MCP client roots (lazy, once)."""
+        if self._mcp_roots_resolved or self.action_config.workspace_root_explicit:
+            return
+        self._mcp_roots_resolved = True
+        try:
+            session = ctx.request_context.session
+            roots = await session.list_roots()
+        except Exception:
+            return
+        if not roots or not getattr(roots, "roots", None):
+            return
+        result = roots_to_workspace_root(roots.roots)
+        if result is not None:
+            self.action_config.workspace_root = result
+            self._workspace_root_source = "mcp-roots"
+            try:
+                await ctx.info(f"Workspace root resolved from MCP roots: {result}")
+            except Exception:
+                pass
+
     def _record_action(self, session: _Session | None, note: str, snippet: str) -> None:
         if session is None:
             return
@@ -2449,11 +2478,14 @@ class AlephMCPServerLocal:
             confirm: bool = False,
             output: Literal["json", "markdown", "object"] = "json",
             context_id: str = "default",
+            ctx: Context = None,  # type: ignore[assignment]
         ) -> str | dict[str, Any]:
             """Run a shell command."""
             err = self._require_actions(confirm)
             if err:
                 return _format_error(err, output=output)
+            if ctx is not None:
+                await self._maybe_resolve_workspace_from_roots(ctx)
 
             session = self._get_or_create_session(context_id)
             session.iterations += 1
@@ -2489,11 +2521,14 @@ class AlephMCPServerLocal:
             confirm: bool = False,
             output: Literal["json", "markdown", "object"] = "json",
             context_id: str = "default",
+            ctx: Context = None,  # type: ignore[assignment]
         ) -> str | dict[str, Any]:
             """Fast codebase search using ripgrep (rg) with fallback scanning."""
             err = self._require_actions(confirm)
             if err:
                 return _format_error(err, output=output)
+            if ctx is not None:
+                await self._maybe_resolve_workspace_from_roots(ctx)
             if not pattern:
                 return _format_error("pattern is required", output=output)
             if isinstance(paths, str):
@@ -2603,11 +2638,14 @@ class AlephMCPServerLocal:
             confirm: bool = False,
             output: Literal["json", "markdown", "object"] = "json",
             context_id: str = "default",
+            ctx: Context = None,  # type: ignore[assignment]
         ) -> str | dict[str, Any]:
             """Read file content (raw)."""
             err = self._require_actions(confirm)
             if err:
                 return _format_error(err, output=output)
+            if ctx is not None:
+                await self._maybe_resolve_workspace_from_roots(ctx)
 
             base_override: LineNumberBase | None = None
             if line_number_base is not None:
@@ -2675,11 +2713,14 @@ class AlephMCPServerLocal:
             format: str = "auto",
             line_number_base: LineNumberBase = DEFAULT_LINE_NUMBER_BASE,
             confirm: bool = False,
+            ctx: Context = None,  # type: ignore[assignment]
         ) -> str:
             """Load a workspace file into a context session."""
             err = self._require_actions(confirm)
             if err:
                 return f"Error: {err}"
+            if ctx is not None:
+                await self._maybe_resolve_workspace_from_roots(ctx)
 
             try:
                 base = _validate_line_number_base(line_number_base)
@@ -2719,11 +2760,14 @@ class AlephMCPServerLocal:
             confirm: bool = False,
             output: Literal["json", "markdown", "object"] = "json",
             context_id: str = "default",
+            ctx: Context = None,  # type: ignore[assignment]
         ) -> str | dict[str, Any]:
             """Write file content."""
             err = self._require_actions(confirm)
             if err:
                 return _format_error(err, output=output)
+            if ctx is not None:
+                await self._maybe_resolve_workspace_from_roots(ctx)
 
             session = self._get_or_create_session(context_id)
             session.iterations += 1
@@ -2762,11 +2806,14 @@ class AlephMCPServerLocal:
             confirm: bool = False,
             output: Literal["json", "markdown", "object"] = "json",
             context_id: str = "default",
+            ctx: Context = None,  # type: ignore[assignment]
         ) -> str | dict[str, Any]:
             """Run project tests."""
             err = self._require_actions(confirm)
             if err:
                 return _format_error(err, output=output)
+            if ctx is not None:
+                await self._maybe_resolve_workspace_from_roots(ctx)
 
             session = self._get_or_create_session(context_id)
             session.iterations += 1
@@ -3141,6 +3188,8 @@ class AlephMCPServerLocal:
                 "variables": [k for k in session.repl._namespace.keys() if not k.startswith("_")],
                 "size_chars": session.meta.size_chars,
                 "size_lines": session.meta.size_lines,
+                "workspace_root": str(self.action_config.workspace_root),
+                "workspace_root_source": self._workspace_root_source,
             }
 
             if output == "object":
@@ -3154,6 +3203,7 @@ class AlephMCPServerLocal:
             res.append(f"- **Tracked Tasks**: {len(session.repl._namespace.get('_tasks', []))}")  # type: ignore
             res.append(f"- **User Variables**: {', '.join(status['variables']) or 'None'}")  # type: ignore
             res.append(f"- **Context Size**: {session.meta.size_chars:,} chars ({session.meta.size_lines:,} lines)")
+            res.append(f"- **Workspace Root**: {self.action_config.workspace_root} ({self._workspace_root_source})")
             return "\n".join(res)
 
         @_tool()
@@ -3559,6 +3609,7 @@ class AlephMCPServerLocal:
             max_cmd_seconds: float | None = None,
             sandbox_timeout: float | None = None,
             tool_docs_mode: Literal["concise", "full"] | None = None,
+            workspace_root: str | None = None,
         ) -> str:
             """Update runtime configuration.
 
@@ -3569,6 +3620,7 @@ class AlephMCPServerLocal:
                 max_cmd_seconds: Timeout for shell commands (run_command).
                 sandbox_timeout: Timeout in seconds for exec_python sandbox execution.
                 tool_docs_mode: Tool documentation verbosity (concise or full).
+                workspace_root: Override workspace root for action tools.
             """
             ok, msg = self._apply_sub_query_runtime_config(
                 sub_query_backend=sub_query_backend,
@@ -3587,6 +3639,11 @@ class AlephMCPServerLocal:
                 self.sandbox_config.timeout_seconds = sandbox_timeout
             if tool_docs_mode:
                 self.tool_docs_mode = tool_docs_mode
+            if workspace_root is not None:
+                p = Path(workspace_root).expanduser().resolve()
+                self.action_config.workspace_root = p
+                self.action_config.workspace_root_explicit = True
+                self._workspace_root_source = "explicit"
 
             return "Configuration updated. Re-run `get_status` to see current values."
 
@@ -3929,6 +3986,7 @@ def main() -> None:
         unrestricted=args.unrestricted,
     )
 
+    _ws_explicit = bool(args.workspace_root) or bool(os.environ.get("ALEPH_WORKSPACE_ROOT", "").strip())
     action_cfg = ActionConfig(
         enabled=bool(args.enable_actions),
         workspace_root=Path(args.workspace_root).resolve() if args.workspace_root else _detect_workspace_root(),
@@ -3936,6 +3994,7 @@ def main() -> None:
         require_confirmation=bool(args.require_confirmation),
         max_read_bytes=args.max_file_size,
         max_write_bytes=args.max_write_bytes,
+        workspace_root_explicit=_ws_explicit,
     )
 
     server = AlephMCPServerLocal(

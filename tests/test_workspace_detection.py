@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from aleph.mcp.local_server import _detect_workspace_root
+from aleph.mcp.workspace import roots_to_workspace_root
 
 
 def _make_repo(tmp_path: Path) -> tuple[Path, Path]:
@@ -83,3 +85,68 @@ def test_detect_workspace_root_falls_back_to_cwd(monkeypatch, tmp_path: Path) ->
     monkeypatch.delenv("INIT_CWD", raising=False)
 
     assert _detect_workspace_root() == repo
+
+
+# ---------------------------------------------------------------------------
+# roots_to_workspace_root tests
+# ---------------------------------------------------------------------------
+
+def _root(uri: str) -> SimpleNamespace:
+    """Create a mock MCP Root object."""
+    return SimpleNamespace(uri=uri, name=None)
+
+
+def test_roots_to_workspace_root_picks_git_root(tmp_path: Path) -> None:
+    """Prefer a root that contains a .git directory."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    roots = [_root(plain.as_uri()), _root(repo.as_uri())]
+    result = roots_to_workspace_root(roots)
+    assert result == repo
+
+
+def test_roots_to_workspace_root_falls_back_to_first(tmp_path: Path) -> None:
+    """Without git, picks the first valid directory."""
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
+
+    roots = [_root(a.as_uri()), _root(b.as_uri())]
+    result = roots_to_workspace_root(roots)
+    assert result == a
+
+
+def test_roots_to_workspace_root_empty_list() -> None:
+    """Empty roots list returns None."""
+    assert roots_to_workspace_root([]) is None
+
+
+def test_roots_to_workspace_root_ignores_non_file_uris(tmp_path: Path) -> None:
+    """Non-file:// URIs are skipped."""
+    d = tmp_path / "d"
+    d.mkdir()
+    roots = [_root("https://example.com"), _root(d.as_uri())]
+    result = roots_to_workspace_root(roots)
+    assert result == d
+
+
+def test_roots_to_workspace_root_ignores_missing_dirs(tmp_path: Path) -> None:
+    """Non-existent directories are skipped."""
+    missing = tmp_path / "does_not_exist"
+    real = tmp_path / "real"
+    real.mkdir()
+    roots = [_root(missing.as_uri()), _root(real.as_uri())]
+    result = roots_to_workspace_root(roots)
+    assert result == real
+
+
+def test_roots_to_workspace_root_skips_bad_attrs() -> None:
+    """Objects without a string uri attribute are ignored."""
+    bad1 = SimpleNamespace(uri=123)
+    bad2 = SimpleNamespace()
+    assert roots_to_workspace_root([bad1, bad2]) is None
