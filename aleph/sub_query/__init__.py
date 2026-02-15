@@ -96,7 +96,7 @@ class SubQueryConfig:
     api_model: str | None = None
 
     # Behavior
-    max_context_chars: int = 100_000
+    max_context_chars: int = 20_000
     include_system_prompt: bool = True
     validation_regex: str | None = None
     max_retries: int = 0

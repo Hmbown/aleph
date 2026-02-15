@@ -60,6 +60,9 @@ class AlephConfig:
     # Custom prompt
     system_prompt: str | None = None
 
+    # RLM output feedback mode: "full" (default) or "metadata" (paper-aligned)
+    output_feedback: str = "full"
+
     # Swarm mode settings
     # Enable with ALEPH_SWARM_MODE=true or --swarm-mode flag
     swarm_mode: bool = False
@@ -173,4 +176,5 @@ def create_aleph(config: AlephConfig | Mapping[str, object] | str | Path | None 
         system_prompt=cfg.system_prompt,
         enable_caching=cfg.enable_caching,
         log_trajectory=cfg.log_trajectory,
+        output_feedback=cfg.output_feedback,
     )

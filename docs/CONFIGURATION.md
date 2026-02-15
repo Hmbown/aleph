@@ -10,6 +10,9 @@ programmatic configuration.
 | Variable                              | Purpose                                         | Default                       |
 |---------------------------------------|-------------------------------------------------|-------------------------------|
 | `ALEPH_WORKSPACE_ROOT`                | Override workspace root detection                | auto-detect                   |
+| `ALEPH_CONTEXT_POLICY`               | Context policy (`trusted` or `isolated`)         | `trusted`                     |
+| `ALEPH_OUTPUT_FEEDBACK`              | REPL output mode (`full` or `metadata`)          | `full`                        |
+| `ALEPH_MAX_RECIPE_CONCURRENCY`       | Max parallel `map_sub_query` tasks in recipes    | `10`                          |
 | `ALEPH_SUB_QUERY_BACKEND`            | Force sub-query backend                          | `auto`                        |
 | `ALEPH_SUB_QUERY_TIMEOUT`            | Sub-query timeout in seconds                     | CLI 300 / API 120             |
 | `ALEPH_SUB_QUERY_SHARE_SESSION`      | Share MCP session with CLI sub-agents            | `false`                       |
@@ -273,6 +276,118 @@ aleph --tool-docs full
 command = "aleph"
 args = ["--enable-actions", "--tool-docs", "concise"]
 ```
+
+---
+
+## Deployment Profiles
+
+Aleph ships two context policies that control how aggressively the server
+guards raw context at the MCP boundary. Choose based on your threat model.
+
+### Trusted (default)
+
+Low friction. Auto memory-pack save/load on startup and finalize. Session
+export without explicit confirmation. Best for local development, personal
+analysis, and trusted MCP clients.
+
+```bash
+# Explicit (same as default)
+export ALEPH_CONTEXT_POLICY=trusted
+```
+
+### Isolated
+
+Explicit-consent mode. Designed for shared-server deployments, untrusted
+MCP clients, or any scenario where context should not leave RAM without
+deliberate action.
+
+```bash
+export ALEPH_CONTEXT_POLICY=isolated
+```
+
+Behavioral differences in isolated mode:
+
+| Surface | Trusted | Isolated |
+|---|---|---|
+| `get_variable("ctx")` | blocked (always) | blocked with alternatives guidance |
+| `save_session` | works without confirm | requires `confirm=true` |
+| `load_session` | works without confirm | requires `confirm=true` |
+| Auto memory-pack save | on finalize | disabled |
+| Auto memory-pack load | on startup | disabled |
+
+When a tool is blocked in isolated mode, the response includes actionable
+alternatives (e.g. use `exec_python` + `get_variable`, `peek_context`,
+`search_context`) and a hint to switch policy via `configure()` if
+appropriate.
+
+### Switching at Runtime
+
+```python
+configure(context_policy="isolated")   # Enables isolated guards
+configure(context_policy="trusted")    # Restores defaults
+```
+
+The `configure` response confirms the new policy and explains what changed.
+
+---
+
+## Output Feedback Mode
+
+Controls how `exec_python` results are formatted in the core RLM loop.
+Aligned with the RLM paper's observation that metadata-only feedback can
+reduce context window consumption.
+
+| Mode | Behavior |
+|---|---|
+| `full` (default) | Raw stdout, stderr, return value, and error in the prompt |
+| `metadata` | Structured summary: status, line/char counts, return type, variable names, execution time. Raw content omitted. |
+
+```bash
+export ALEPH_OUTPUT_FEEDBACK=metadata
+```
+
+Or at runtime:
+
+```python
+configure(output_feedback="metadata")
+```
+
+**When to use `metadata` mode:** Large-scale analysis where `exec_python`
+produces verbose output that would fill the context window. The LLM sees
+dimensions (e.g. "stdout_lines: 42, stdout_chars: 8301") and can request
+specific slices via `peek_context` or `get_variable` as needed.
+
+**When to keep `full` mode:** Interactive exploration, debugging, and any
+workflow where seeing raw output is more efficient than navigating by
+metadata.
+
+---
+
+## Context Isolation
+
+Aleph enforces hard boundaries so raw context never leaks into MCP tool
+responses:
+
+| Boundary | Default | Env Variable |
+|---|---|---|
+| MCP tool response cap | 10,000 chars | `ALEPH_MAX_TOOL_RESPONSE_CHARS` |
+| Sandbox output cap | 50,000 chars | (via `SandboxConfig.max_output_chars`) |
+| `get_variable("ctx")` | blocked | N/A |
+| System prompt preview | omitted | N/A |
+
+**`get_variable("ctx")` is blocked.** The MCP boundary refuses to return
+the raw context variable. In isolated mode the error message lists
+alternatives. Process data inside `exec_python` and retrieve only compact
+derived results:
+
+```python
+exec_python(code="summary = ctx[:100]", context_id="doc")
+get_variable(name="summary", context_id="doc")
+```
+
+**Execution output is truncated.** `exec_python` stdout, stderr, and
+return values are each truncated at the sandbox level, then the formatted
+MCP response is capped again at `max_tool_response_chars`.
 
 ---
 

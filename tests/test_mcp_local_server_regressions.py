@@ -92,6 +92,20 @@ async def test_rebinding_helper_names_in_exec_python_does_not_break_tools() -> N
 
 
 @pytest.mark.asyncio
+async def test_exec_python_truncates_large_ctx_return_value() -> None:
+    server = AlephMCPServerLocal(
+        sandbox_config=SandboxConfig(timeout_seconds=5.0, max_output_chars=200)
+    )
+    await _call_tool(server, "load_context", context="A" * 20_000, context_id="doc")
+
+    result = await _call_tool(server, "exec_python", context_id="doc", code="ctx")
+    assert isinstance(result, str)
+    assert "TRUNCATED" in result
+    assert "A" * 1_000 not in result
+    assert len(result) <= server.max_tool_response_chars
+
+
+@pytest.mark.asyncio
 async def test_load_session_accepts_context_id_format_and_reports_skipped(tmp_path: Path) -> None:
     server = AlephMCPServerLocal(
         sandbox_config=SandboxConfig(timeout_seconds=5.0),

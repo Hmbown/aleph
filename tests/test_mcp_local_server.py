@@ -1169,6 +1169,38 @@ async def test_sub_query_validation_retry():
 
 
 @pytest.mark.asyncio
+async def test_sub_query_retry_prompt_does_not_duplicate_share_session_note():
+    server = AlephMCPServerLocal(sub_query_config=SubQueryConfig(validation_regex=r"^OK:", max_retries=1))
+    with patch.dict(os.environ, {"ALEPH_SUB_QUERY_SHARE_SESSION": "true"}, clear=False):
+        with patch.object(
+            server,
+            "_ensure_streamable_http_server",
+            new=AsyncMock(return_value=(True, "http://127.0.0.1:8765/mcp")),
+        ):
+            with patch("aleph.mcp.local_server.run_cli_sub_query", new=AsyncMock()) as mock_run:
+                mock_run.side_effect = [
+                    (True, "BAD OUTPUT"),
+                    (True, "OK: good"),
+                ]
+                success, output, _, _ = await server._run_sub_query(
+                    prompt="Return OK: ...",
+                    context_slice="ctx",
+                    context_id="default",
+                    backend="codex",
+                )
+
+    assert success is True
+    assert output == "OK: good"
+    assert mock_run.call_count == 2
+
+    first_prompt = mock_run.call_args_list[0].kwargs["prompt"]
+    second_prompt = mock_run.call_args_list[1].kwargs["prompt"]
+    assert first_prompt.count("[MCP tools are available via the live Aleph server.") == 1
+    assert second_prompt.count("[MCP tools are available via the live Aleph server.") == 1
+    assert "Required format regex" in second_prompt
+
+
+@pytest.mark.asyncio
 async def test_sub_query_validation_failure():
     server = AlephMCPServerLocal(sub_query_config=SubQueryConfig(validation_regex=r"^OK:", max_retries=0))
     with patch("aleph.mcp.local_server.run_cli_sub_query", new=AsyncMock()) as mock_run:
@@ -1184,7 +1216,7 @@ async def test_sub_query_validation_failure():
 
 
 @pytest.mark.asyncio
-async def test_run_sub_aleph_uses_session_context(loaded_server):
+async def test_run_sub_aleph_does_not_auto_use_session_context(loaded_server):
     response = AlephResponse(
         answer="Line 1: Hello World",
         success=True,
@@ -1205,9 +1237,26 @@ async def test_run_sub_aleph_uses_session_context(loaded_server):
             )
     assert result.success is True
     assert meta["budget"].max_depth == 3
-    assert mock_complete.call_args.kwargs["context"].startswith("Line 1")
+    assert mock_complete.call_args.kwargs["context"] == ""
     session = loaded_server._sessions["test"]
     assert session.evidence[-1].source == "sub_aleph"
+
+
+@pytest.mark.asyncio
+async def test_run_sub_query_does_not_auto_use_session_context(loaded_server):
+    with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "codex"}, clear=True):
+        with patch("aleph.mcp.local_server.run_cli_sub_query", new=AsyncMock(return_value=(True, "OK"))) as mock_run:
+            success, output, truncated, backend = await loaded_server._run_sub_query(
+                prompt="Return ok",
+                context_slice=None,
+                context_id="test",
+                backend="codex",
+            )
+    assert success is True
+    assert output == "OK"
+    assert truncated is False
+    assert backend == "codex"
+    assert mock_run.call_args.kwargs["context_slice"] is None
 
 
 @pytest.mark.asyncio
@@ -1223,6 +1272,65 @@ async def test_run_sub_aleph_cli_single_shot(loaded_server):
     assert result.answer == "ok"
     assert meta["backend"] == "codex"
     assert mock_run.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_sub_aleph_tool_not_registered(loaded_server):
+    tools = await loaded_server.server.list_tools()
+    names = {tool.name for tool in tools}
+    assert "sub_aleph" not in names
+
+
+@pytest.mark.asyncio
+async def test_get_variable_allows_ctx_in_trusted_policy(loaded_server):
+    result = await loaded_server.server._tool_manager.call_tool(
+        "get_variable",
+        {"name": "ctx", "context_id": "test"},
+        convert_result=False,
+    )
+    assert isinstance(result, str)
+    assert "Line 1: Hello World" in result
+
+
+@pytest.mark.asyncio
+async def test_get_variable_blocks_ctx_in_isolated_policy(sandbox_config):
+    server = AlephMCPServerLocal(
+        sandbox_config=sandbox_config,
+        action_config=ActionConfig(context_policy="isolated"),
+    )
+    await _call_tool(server, "load_context", context="secret text", context_id="isolated")
+
+    result = await server.server._tool_manager.call_tool(
+        "get_variable",
+        {"name": "ctx", "context_id": "isolated"},
+        convert_result=False,
+    )
+    assert isinstance(result, str)
+    assert "blocked" in result.lower() or "restricted" in result.lower()
+    assert "isolated" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_get_variable_missing_returns_none(loaded_server):
+    result = await loaded_server.server._tool_manager.call_tool(
+        "get_variable",
+        {"name": "does_not_exist", "context_id": "test"},
+        convert_result=False,
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_variable_truncates_large_values(loaded_server):
+    await loaded_server._sessions["test"].repl.execute_async("big_var = 'x' * 20000")
+    result = await loaded_server.server._tool_manager.call_tool(
+        "get_variable",
+        {"name": "big_var", "context_id": "test"},
+        convert_result=False,
+    )
+    assert isinstance(result, dict)
+    assert result["truncated"] is True
+    assert result["name"] == "big_var"
 
 
 # ---------------------------------------------------------------------------

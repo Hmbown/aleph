@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.8.5
+
+- Added: Deployment profiles (`trusted` / `isolated`) via
+  `ALEPH_CONTEXT_POLICY` env var and `configure(context_policy=...)`.
+  Isolated mode requires `confirm=true` for session save/load and disables
+  auto memory-pack.
+- Added: RLM output feedback mode (`full` / `metadata`) via
+  `ALEPH_OUTPUT_FEEDBACK` env var and `configure(output_feedback=...)`.
+  Metadata mode reports dimensions (line counts, char counts, return types)
+  without raw content, reducing context window consumption.
+- Improved: Blocked-tool messages in isolated mode now include actionable
+  alternatives (`exec_python`, `peek_context`, `search_context`) and a
+  hint to switch policy via `configure()`.
+- Improved: `configure()` returns detailed guidance when switching context
+  policy, explaining what changed.
+- Improved: Recipe `map_sub_query` now runs sub-queries in parallel
+  (`asyncio.gather` with semaphore, max 10 concurrent) and checks budget
+  upfront before dispatching.
+- Refactored: Session serialization consolidated into `aleph/mcp/session.py`
+  as canonical source. Removed ~200 lines of duplicated code from
+  `local_server.py`.
+- Added: Typed `EvidenceSource` Literal and `sub_aleph` evidence source.
+- Tests: 20+ new tests covering policy UX messaging, output feedback modes,
+  context isolation regressions, and serialization consolidation.
+- Docs: Added deployment profiles and output feedback mode sections to
+  CONFIGURATION.md.
+
+## 0.8.4
+
+- Security: Raw context preview omitted from default system prompt
+  (`[OMITTED FOR CONTEXT ISOLATION]`) to prevent unintentional context leakage.
+- Security: `get_variable("ctx")` blocked at the MCP boundary with a clear
+  error directing users to `exec_python`.
+- Fixed: `exec_python` return values are now truncated at the sandbox layer,
+  preventing large context strings from leaking through `repr()` of the
+  return value.
+- Fixed: MCP execution result formatting applies `_truncate_tool_text` to
+  stdout, stderr, return value, and the final assembled output independently.
+- Added: `ALEPH_MAX_TOOL_RESPONSE_CHARS` env var (default 10,000) for MCP
+  tool response cap.
+- Added: Defense-in-depth truncation in `tool_registry.py` `get_variable`
+  and `exec_python` output paths.
+- Tests: New regression tests in `test_context_isolation_regressions.py`,
+  `test_sandbox.py` (return value truncation), and
+  `test_mcp_local_server_regressions.py` (MCP-level truncation).
+- Docs: Added "Context Isolation and Safety" section to README, updated
+  CONFIGURATION.md and debug diagnostic doc.
+
 ## 0.8.1
 
 - Docs: Rewrote README `$aleph` sections to document the intended Codex flow

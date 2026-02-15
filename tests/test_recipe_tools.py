@@ -177,6 +177,53 @@ async def test_execute_recipe_map_sub_query_with_mocked_backend() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_recipe_map_sub_query_respects_custom_concurrency_limit() -> None:
+    server = AlephMCPServerLocal(
+        sandbox_config=SandboxConfig(timeout_seconds=5.0, max_output_chars=5000),
+        max_recipe_concurrency=2,
+    )
+    await _load_context(
+        server,
+        (
+            "2026-01-01 ERROR auth failed\n"
+            "2026-01-01 ERROR disk full\n"
+            "2026-01-01 ERROR timeout\n"
+            "2026-01-01 ERROR panic"
+        ),
+    )
+
+    active = 0
+    max_active = 0
+
+    async def _tracked_sub_query(*, prompt: str, context_slice: str | None, context_id: str, backend: str) -> tuple[bool, str, bool, str]:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.02)
+        active -= 1
+        return True, "summary", False, "codex"
+
+    with patch.object(server, "_run_sub_query", new=AsyncMock(side_effect=_tracked_sub_query)):
+        ok, payload = await server._execute_recipe(
+            recipe={
+                "steps": [
+                    {"op": "search", "pattern": "ERROR", "max_results": 4},
+                    {
+                        "op": "map_sub_query",
+                        "prompt": "Summarize root cause",
+                        "context_field": "context",
+                        "backend": "codex",
+                    },
+                ]
+            }
+        )
+
+    assert ok
+    assert payload["sub_queries_used"] == 4
+    assert 1 < max_active <= 2
+
+
+@pytest.mark.asyncio
 async def test_execute_recipe_enforces_sub_query_budget() -> None:
     server = _make_server()
     await _load_context(
@@ -201,8 +248,9 @@ async def test_execute_recipe_enforces_sub_query_budget() -> None:
         )
 
     assert not ok
-    assert "sub-query budget exceeded" in payload["error"]
-    assert mock_sq.await_count == 1
+    assert "budget" in payload["error"].lower() and "exceeded" in payload["error"].lower()
+    # Budget check happens up-front for parallel; no calls should be made
+    assert mock_sq.await_count == 0
 
 
 def test_validate_recipe_chunk_op() -> None:

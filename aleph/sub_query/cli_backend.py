@@ -18,6 +18,7 @@ __all__ = ["run_cli_sub_query", "CLI_BACKENDS"]
 
 
 CLI_BACKENDS = ("claude", "codex", "gemini", "kimi")
+DEFAULT_MAX_CONTEXT_CHARS = 20_000
 
 _KEEP_MCP_CONFIG_ENV = "ALEPH_SUB_QUERY_KEEP_MCP_CONFIG"
 
@@ -43,6 +44,7 @@ async def run_cli_sub_query(
     timeout: float = 300.0,
     cwd: Path | None = None,
     max_output_chars: int = 50_000,
+    max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
     mcp_server_url: str | None = None,
     mcp_server_name: str = "aleph_shared",
     trust_mcp_server: bool = True,
@@ -60,9 +62,13 @@ async def run_cli_sub_query(
     Returns:
         Tuple of (success, output).
     """
-    # Build the full prompt
+    if context_slice and max_context_chars > 0 and len(context_slice) > max_context_chars:
+        context_slice = context_slice[:max_context_chars]
+
+    # Build the full prompt. When MCP session sharing is enabled, keep context
+    # inside the shared tools boundary instead of embedding raw slices in prompt.
     full_prompt = prompt
-    if context_slice:
+    if context_slice and not mcp_server_url:
         full_prompt = f"{prompt}\n\n---\nContext:\n{context_slice}"
     
     # For very long prompts, write to a temp file and pass via stdin/file

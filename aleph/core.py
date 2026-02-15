@@ -56,6 +56,11 @@ _CODE_BLOCK_RE = re.compile(r"```(?:python)?\s*\n(.*?)```", re.DOTALL)
 class Aleph:
     """Recursive Language Model runner."""
 
+    # Supported output feedback modes for the RLM loop.
+    #   "full"     – raw stdout/stderr/return_value (default, practical utility)
+    #   "metadata" – structured summary only (RLM paper alignment)
+    OUTPUT_FEEDBACK_MODES = ("full", "metadata")
+
     def __init__(
         self,
         provider: LLMProvider | str = "anthropic",
@@ -67,6 +72,7 @@ class Aleph:
         enable_caching: bool = True,
         log_trajectory: bool = True,
         context_var_name: str = "ctx",
+        output_feedback: str = "full",
     ) -> None:
         """Create an Aleph runner.
 
@@ -80,6 +86,7 @@ class Aleph:
             enable_caching: Enable memoization for sub-queries.
             log_trajectory: Record a full trajectory in the response.
             context_var_name: Variable name used to expose context in the REPL.
+            output_feedback: Execution result feedback mode ("full" or "metadata").
         """
         if isinstance(provider, str):
             self.provider = get_provider(provider)
@@ -94,6 +101,11 @@ class Aleph:
         self.enable_caching = enable_caching
         self.log_trajectory = log_trajectory
         self.context_var_name = context_var_name
+        if output_feedback not in self.OUTPUT_FEEDBACK_MODES:
+            raise ValueError(
+                f"output_feedback must be one of {self.OUTPUT_FEEDBACK_MODES}, got {output_feedback!r}"
+            )
+        self.output_feedback = output_feedback
 
         self._cache: MemoryCache[str] | None = MemoryCache() if enable_caching else None
 
@@ -693,7 +705,7 @@ class Aleph:
             context_size_chars=meta.size_chars,
             context_size_lines=meta.size_lines,
             context_size_tokens=meta.size_tokens_estimate,
-            context_preview=meta.sample_preview,
+            context_preview="[OMITTED FOR CONTEXT ISOLATION]",
             structure_hint=meta.structure_hint or "N/A",
         )
         return [
@@ -749,6 +761,25 @@ class Aleph:
         return raw
 
     def _format_repl_result(self, result: ExecutionResult) -> str:
+        """Format execution result for LLM feedback, respecting output_feedback mode."""
+        if self.output_feedback == "metadata":
+            return self._format_repl_result_metadata(result)
+        return self._format_repl_result_full(result)
+
+    def _format_repl_result_full(self, result: ExecutionResult) -> str:
+        """Full output feedback — practical utility, raw stdout/stderr included."""
+        suffix = "\n... [OUTPUT TRUNCATED]"
+        sandbox_cfg = getattr(self, "sandbox_config", None)
+        limit = max(0, int(getattr(sandbox_cfg, "max_output_chars", 50_000)))
+
+        def _truncate(text: str) -> tuple[str, bool]:
+            if limit <= 0 or len(text) <= limit:
+                return text, False
+            if limit <= len(suffix):
+                return suffix[:limit], True
+            keep = limit - len(suffix)
+            return text[:keep] + suffix, True
+
         parts: list[str] = []
         if result.stdout:
             parts.append(result.stdout)
@@ -756,12 +787,72 @@ class Aleph:
             parts.append("[STDERR]\n" + result.stderr)
         if result.error and (not result.stderr):
             parts.append("[ERROR]\n" + result.error)
+        return_value_truncated = False
         if result.return_value is not None:
-            parts.append(f"[RETURN_VALUE]\n{result.return_value}")
+            rendered_return, return_value_truncated = _truncate(str(result.return_value))
+            parts.append(f"[RETURN_VALUE]\n{rendered_return}")
+        if result.truncated or return_value_truncated:
+            parts.append("[NOTE]\nOutput was truncated")
 
         out = "\n".join(parts).strip()
         if not out:
             out = "(no output)"
+        out, _ = _truncate(out)
+        return f"```output\n{out}\n```"
+
+    def _format_repl_result_metadata(self, result: ExecutionResult) -> str:
+        """Metadata-only feedback — RLM paper-aligned, no raw content in prompt.
+
+        Reports structured summary: status, output size, variables updated,
+        execution time, and error messages (errors always shown for recovery).
+        """
+        parts: list[str] = []
+
+        # Status
+        if result.error:
+            parts.append("status: error")
+            parts.append(f"error: {result.error}")
+        else:
+            parts.append("status: ok")
+
+        # Output dimensions (not content)
+        if result.stdout:
+            stdout_lines = result.stdout.count("\n") + 1
+            parts.append(f"stdout_lines: {stdout_lines}")
+            parts.append(f"stdout_chars: {len(result.stdout)}")
+        if result.stderr:
+            stderr_lines = result.stderr.count("\n") + 1
+            parts.append(f"stderr_lines: {stderr_lines}")
+            # Always include stderr content for debugging recovery
+            stderr_preview = result.stderr[:500]
+            if len(result.stderr) > 500:
+                stderr_preview += "..."
+            parts.append(f"stderr: {stderr_preview}")
+
+        # Return value type and size
+        if result.return_value is not None:
+            rv = result.return_value
+            rv_type = type(rv).__name__
+            if isinstance(rv, str):
+                parts.append(f"return_type: str (len={len(rv)})")
+            elif isinstance(rv, (list, tuple)):
+                parts.append(f"return_type: {rv_type} (len={len(rv)})")
+            elif isinstance(rv, dict):
+                parts.append(f"return_type: dict (keys={len(rv)})")
+            else:
+                parts.append(f"return_type: {rv_type}")
+
+        # Variables updated
+        if result.variables_updated:
+            parts.append(f"variables_updated: {', '.join(result.variables_updated)}")
+
+        # Timing
+        parts.append(f"execution_time_ms: {result.execution_time_ms:.0f}")
+
+        if result.truncated:
+            parts.append("truncated: true")
+
+        out = "\n".join(parts)
         return f"```output\n{out}\n```"
 
     def _trim_messages(self, messages: list[Message], model: str) -> None:

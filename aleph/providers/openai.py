@@ -80,10 +80,16 @@ class OpenAIProvider(BaseHTTPProvider):
         if self._org:
             headers["openai-organization"] = self._org
 
+        # Newer OpenAI models (o1+, gpt-4.1+, gpt-5+) require
+        # max_completion_tokens instead of the legacy max_tokens param.
+        _new_api_prefixes = ("o1", "o3", "o4", "gpt-4.1", "gpt-4o-", "gpt-5")
+        use_new_param = any(model.startswith(p) for p in _new_api_prefixes)
+        token_key = "max_completion_tokens" if use_new_param else "max_tokens"
+
         payload: dict[str, object] = {
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens,
+            token_key: max_tokens,
             "temperature": temperature,
         }
         if stop_sequences:

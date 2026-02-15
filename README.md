@@ -331,6 +331,53 @@ exec_python(code="ctx_append('Auth uses JWT with RS256')", context_id="task-42-f
 search_context(pattern="JWT", context_id="task-42-findings")
 ```
 
+## Context Isolation and Safety
+
+Aleph enforces strict boundaries to prevent raw context from leaking into
+the LLM's context window:
+
+- **System prompt isolation.** The default system prompt does not include a
+  raw context preview. The placeholder is replaced with
+  `[OMITTED FOR CONTEXT ISOLATION]`.
+- **`get_variable("ctx")` is blocked.** Retrieving the full context variable
+  via the MCP boundary is refused. Process data inside `exec_python` and
+  retrieve only compact derived results with `get_variable`.
+- **Execution output truncation.** `exec_python` stdout, stderr, and return
+  values are all truncated to `max_output_chars` (default 50,000). The MCP
+  tool response is further capped at `max_tool_response_chars` (default
+  10,000). Both limits are configurable.
+- **Tool response caps.** Every MCP tool response (peek, search, semantic
+  search, get_variable, etc.) is bounded by the same response-size cap.
+
+### Deployment Profiles
+
+Set `ALEPH_CONTEXT_POLICY` to choose a profile:
+
+| Profile | Behavior |
+|---|---|
+| `trusted` (default) | Low friction. Auto memory-pack, session save/load without confirmation. |
+| `isolated` | Explicit consent. Requires `confirm=true` for session export/import, disables auto memory-pack. Blocked tools return actionable alternatives. |
+
+Switch at runtime with `configure(context_policy="isolated")`. See
+[CONFIGURATION.md](docs/CONFIGURATION.md#deployment-profiles) for details.
+
+### Safe Usage Pattern
+
+```python
+# Compute server-side — data stays in Aleph RAM
+exec_python(code="""
+errors = [l for l in ctx.splitlines() if 'error' in l.lower()]
+result = f'Found {len(errors)} errors. First 3: {errors[:3]}'
+""", context_id="doc")
+
+# Retrieve only the small derived result
+get_variable(name="result", context_id="doc")
+```
+
+Avoid `print(ctx)` or `get_variable("ctx")` — these patterns attempt to
+move the full context across the MCP boundary and will be truncated or
+blocked.
+
 ## Configuration Quick Reference
 
 ### Workspace and Safety
@@ -341,6 +388,8 @@ search_context(pattern="JWT", context_id="task-42-findings")
 | `--workspace-mode <fixed|git|any>` | Path access policy |
 | `--require-confirmation` | Require `confirm=true` for actions |
 | `ALEPH_WORKSPACE_ROOT` | Override workspace root |
+| `ALEPH_CONTEXT_POLICY` | `trusted` (default) or `isolated` |
+| `ALEPH_OUTPUT_FEEDBACK` | `full` (default) or `metadata` |
 
 ### Limits
 
@@ -350,6 +399,7 @@ search_context(pattern="JWT", context_id="task-42-findings")
 | `--max-write-bytes` | 100 MB | Max file write size |
 | `--timeout` | 60 s | Sandbox/command timeout |
 | `--max-output` | 50,000 chars | Max command output |
+| `ALEPH_MAX_TOOL_RESPONSE_CHARS` | 10,000 chars | MCP tool response cap |
 
 ### Recursion Budgets
 
@@ -378,6 +428,8 @@ Full configuration details: [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
 |---|---|
 | [MCP_SETUP.md](MCP_SETUP.md) | Client-by-client MCP configuration |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Full flags and environment variables |
+| [docs/langgraph-rlm-default.md](docs/langgraph-rlm-default.md) | LangGraph integration with RLM-default tool usage |
+| [examples/langgraph_rlm_repo_improver.py](examples/langgraph_rlm_repo_improver.py) | Repo-improvement runner with optional LangSmith tracing |
 | [docs/prompts/aleph.md](docs/prompts/aleph.md) | Skill workflow and tool reference |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Contributor guide |

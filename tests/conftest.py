@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -13,6 +14,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aleph.repl.sandbox import REPLEnvironment, SandboxConfig  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _clean_aleph_env_vars() -> None:
+    """Prevent ALEPH_* env var leakage between tests."""
+    keys = ("ALEPH_CONTEXT_POLICY", "ALEPH_OUTPUT_FEEDBACK")
+    saved = {k: os.environ.get(k) for k in keys}
+    yield
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
 
 
 @pytest.fixture
