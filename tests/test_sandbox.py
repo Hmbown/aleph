@@ -274,6 +274,15 @@ class TestSandboxExecution:
         assert result.truncated is True
         assert "TRUNCATED" in result.stdout
 
+    def test_return_value_truncation(self) -> None:
+        config = SandboxConfig(max_output_chars=50)
+        repl = REPLEnvironment(context="x" * 1000, config=config)
+        result = repl.execute("ctx")
+        assert result.truncated is True
+        assert isinstance(result.return_value, str)
+        assert "TRUNCATED" in result.return_value
+        assert len(result.return_value) <= 50
+
     def test_timeout_enforced_execute_async(self) -> None:
         config = SandboxConfig(timeout_seconds=0.2)
         repl = REPLEnvironment(context="test", config=config)
@@ -285,3 +294,76 @@ class TestSandboxExecution:
         )
         assert result.error is not None
         assert "timeout" in result.error.lower()
+
+
+class TestOutputFeedbackModes:
+    """Tests for Aleph core RLM output feedback modes."""
+
+    def _make_aleph(self, output_feedback: str = "full") -> object:
+        from aleph.core import Aleph
+        a = Aleph.__new__(Aleph)
+        a.sandbox_config = SandboxConfig(timeout_seconds=5.0)
+        a.output_feedback = output_feedback
+        return a
+
+    def _make_result(self, **kwargs: object) -> object:
+        from aleph.types import ExecutionResult
+        defaults = dict(
+            stdout="", stderr="", return_value=None,
+            variables_updated=[], truncated=False,
+            execution_time_ms=42.0, error=None,
+        )
+        defaults.update(kwargs)
+        return ExecutionResult(**defaults)  # type: ignore[arg-type]
+
+    def test_full_mode_includes_stdout(self) -> None:
+        a = self._make_aleph("full")
+        result = self._make_result(stdout="hello world\nline 2")
+        out = a._format_repl_result(result)
+        assert "hello world" in out
+        assert "line 2" in out
+
+    def test_metadata_mode_excludes_stdout_content(self) -> None:
+        a = self._make_aleph("metadata")
+        result = self._make_result(stdout="SECRET_DATA_123\nline 2")
+        out = a._format_repl_result(result)
+        assert "SECRET_DATA_123" not in out
+        assert "stdout_lines: 2" in out
+        assert "stdout_chars:" in out
+
+    def test_metadata_mode_reports_return_type(self) -> None:
+        a = self._make_aleph("metadata")
+        result = self._make_result(return_value=[1, 2, 3])
+        out = a._format_repl_result(result)
+        assert "return_type: list (len=3)" in out
+        assert "[1, 2, 3]" not in out
+
+    def test_metadata_mode_includes_error_for_recovery(self) -> None:
+        a = self._make_aleph("metadata")
+        result = self._make_result(error="NameError: name 'foo' is not defined")
+        out = a._format_repl_result(result)
+        assert "status: error" in out
+        assert "NameError" in out
+
+    def test_metadata_mode_reports_variables_updated(self) -> None:
+        a = self._make_aleph("metadata")
+        result = self._make_result(
+            stdout="ok", variables_updated=["x", "y"],
+        )
+        out = a._format_repl_result(result)
+        assert "variables_updated: x, y" in out
+
+    def test_metadata_mode_reports_execution_time(self) -> None:
+        a = self._make_aleph("metadata")
+        result = self._make_result(execution_time_ms=123.4)
+        out = a._format_repl_result(result)
+        assert "execution_time_ms: 123" in out
+
+    def test_invalid_output_feedback_raises(self) -> None:
+        from aleph.core import Aleph
+        with pytest.raises(ValueError, match="output_feedback"):
+            Aleph(provider="anthropic", output_feedback="invalid")
+
+    def test_full_mode_is_default(self) -> None:
+        a = self._make_aleph()
+        assert a.output_feedback == "full"

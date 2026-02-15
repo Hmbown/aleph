@@ -26,7 +26,7 @@ class TestSubQueryConfig:
     def test_default_config(self):
         config = SubQueryConfig()
         assert config.backend == "auto"
-        assert config.max_context_chars == 100_000
+        assert config.max_context_chars == 20_000
         assert config.api_key_env == DEFAULT_API_KEY_ENV
         assert config.api_base_url_env == DEFAULT_API_BASE_URL_ENV
         assert config.api_model_env == DEFAULT_API_MODEL_ENV
@@ -216,6 +216,46 @@ class TestCliBackend:
             # Verify the command was called (exact args depend on backend)
             mock_exec.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_cli_context_slice_respects_max_context_chars(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"OK", b""))
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            success, output = await run_cli_sub_query(
+                prompt="Summarize this:",
+                context_slice="ABCDEFGHIJ",
+                backend="codex",
+                max_context_chars=4,
+            )
+            assert success is True
+            assert output == "OK"
+            mock_exec.assert_called_once()
+            cmd = list(mock_exec.call_args.args)
+            assert "ABCD" in cmd[-1]
+            assert "ABCDE" not in cmd[-1]
+
+    @pytest.mark.asyncio
+    async def test_cli_with_shared_mcp_does_not_embed_context_slice(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"OK", b""))
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            success, output = await run_cli_sub_query(
+                prompt="Summarize this",
+                context_slice="VERY_SECRET_CONTEXT",
+                backend="codex",
+                mcp_server_url="http://127.0.0.1:8765/mcp",
+            )
+            assert success is True
+            assert output == "OK"
+            mock_exec.assert_called_once()
+            cmd = list(mock_exec.call_args.args)
+            assert cmd[-1] == "Summarize this"
+            assert "VERY_SECRET_CONTEXT" not in cmd[-1]
+
 
 class TestApiBackend:
     """Tests for API backend."""
@@ -340,6 +380,41 @@ class TestApiBackend:
                 payload = call_args.kwargs.get("json", call_args.args[1] if len(call_args.args) > 1 else {})
                 messages = payload.get("messages", [])
                 assert any(m.get("role") == "system" for m in messages)
+
+    @pytest.mark.asyncio
+    async def test_api_context_slice_respects_max_context_chars(self):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Response"}}]
+        }
+
+        with patch.dict(
+            os.environ,
+            {"ALEPH_SUB_QUERY_API_KEY": "test-key", "ALEPH_SUB_QUERY_MODEL": "gpt-5.2-codex"},
+            clear=True,
+        ):
+            with patch("httpx.AsyncClient") as mock_client:
+                mock_instance = AsyncMock()
+                mock_instance.post = AsyncMock(return_value=mock_response)
+                mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+                mock_instance.__aexit__ = AsyncMock(return_value=None)
+                mock_client.return_value = mock_instance
+
+                success, output = await run_api_sub_query(
+                    prompt="test",
+                    context_slice="ABCDEFGHIJ",
+                    max_context_chars=4,
+                )
+                assert success is True
+                assert output == "Response"
+
+                call_args = mock_instance.post.call_args
+                payload = call_args.kwargs.get("json", call_args.args[1] if len(call_args.args) > 1 else {})
+                messages = payload.get("messages", [])
+                user_message = next(m.get("content", "") for m in messages if m.get("role") == "user")
+                assert "ABCD" in user_message
+                assert "ABCDE" not in user_message
 
     @pytest.mark.asyncio
     async def test_api_model_override_param(self):

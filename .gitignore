@@ -12,11 +12,13 @@ __pycache__/
 # Build artifacts
 build/
 dist/
+dist_*/
 *.egg-info/
 
 # Environments
 .env
 .venv/
+.venv*/
 venv/
 ENV/
 
@@ -27,6 +29,8 @@ ENV/
 
 # Local MCP host configs (per-user)
 .mcp.json
+.claude/
+.gemini/
 
 # Local project artifacts
 .cursor/
@@ -35,7 +39,6 @@ texput.log
 # Aleph local workspace (sessions, per-user)
 .aleph/
 tmp/
-nedw cocomp/
 *session.json
 aleph_infinite*.json
 prompt-next.md
@@ -48,3 +51,7 @@ firebase-debug.log
 docs/*.pdf
 docs/*.txt
 docs/architecture/
+
+# Local research/side projects
+ARC-AGI-3-Agents/
+rsi/

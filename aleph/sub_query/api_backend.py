@@ -21,6 +21,7 @@ from . import (
 )
 
 __all__ = ["run_api_sub_query"]
+DEFAULT_MAX_CONTEXT_CHARS = 20_000
 
 
 def _get_api_key(api_key_env: str) -> str | None:
@@ -108,6 +109,7 @@ async def run_api_sub_query(
     timeout: float = 60.0,
     system_prompt: str | None = None,
     max_tokens: int = 8192,
+    max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
 ) -> tuple[bool, str]:
     """Run sub-query via OpenAI-compatible API.
 
@@ -144,6 +146,9 @@ async def run_api_sub_query(
         )
 
     base_url = _get_base_url(api_base_url_env)
+
+    if context_slice and max_context_chars > 0 and len(context_slice) > max_context_chars:
+        context_slice = context_slice[:max_context_chars]
 
     # Build the full prompt
     full_prompt = prompt

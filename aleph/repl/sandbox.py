@@ -332,6 +332,17 @@ def _compile_with_last_expr(source: str) -> tuple[CodeType, CodeType | None]:
     return exec_code, None
 
 
+def _truncate_output_text(text: str, limit: int) -> tuple[str, bool]:
+    """Truncate text to a hard limit with a stable suffix."""
+    suffix = "\n... [OUTPUT TRUNCATED]"
+    if limit <= 0 or len(text) <= limit:
+        return text, False
+    if limit <= len(suffix):
+        return suffix[:limit], True
+    keep = limit - len(suffix)
+    return text[:keep] + suffix, True
+
+
 def _validate_ast(source: str, allowed_imports: set[str]) -> None:
     """Static checks for obviously unsafe constructs."""
 
@@ -796,17 +807,26 @@ class REPLEnvironment:
             stderr = stderr_io.getvalue()
             truncated = False
 
-            if len(stdout) > self.config.max_output_chars:
-                stdout = stdout[: self.config.max_output_chars] + "\n... [OUTPUT TRUNCATED]"
-                truncated = True
-            if len(stderr) > self.config.max_output_chars:
-                stderr = stderr[: self.config.max_output_chars] + "\n... [OUTPUT TRUNCATED]"
-                truncated = True
+            stdout, stdout_truncated = _truncate_output_text(stdout, self.config.max_output_chars)
+            stderr, stderr_truncated = _truncate_output_text(stderr, self.config.max_output_chars)
+            truncated = stdout_truncated or stderr_truncated
+
+            return_value: object | None = ret
+            if ret is not None:
+                if isinstance(ret, str):
+                    return_value, return_truncated = _truncate_output_text(ret, self.config.max_output_chars)
+                else:
+                    rendered, return_truncated = _truncate_output_text(
+                        repr(ret), self.config.max_output_chars
+                    )
+                    if return_truncated:
+                        return_value = rendered
+                truncated = truncated or return_truncated
 
             return ExecutionResult(
                 stdout=stdout,
                 stderr=stderr,
-                return_value=ret,
+                return_value=return_value,
                 variables_updated=sorted(updated),
                 truncated=truncated,
                 execution_time_ms=(time.time() - start) * 1000.0,

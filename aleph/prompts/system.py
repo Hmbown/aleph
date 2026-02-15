@@ -16,10 +16,7 @@ CONTEXT INFORMATION:
 - Format: {context_format}
 - Size: {context_size_chars:,} characters, {context_size_lines:,} lines, ~{context_size_tokens:,} tokens (estimate)
 - Structure: {structure_hint}
-- Preview (first 500 chars):
-```
-{context_preview}
-```
+- Raw context preview is intentionally omitted to preserve context isolation.
 
 AVAILABLE FUNCTIONS (in the REPL):
 - `peek(start=0, end=None)` - View characters [start:end] of the context

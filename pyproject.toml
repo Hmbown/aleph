@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aleph-rlm"
-version = "0.8.3"
+version = "0.8.5"
 description = "MCP server for recursive LLM reasoning—load context, iterate with search/code/think tools, converge on answers"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -26,6 +26,14 @@ yaml = ["PyYAML>=6.0"]
 rich = ["rich>=13.0.0"]
 # Optional MCP server
 mcp = ["mcp>=1.0.0"]
+# Optional LangGraph integration
+langgraph = [
+    "langchain>=1.0.0",
+    "langgraph>=0.2.0",
+    "langchain-mcp-adapters>=0.1.0",
+    "langchain-openai>=0.3.0",
+    "langsmith>=0.4.0",
+]
 # Development dependencies
 dev = [
     "pytest>=8.0.0",
