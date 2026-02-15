@@ -295,7 +295,7 @@ aleph run "Analyze" --provider cli --model claude --context-file data.json --jso
 | Search | `search_context`, `semantic_search`, `peek_context`, `chunk_context` |
 | Compute | `exec_python`, `get_variable` |
 | Reasoning | `think`, `evaluate_progress`, `summarize_so_far`, `get_evidence`, `finalize` |
-| Recursion | `sub_query`, `sub_aleph` |
+| Runtime Config | `configure` |
 | Recipes | `validate_recipe`, `estimate_recipe`, `run_recipe`, `compile_recipe`, `run_recipe_code` |
 
 ### Action Tools (`--enable-actions`)
@@ -305,10 +305,12 @@ aleph run "Analyze" --provider cli --model claude --context-file data.json --jso
 | Filesystem | `load_file`, `read_file`, `write_file` |
 | Shell | `run_command`, `run_tests`, `rg_search` |
 | Persistence | `save_session`, `load_session` |
-| Remote MCP | `add_remote_server`, `list_remote_tools`, `call_remote_tool`, `close_remote_server` |
+| Remote MCP | `add_remote_server`, `list_remote_servers`, `list_remote_tools`, `call_remote_tool`, `close_remote_server` |
 
 `exec_python` includes 100+ helpers (`search`, `chunk`, `lines`, `extract_*`,
-`sub_query_batch`, Recipe DSL helpers, and more).
+`sub_query`, `sub_query_batch`, `sub_query_map`, `sub_aleph`, Recipe DSL helpers,
+and more). Recursion helpers are available inside `exec_python`, not as top-level
+MCP tools.
 
 ## Swarm Mode (Optional)
 
@@ -339,9 +341,11 @@ the LLM's context window:
 - **System prompt isolation.** The default system prompt does not include a
   raw context preview. The placeholder is replaced with
   `[OMITTED FOR CONTEXT ISOLATION]`.
-- **`get_variable("ctx")` is blocked.** Retrieving the full context variable
-  via the MCP boundary is refused. Process data inside `exec_python` and
-  retrieve only compact derived results with `get_variable`.
+- **`get_variable("ctx")` is policy-aware.** In `isolated` policy, retrieving
+  `ctx` via the MCP boundary is blocked with guidance. In `trusted` policy, it
+  is allowed but still subject to response caps/truncation. Prefer processing
+  data inside `exec_python` and retrieving compact derived results with
+  `get_variable`.
 - **Execution output truncation.** `exec_python` stdout, stderr, and return
   values are all truncated to `max_output_chars` (default 50,000). The MCP
   tool response is further capped at `max_tool_response_chars` (default
@@ -374,9 +378,9 @@ result = f'Found {len(errors)} errors. First 3: {errors[:3]}'
 get_variable(name="result", context_id="doc")
 ```
 
-Avoid `print(ctx)` or `get_variable("ctx")` — these patterns attempt to
-move the full context across the MCP boundary and will be truncated or
-blocked.
+Avoid returning full-context payloads unless necessary. In `isolated` policy,
+`get_variable("ctx")` is blocked; in `trusted` policy large raw responses are
+still truncated by output caps.
 
 ## Configuration Quick Reference
 
@@ -390,6 +394,7 @@ blocked.
 | `ALEPH_WORKSPACE_ROOT` | Override workspace root |
 | `ALEPH_CONTEXT_POLICY` | `trusted` (default) or `isolated` |
 | `ALEPH_OUTPUT_FEEDBACK` | `full` (default) or `metadata` |
+| `ALEPH_MAX_RECIPE_CONCURRENCY` | Max parallel `map_sub_query` tasks (default `10`) |
 
 ### Limits
 
@@ -397,7 +402,7 @@ blocked.
 |---|---|---|
 | `--max-file-size` | 1 GB | Max file read size |
 | `--max-write-bytes` | 100 MB | Max file write size |
-| `--timeout` | 60 s | Sandbox/command timeout |
+| `--timeout` | 180 s | Sandbox/command timeout |
 | `--max-output` | 50,000 chars | Max command output |
 | `ALEPH_MAX_TOOL_RESPONSE_CHARS` | 10,000 chars | MCP tool response cap |
 
