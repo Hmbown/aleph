@@ -361,8 +361,9 @@ available:
 
 1. **codex CLI** -- if installed
 2. **gemini CLI** -- if installed
-3. **claude CLI** -- if installed (deprioritized in MCP/sandbox contexts)
-4. **API** -- if API credentials are available (fallback)
+3. **kimi CLI** -- if installed
+4. **claude CLI** -- if installed (deprioritized in MCP/sandbox contexts)
+5. **API** -- if API credentials are available (fallback)
 
 ### API Configuration
 
@@ -397,13 +398,17 @@ export ALEPH_SUB_QUERY_MODEL=llama3.2
 
 | Variable                          | Description                                                    |
 |-----------------------------------|----------------------------------------------------------------|
-| `ALEPH_SUB_QUERY_BACKEND`        | Force backend: `api`, `claude`, `codex`, `gemini`              |
+| `ALEPH_SUB_QUERY_BACKEND`        | Force backend: `api`, `claude`, `codex`, `gemini`, `kimi`, `auto` |
 | `ALEPH_SUB_QUERY_API_KEY`        | API key (fallback: `OPENAI_API_KEY`)                           |
 | `ALEPH_SUB_QUERY_URL`            | API base URL (fallback: `OPENAI_BASE_URL`)                     |
 | `ALEPH_SUB_QUERY_MODEL`          | Model name (required for API backend)                          |
 
 Use `ALEPH_SUB_QUERY_BACKEND` to pin a backend or bypass auto-detection;
 otherwise leave it unset for the default `auto` selection order.
+
+Runtime `configure(sub_query_backend=...)` overrides auto-detection for the
+active server session. The install/configure wizard also suggests `codex`
+first when the `codex` CLI is already available.
 
 > **Note:** Some MCP clients don't reliably pass `env` vars from their config to
 > the server process. If `sub_query` reports "API key not found" despite your

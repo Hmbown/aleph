@@ -1454,3 +1454,13 @@ async def test_get_status_shows_workspace(loaded_server):
     data = json.loads(result)
     assert "workspace_root" in data
     assert "workspace_root_source" in data
+
+
+def test_sub_query_config_snapshot_uses_programmatic_backend(sandbox_config):
+    server = AlephMCPServerLocal(
+        sandbox_config=sandbox_config,
+        sub_query_config=SubQueryConfig(backend="codex"),
+    )
+    snapshot = server._get_sub_query_config_snapshot()
+    assert snapshot["sub_query_backend"] == "codex"
+    assert snapshot["sub_query_backend_resolved"] == "codex"

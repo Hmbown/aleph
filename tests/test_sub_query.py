@@ -85,6 +85,12 @@ class TestDetectBackend:
         with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "api"}, clear=True):
             assert detect_backend() == "api"
 
+    def test_detect_backend_respects_programmatic_config(self):
+        """SubQueryConfig.backend should override env auto-detection."""
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("aleph.sub_query.shutil.which", return_value="/usr/bin/codex"):
+                assert detect_backend(SubQueryConfig(backend="api")) == "api"
+
     def test_detect_backend_claude_when_no_codex_gemini(self):
         """Claude CLI should be used when codex/gemini are unavailable."""
         with patch.dict(os.environ, {}, clear=True):

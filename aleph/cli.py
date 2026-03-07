@@ -386,6 +386,13 @@ def _prompt_text(prompt: str, default: str | None = None) -> str:
             return default
 
 
+def _default_sub_query_backend_choice(backend_options: list[str]) -> int:
+    """Prefer codex for generated configs when it is available."""
+    if "codex" in backend_options and shutil.which("codex"):
+        return backend_options.index("codex")
+    return 0
+
+
 def _collect_install_config() -> MCPServerConfig:
     print_header("Aleph MCP Server Configuration")
 
@@ -441,7 +448,7 @@ def _collect_install_config() -> MCPServerConfig:
     sub_query_backend = _prompt_choice(
         "Sub-query backend preference:",
         list(zip(backend_options, backend_labels)),
-        default_index=0,
+        default_index=_default_sub_query_backend_choice(backend_options),
     )
 
     sub_query_share_session = _prompt_bool(

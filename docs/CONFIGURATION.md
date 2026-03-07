@@ -32,13 +32,13 @@ programmatic configuration.
 
 The `sub_query` tool spawns independent sub-agents for recursive reasoning. It
 can use an API backend (OpenAI-compatible) or a local CLI backend (Claude, Codex,
-Gemini). Auto mode prioritizes CLI backends, then falls back to API.
+Gemini, Kimi). Auto mode prioritizes CLI backends, then falls back to API.
 
 ### Environment Variables
 
 | Variable                              | Description                                                   | Default                       |
 |---------------------------------------|---------------------------------------------------------------|-------------------------------|
-| `ALEPH_SUB_QUERY_BACKEND`            | Backend override (`auto`, `api`, `codex`, `gemini`, `claude`) | `auto`                        |
+| `ALEPH_SUB_QUERY_BACKEND`            | Backend override (`auto`, `api`, `codex`, `gemini`, `kimi`, `claude`) | `auto`                        |
 | `ALEPH_SUB_QUERY_TIMEOUT`            | Timeout in seconds for CLI + API sub-queries                  | CLI 300 / API 120             |
 | `ALEPH_SUB_QUERY_SHARE_SESSION`      | Share MCP session with CLI sub-agents                         | `false`                       |
 | `ALEPH_SUB_QUERY_HTTP_HOST`          | Host for shared MCP session                                   | `127.0.0.1`                   |
@@ -58,8 +58,20 @@ When `ALEPH_SUB_QUERY_BACKEND` is not set or set to `auto`:
 
 1. **codex CLI** -- if installed (uses OpenAI subscription)
 2. **gemini CLI** -- if installed (uses Google Gemini subscription)
-3. **claude CLI** -- if installed (deprioritized in MCP/sandbox contexts)
-4. **API** -- if any API credentials are available (fallback)
+3. **kimi CLI** -- if installed
+4. **claude CLI** -- if installed (deprioritized in MCP/sandbox contexts)
+5. **API** -- if any API credentials are available (fallback)
+
+### Selection Precedence
+
+Aleph resolves the sub-query backend in this order:
+
+1. Programmatic config (`SubQueryConfig(backend=...)` or `configure(sub_query_backend=...)`)
+2. `ALEPH_SUB_QUERY_BACKEND` when set to a concrete backend
+3. Auto-detection: `codex` -> `gemini` -> `kimi` -> `claude` -> `api`
+
+`aleph-rlm install` and `aleph-rlm configure` preselect `codex` when the CLI is
+already installed; otherwise the generated config stays on `auto`.
 
 ### Force a Specific Backend
 
@@ -68,6 +80,7 @@ export ALEPH_SUB_QUERY_BACKEND=api      # Force API backend
 export ALEPH_SUB_QUERY_BACKEND=claude   # Force Claude CLI
 export ALEPH_SUB_QUERY_BACKEND=codex    # Force Codex CLI
 export ALEPH_SUB_QUERY_BACKEND=gemini   # Force Gemini CLI
+export ALEPH_SUB_QUERY_BACKEND=kimi     # Force Kimi CLI
 export ALEPH_SUB_QUERY_BACKEND=auto     # Return to auto selection
 ```
 
@@ -118,6 +131,7 @@ The LLM calls `set_backend("claude")` or `configure(sub_query_backend="claude")`
 | `api`     | Variable (provider-dependent)| Usage-based           | Custom models, full control     |
 | `codex`   | Fast                        | Subscription          | Strong code reasoning           |
 | `gemini`  | Fast                        | Free tier / subscription | Google ecosystem integration |
+| `kimi`    | Fast                        | Subscription          | Long-context CLI workflows      |
 | `claude`  | Medium                      | Subscription          | Highest quality responses       |
 
 ### API Backend Configuration

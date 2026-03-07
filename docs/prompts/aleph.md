@@ -66,6 +66,7 @@ For depth 3+, bump timeouts: `configure(sub_query_timeout=300, sandbox_timeout=3
 - Use `rg_search()` for fast repo search and `semantic_search()` for meaning-based lookup.
 - `load_file()` handles PDFs, Word docs, HTML, and compressed logs (.gz/.bz2/.xz).
 - Save and resume long tasks with `save_session()` and `load_session()`.
+- Session paths must stay under Aleph's workspace root; `.aleph/` is a safe default.
 - Memory packs auto-save to `.aleph/memory_pack.json` and auto-load on startup (actions enabled).
 - To see full tool docstrings, start with `--tool-docs full` or set `ALEPH_TOOL_DOCS=full`.
 

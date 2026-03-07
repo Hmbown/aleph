@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.6
+
+- Fixed: `detect_backend()` now respects an explicit `SubQueryConfig.backend`
+  before consulting environment-based auto-detection.
+- Fixed: MCP status/config snapshots now report the active programmatic
+  sub-query backend instead of always echoing `ALEPH_SUB_QUERY_BACKEND`.
+- Improved: `aleph-rlm install` / `configure` now preselect `codex` when the
+  CLI is already installed, reducing friction for Codex users.
+- Docs: Added a practical Aleph smoke-test flow, clarified backend selection
+  precedence, documented workspace-root save/load behavior, and synced the web
+  landing page copy/version with the package release.
+- Tests: Added coverage for the installer backend default, programmatic backend
+  precedence, and MCP status snapshot reporting.
+
 ## 0.8.5
 
 - Added: Deployment profiles (`trusted` / `isolated`) via

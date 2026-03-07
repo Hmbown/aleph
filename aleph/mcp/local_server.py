@@ -1634,9 +1634,11 @@ class AlephMCPServerLocal:
         }
 
     def _get_sub_query_config_snapshot(self) -> dict[str, Any]:
-        backend_env = os.environ.get("ALEPH_SUB_QUERY_BACKEND", "").strip().lower() or "auto"
+        backend_env = os.environ.get("ALEPH_SUB_QUERY_BACKEND", "").strip().lower()
+        configured_backend = getattr(self.sub_query_config, "backend", "auto")
+        backend_display = backend_env or configured_backend or "auto"
         return {
-            "sub_query_backend": backend_env,
+            "sub_query_backend": backend_display,
             "sub_query_backend_resolved": detect_backend(self.sub_query_config),
             "sub_query_timeout_seconds": {
                 "cli": self.sub_query_config.cli_timeout_seconds,

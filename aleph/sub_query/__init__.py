@@ -162,6 +162,12 @@ def detect_backend(config: SubQueryConfig | None = None) -> BackendType:
     Returns:
         The detected backend type.
     """
+    cfg = config or DEFAULT_CONFIG
+
+    # Respect explicit programmatic config before env auto-detection.
+    if cfg.backend != "auto":
+        return cfg.backend
+
     # Check for explicit backend override
     explicit_backend = os.environ.get("ALEPH_SUB_QUERY_BACKEND", "").lower().strip()
     if explicit_backend in ("api", "claude", "codex", "gemini", "kimi"):

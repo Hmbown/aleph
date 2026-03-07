@@ -42,6 +42,10 @@ pip install "aleph-rlm[mcp]"
 aleph-rlm install
 ```
 
+`aleph-rlm install` / `aleph-rlm configure` prefers `codex` as the suggested
+sub-query backend when the `codex` CLI is already installed. Otherwise the
+generated config stays on `auto`.
+
 3. Verify Aleph is reachable in your assistant:
 
 ```text
@@ -61,6 +65,29 @@ $aleph path/to/large_file.log
 Expected behavior: Aleph loads the file into process memory, then begins
 analysis with tool calls (`search_context`, `peek_context`, `exec_python`)
 without requesting pasted raw content.
+
+### Two-Minute Smoke Test
+
+Use a file inside your current Aleph workspace and run:
+
+```text
+get_status()
+load_file(path="/absolute/path/to/file", context_id="smoke")
+search_context(pattern="TODO|ERROR|WARN", context_id="smoke")
+exec_python(code="result = {'lines': line_count(), 'headings': len(search(r'^## '))}", context_id="smoke")
+get_variable(name="result", context_id="smoke")
+save_session(context_id="smoke", path=".aleph/smoke_session.json")
+```
+
+Healthy behavior:
+
+1. `get_status()` reports the expected `workspace_root`
+2. `load_file(...)` creates the context without pasting raw file content
+3. `search_context`, `exec_python`, and `get_variable` return compact derived results
+4. `save_session(...)` succeeds when the path stays under the workspace root
+
+If you try to save outside the workspace root, Aleph rejects the path instead
+of silently writing elsewhere.
 
 ## Common Workloads
 
@@ -181,6 +208,17 @@ Healthy behavior:
 2. Context appears in `list_contexts()`
 3. Follow-up search/peek/exec on that context
 
+### Backend Selection Rules
+
+Aleph resolves the active sub-query backend in this order:
+
+1. Programmatic config via `configure(sub_query_backend=...)` or `SubQueryConfig(backend=...)`
+2. `ALEPH_SUB_QUERY_BACKEND` when it is set to a concrete backend
+3. Auto-detection: `codex` -> `gemini` -> `kimi` -> `claude` -> `api`
+
+That means an explicit runtime switch wins over ambient shell state, while
+`auto` keeps the CLI-first fallback order.
+
 ## Core Workflow Patterns
 
 ### 1) Load File -> Work Immediately
@@ -249,6 +287,9 @@ save_session(context_id="doc", path=".aleph/session_doc.json")
 load_session(path=".aleph/session_doc.json")
 ```
 
+Paths for `save_session()` / `load_session()` must stay inside Aleph's
+workspace root. `.aleph/` under the repo is a safe default.
+
 ## CLI Mode (Standalone)
 
 Use this when you want Aleph without MCP integration.
@@ -280,7 +321,7 @@ aleph run "Analyze" --provider cli --model claude --context-file data.json --jso
 
 | Variable | Description |
 |---|---|
-| `ALEPH_SUB_QUERY_BACKEND` | `auto`, `codex`, `gemini`, `claude`, or `api` |
+| `ALEPH_SUB_QUERY_BACKEND` | `auto`, `codex`, `gemini`, `kimi`, `claude`, or `api` |
 | `ALEPH_SUB_QUERY_TIMEOUT` | Sub-query timeout in seconds |
 | `ALEPH_SUB_QUERY_SHARE_SESSION` | Share MCP session with CLI sub-agents |
 | `ALEPH_CLI_TIMEOUT` | Timeout for CLI calls |

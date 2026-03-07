@@ -104,12 +104,14 @@ isolation.
 Enables RLM-style recursive reasoning:
 
 ```python
-# Backend detection priority (when backend="auto"):
-# 1. ALEPH_SUB_QUERY_BACKEND env var (explicit override)
-# 2. API (if ALEPH_SUB_QUERY_API_KEY or OPENAI_API_KEY set)
-# 3. claude CLI (if installed)
-# 4. codex CLI (if installed)
-# 5. gemini CLI (if installed)
+# Backend selection precedence:
+# 1. SubQueryConfig.backend when it is set to a concrete backend
+# 2. ALEPH_SUB_QUERY_BACKEND env var (explicit override)
+# 3. codex CLI (if installed)
+# 4. gemini CLI (if installed)
+# 5. kimi CLI (if installed)
+# 6. claude CLI (if installed; deprioritized in MCP/sandbox contexts)
+# 7. API fallback
 ```
 
 - **CLI backend:** spawns subprocess, passes prompt via stdin or temp file

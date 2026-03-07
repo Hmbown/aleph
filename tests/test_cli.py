@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from aleph.cli import _find_claude_cli, is_client_installed, CLIENTS
+from aleph.cli import _default_sub_query_backend_choice, _find_claude_cli, is_client_installed, CLIENTS
 
 
 class TestFindClaudeCli:
@@ -110,3 +110,13 @@ class TestIsClientInstalled:
         with patch("aleph.cli._find_claude_cli", return_value="claude.cmd"):
             client = CLIENTS["claude-code"]
             assert is_client_installed(client) is True
+
+
+class TestDefaultSubQueryBackendChoice:
+    def test_prefers_codex_when_available(self) -> None:
+        with patch("shutil.which", side_effect=lambda name: "/usr/bin/codex" if name == "codex" else None):
+            assert _default_sub_query_backend_choice(["auto", "codex", "gemini", "claude", "api"]) == 1
+
+    def test_falls_back_to_auto_when_codex_missing(self) -> None:
+        with patch("shutil.which", return_value=None):
+            assert _default_sub_query_backend_choice(["auto", "codex", "gemini", "claude", "api"]) == 0
