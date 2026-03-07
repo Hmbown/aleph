@@ -260,7 +260,7 @@ HELPER_FUNCTIONS = {
 
 | Variable                    | Purpose                                                    |
 |-----------------------------|------------------------------------------------------------|
-| `ALEPH_SUB_QUERY_BACKEND`  | Force sub-query backend: `api`, `claude`, `codex`, `gemini`|
+| `ALEPH_SUB_QUERY_BACKEND`  | Force sub-query backend: `api`, `claude`, `codex`, `gemini`, `kimi`, `auto` |
 | `ALEPH_SUB_QUERY_API_KEY`  | API key (fallback: `OPENAI_API_KEY`)                       |
 | `ALEPH_SUB_QUERY_URL`      | API base URL (fallback: `OPENAI_BASE_URL`)                 |
 | `ALEPH_SUB_QUERY_MODEL`    | Model name (required for API backend)                      |
@@ -275,9 +275,12 @@ HELPER_FUNCTIONS = {
 2. Sync versioned files: `python scripts/sync_versions.py`
 3. Update `CHANGELOG.md`
 4. Run full test suite: `pytest`
-5. Build: `python -m build`
-6. Upload to PyPI: `twine upload dist/*`
-7. Tag release: `git tag v0.x.0 && git push --tags`
+5. Build locally: `python -m build`
+6. Push `main`
+7. Create a GitHub release with tag `vX.Y.Z`
+
+Publishing to PyPI is handled by `.github/workflows/publish.yml` when the
+GitHub release is published.
 
 ---
 
