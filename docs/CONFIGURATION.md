@@ -16,6 +16,10 @@ programmatic configuration.
 | `ALEPH_SUB_QUERY_BACKEND`            | Force sub-query backend                          | `auto`                        |
 | `ALEPH_SUB_QUERY_TIMEOUT`            | Sub-query timeout in seconds                     | CLI 300 / API 120             |
 | `ALEPH_SUB_QUERY_SHARE_SESSION`      | Share MCP session with CLI sub-agents            | `false`                       |
+| `ALEPH_SUB_QUERY_CODEX_MODE`         | Codex backend mode (`exec` or `mcp`)             | `mcp`                         |
+| `ALEPH_SUB_QUERY_CODEX_MODEL`        | Codex MCP model override                         | `gpt-5.4`                     |
+| `ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT` | Codex MCP reasoning effort                    | `low`                         |
+| `ALEPH_SUB_QUERY_CODEX_PROFILE`      | Codex MCP profile override                       | --                            |
 | `ALEPH_SUB_QUERY_API_KEY`            | API key (fallback: `OPENAI_API_KEY`)             | --                            |
 | `ALEPH_SUB_QUERY_URL`                | API base URL (fallback: `OPENAI_BASE_URL`)       | `https://api.openai.com/v1`   |
 | `ALEPH_SUB_QUERY_MODEL`              | Model name (required for API)                    | --                            |
@@ -31,8 +35,9 @@ programmatic configuration.
 ## Sub-Query Configuration
 
 The `sub_query` tool spawns independent sub-agents for recursive reasoning. It
-can use an API backend (OpenAI-compatible) or a local CLI backend (Claude, Codex,
-Gemini, Kimi). Auto mode prioritizes CLI backends, then falls back to API.
+can use an API backend (OpenAI-compatible) or a local CLI backend. Codex is the
+only auto-selected CLI backend; `claude`, `gemini`, and `kimi` remain available
+as explicit experimental overrides.
 
 ### Environment Variables
 
@@ -41,6 +46,11 @@ Gemini, Kimi). Auto mode prioritizes CLI backends, then falls back to API.
 | `ALEPH_SUB_QUERY_BACKEND`            | Backend override (`auto`, `api`, `codex`, `gemini`, `kimi`, `claude`) | `auto`                        |
 | `ALEPH_SUB_QUERY_TIMEOUT`            | Timeout in seconds for CLI + API sub-queries                  | CLI 300 / API 120             |
 | `ALEPH_SUB_QUERY_SHARE_SESSION`      | Share MCP session with CLI sub-agents                         | `false`                       |
+| `ALEPH_SUB_QUERY_CODEX_MODE`         | Route codex through `codex exec` or `codex mcp-server`        | `mcp`                         |
+| `ALEPH_SUB_QUERY_CODEX_MODEL`        | Codex MCP model override                                       | `gpt-5.4`                     |
+| `ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT` | Codex MCP reasoning effort                                | `low`                         |
+| `ALEPH_SUB_QUERY_CODEX_PROFILE`      | Codex MCP profile override                                     | (unset)                       |
+| `ALEPH_SUB_QUERY_GEMINI_SANDBOX`     | Re-enable Gemini CLI sandboxing for sub-queries               | `false`                       |
 | `ALEPH_SUB_QUERY_HTTP_HOST`          | Host for shared MCP session                                   | `127.0.0.1`                   |
 | `ALEPH_SUB_QUERY_HTTP_PORT`          | Port for shared MCP session                                   | `8765`                        |
 | `ALEPH_SUB_QUERY_HTTP_PATH`          | Path for shared MCP session                                   | `/mcp`                        |
@@ -57,10 +67,48 @@ Gemini, Kimi). Auto mode prioritizes CLI backends, then falls back to API.
 When `ALEPH_SUB_QUERY_BACKEND` is not set or set to `auto`:
 
 1. **codex CLI** -- if installed (uses OpenAI subscription)
-2. **gemini CLI** -- if installed (uses Google Gemini subscription)
-3. **kimi CLI** -- if installed
-4. **claude CLI** -- if installed (deprioritized in MCP/sandbox contexts)
-5. **API** -- if any API credentials are available (fallback)
+2. **API** -- if any API credentials are available (fallback)
+
+`gemini`, `claude`, and `kimi` remain available only when explicitly selected.
+
+### Shared-Session Architecture
+
+When `ALEPH_SUB_QUERY_SHARE_SESSION=true`, Aleph starts a local streamable HTTP
+server and points the nested CLI back at that live Aleph session. That is what
+lets the sub-agent use Aleph MCP tools (`search_context`, `peek_context`,
+`exec_python`, etc.) instead of relying on a prompt-embedded slice.
+
+The injection mechanism varies by CLI:
+
+| Backend | How Aleph injects the live MCP server |
+|---------|---------------------------------------|
+| `codex` | Native Codex MCP config overrides via `codex mcp-server` |
+| `claude` | Temp JSON file via `--mcp-config` and `--strict-mcp-config` |
+| `gemini` | Temp JSON file via `GEMINI_CLI_SYSTEM_SETTINGS_PATH` |
+
+Codex is the simplest and best-supported path because it accepts the live MCP
+server natively and avoids temp-file isolation hacks.
+
+### Recommended Setups
+
+Best default:
+
+```bash
+aleph-rlm install
+```
+
+If Codex CLI is installed, Aleph pins the Codex MCP defaults automatically.
+This is the recommended path even when your top-level client is Claude Code.
+
+All-Claude alternative:
+
+```bash
+export ALEPH_SUB_QUERY_BACKEND=claude
+export ALEPH_SUB_QUERY_SHARE_SESSION=true
+```
+
+If you want Aleph to stay entirely on Claude for nested sub-queries, use the
+explicit Claude override above or choose `claude` in `aleph-rlm configure`.
 
 ### Selection Precedence
 
@@ -68,10 +116,12 @@ Aleph resolves the sub-query backend in this order:
 
 1. Programmatic config (`SubQueryConfig(backend=...)` or `configure(sub_query_backend=...)`)
 2. `ALEPH_SUB_QUERY_BACKEND` when set to a concrete backend
-3. Auto-detection: `codex` -> `gemini` -> `kimi` -> `claude` -> `api`
+3. Auto-detection: `codex` -> `api`
 
-`aleph-rlm install` and `aleph-rlm configure` preselect `codex` when the CLI is
-already installed; otherwise the generated config stays on `auto`.
+`aleph-rlm install` and `aleph-rlm configure` treat Codex as the default
+sub-query path. When the CLI is installed, generated configs pin the Codex MCP
+defaults unless you override them. Other CLI backends remain explicit
+experimental overrides.
 
 ### Force a Specific Backend
 
@@ -126,13 +176,13 @@ The LLM calls `set_backend("claude")` or `configure(sub_query_backend="claude")`
 
 ### Backend Comparison
 
-| Backend   | Speed                       | Cost                  | Capabilities                    |
-|-----------|-----------------------------|-----------------------|---------------------------------|
-| `api`     | Variable (provider-dependent)| Usage-based           | Custom models, full control     |
-| `codex`   | Fast                        | Subscription          | Strong code reasoning           |
-| `gemini`  | Fast                        | Free tier / subscription | Google ecosystem integration |
-| `kimi`    | Fast                        | Subscription          | Long-context CLI workflows      |
-| `claude`  | Medium                      | Subscription          | Highest quality responses       |
+| Backend   | Status in Aleph | What it is best for |
+|-----------|-----------------|---------------------|
+| `codex`   | First-class, validated default | Nested MCP sub-queries, shared-session recursion, exact-output and retry-sensitive work |
+| `api`     | Supported fallback | OpenAI-compatible endpoints and custom hosted models |
+| `claude`  | Explicit stable fallback | General sub-queries when Codex is unavailable; shared-session worked in live tests with clean isolation, but output is slightly more formatted and runs are stateless |
+| `gemini`  | Explicit experimental override | General sub-queries with live Aleph MCP access; accurate but noisier, and depends on Aleph's headless JSON + extension-free launch |
+| `kimi`    | Explicit experimental override | Available for manual use, but not validated as reliable in the current Aleph dogfood runs |
 
 ### API Backend Configuration
 
@@ -193,9 +243,37 @@ export ALEPH_SUB_QUERY_MODEL=your-model-name
 
 | Backend   | Install                                              | Spawns                                         |
 |-----------|------------------------------------------------------|------------------------------------------------|
-| `claude`  | `npm install -g @anthropic-ai/claude-code`           | `claude -p "prompt" --dangerously-skip-permissions` |
-| `codex`   | OpenAI Codex CLI                                     | `codex exec --full-auto "prompt"`              |
-| `gemini`  | `npm install -g @google/gemini-cli`                  | `gemini -y "prompt"`                           |
+| `claude`  | `npm install -g @anthropic-ai/claude-code`           | `claude -p "prompt" --dangerously-skip-permissions --no-session-persistence --output-format json` |
+| `codex`   | OpenAI Codex CLI                                     | `codex exec --full-auto "prompt"` or `codex mcp-server` |
+| `gemini`  | `npm install -g @google/gemini-cli`                  | `gemini -y --sandbox=false --extensions "" -o json -p "prompt"` |
+
+For nested Codex MCP sub-queries:
+
+```bash
+export ALEPH_SUB_QUERY_BACKEND=codex
+export ALEPH_SUB_QUERY_CODEX_MODE=mcp
+export ALEPH_SUB_QUERY_CODEX_MODEL=gpt-5.4
+export ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT=low
+export ALEPH_SUB_QUERY_SHARE_SESSION=true
+```
+
+Aleph starts that nested Codex path with `codex mcp-server -c mcp_servers={}`
+so the internal Codex handle does not inherit unrelated Codex MCP servers.
+
+For an all-Claude setup:
+
+```bash
+export ALEPH_SUB_QUERY_BACKEND=claude
+export ALEPH_SUB_QUERY_SHARE_SESSION=true
+```
+
+Claude receives the live Aleph server through a temp `--mcp-config` file and
+`--strict-mcp-config`, which keeps the nested run isolated from unrelated user
+MCP servers.
+
+For the explicit Gemini override, Aleph also launches Gemini with
+`--extensions ""` so nested sub-queries do not inherit unrelated user
+extensions from `~/.gemini`.
 
 ---
 
@@ -500,7 +578,7 @@ integration).
 
    ```bash
    # Which CLI tools are available?
-   which claude codex
+   which claude codex gemini
 
    # Are API credentials set?
    echo $ALEPH_SUB_QUERY_API_KEY $OPENAI_API_KEY

@@ -1,7 +1,6 @@
 """CLI backend for sub-queries.
 
-Spawns CLI tools (claude, codex) as sub-agents.
-This allows RLM-style recursive reasoning without API keys.
+Spawns local CLI tools as sub-agents for RLM-style recursive reasoning.
 """
 
 from __future__ import annotations
@@ -14,6 +13,9 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
+from . import DEFAULT_CODEX_MODE, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT
+from .codex_mcp_backend import run_codex_mcp_sub_query
+
 __all__ = ["run_cli_sub_query", "CLI_BACKENDS"]
 
 
@@ -21,6 +23,11 @@ CLI_BACKENDS = ("claude", "codex", "gemini", "kimi")
 DEFAULT_MAX_CONTEXT_CHARS = 20_000
 
 _KEEP_MCP_CONFIG_ENV = "ALEPH_SUB_QUERY_KEEP_MCP_CONFIG"
+_CODEX_MODE_ENV = "ALEPH_SUB_QUERY_CODEX_MODE"
+_CODEX_MODEL_ENV = "ALEPH_SUB_QUERY_CODEX_MODEL"
+_CODEX_REASONING_ENV = "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT"
+_CODEX_PROFILE_ENV = "ALEPH_SUB_QUERY_CODEX_PROFILE"
+_GEMINI_SANDBOX_ENV = "ALEPH_SUB_QUERY_GEMINI_SANDBOX"
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -37,6 +44,70 @@ def _track_cleanup(path: Path, cleanup_paths: list[Path]) -> None:
         cleanup_paths.append(path)
 
 
+def _env_text(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _codex_mode() -> str:
+    value = (_env_text(_CODEX_MODE_ENV) or DEFAULT_CODEX_MODE).lower()
+    if value in {"mcp", "server"}:
+        return "mcp"
+    return "exec"
+
+
+def _gemini_sandbox_enabled() -> bool:
+    return _env_bool(_GEMINI_SANDBOX_ENV, False)
+
+
+def _gemini_base_cmd() -> list[str]:
+    sandbox = "true" if _gemini_sandbox_enabled() else "false"
+    return ["gemini", "-y", f"--sandbox={sandbox}", "--extensions", ""]
+
+
+def _extract_tail_json_object(text: str) -> dict[str, object] | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed
+
+    decoder = json.JSONDecoder()
+    for idx in range(len(text) - 1, -1, -1):
+        if text[idx] != "{":
+            continue
+        candidate = text[idx:].strip()
+        try:
+            parsed, end = decoder.raw_decode(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and candidate[end:].strip() == "":
+            return parsed
+    return None
+
+
+def _normalize_cli_output(backend: str, output: str) -> str:
+    payload = _extract_tail_json_object(output)
+    if not payload:
+        return output
+    if backend == "claude":
+        result = payload.get("result")
+        if isinstance(result, str) and result.strip():
+            return result.strip()
+    if backend == "gemini":
+        result = payload.get("response")
+        if isinstance(result, str) and result.strip():
+            return result.strip()
+    return output
+
+
 async def run_cli_sub_query(
     prompt: str,
     context_slice: str | None = None,
@@ -48,6 +119,10 @@ async def run_cli_sub_query(
     mcp_server_url: str | None = None,
     mcp_server_name: str = "aleph_shared",
     trust_mcp_server: bool = True,
+    codex_mode: str | None = None,
+    codex_model: str | None = None,
+    codex_reasoning_effort: str | None = None,
+    codex_profile: str | None = None,
 ) -> tuple[bool, str]:
     """Spawn a CLI sub-agent and return its response.
     
@@ -64,6 +139,28 @@ async def run_cli_sub_query(
     """
     if context_slice and max_context_chars > 0 and len(context_slice) > max_context_chars:
         context_slice = context_slice[:max_context_chars]
+
+    resolved_codex_mode = (codex_mode or _codex_mode()).lower()
+    if backend == "codex" and resolved_codex_mode in {"mcp", "server"}:
+        success, output, _thread_id = await run_codex_mcp_sub_query(
+            prompt=prompt,
+            context_slice=context_slice,
+            timeout=timeout,
+            cwd=cwd,
+            max_output_chars=max_output_chars,
+            max_context_chars=max_context_chars,
+            mcp_server_url=mcp_server_url,
+            mcp_server_name=mcp_server_name,
+            trust_mcp_server=trust_mcp_server,
+            model=codex_model or _env_text(_CODEX_MODEL_ENV) or DEFAULT_CODEX_MODEL,
+            reasoning_effort=(
+                codex_reasoning_effort
+                or _env_text(_CODEX_REASONING_ENV)
+                or DEFAULT_CODEX_REASONING_EFFORT
+            ),
+            profile=codex_profile or _env_text(_CODEX_PROFILE_ENV),
+        )
+        return success, output
 
     # Build the full prompt. When MCP session sharing is enabled, keep context
     # inside the shared tools boundary instead of embedding raw slices in prompt.
@@ -189,7 +286,16 @@ async def _run_with_arg(
             config_path = _claude_mcp_config(mcp_server_url, mcp_server_name)
             _track_cleanup(config_path, cleanup_paths)
             mcp_args = ["--mcp-config", str(config_path), "--strict-mcp-config"]
-        cmd = ["claude", "-p", *mcp_args, prompt, "--dangerously-skip-permissions"]
+        cmd = [
+            "claude",
+            "-p",
+            *mcp_args,
+            prompt,
+            "--dangerously-skip-permissions",
+            "--no-session-persistence",
+            "--output-format",
+            "json",
+        ]
     elif backend == "codex":
         # OpenAI Codex CLI (non-interactive)
         overrides: list[str] = []
@@ -197,13 +303,14 @@ async def _run_with_arg(
             overrides = _codex_mcp_overrides(mcp_server_url, mcp_server_name, trust_mcp_server)
         cmd = ["codex", *overrides, "exec", "--skip-git-repo-check", "--full-auto", prompt]
     elif backend == "gemini":
-        # Google Gemini CLI: -y for yolo mode (auto-approve all actions)
+        # Google Gemini CLI: use headless prompt mode instead of positional
+        # interactive mode, otherwise the CLI may relaunch into its sandbox path.
         if mcp_server_url:
             env, settings_path = _gemini_env_for_mcp(
                 mcp_server_url, mcp_server_name, trust_mcp_server
             )
             _track_cleanup(settings_path, cleanup_paths)
-        cmd = ["gemini", "-y", prompt]
+        cmd = [*_gemini_base_cmd(), "-o", "json", "-p", prompt]
     elif backend == "kimi":
         # Kimi CLI: --print --final-message-only for clean text output (implies --yolo)
         mcp_args_kimi: list[str] = []
@@ -235,7 +342,7 @@ async def _run_with_arg(
                 return False, f"CLI error (exit {proc.returncode}): {err[:500]}\nOutput: {output[:500]}"
             return False, f"CLI error (exit {proc.returncode}): {err[:1000]}"
 
-        return True, output
+        return True, _normalize_cli_output(backend, output)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
@@ -274,7 +381,15 @@ async def _run_with_tempfile(
                 config_path = _claude_mcp_config(mcp_server_url, mcp_server_name)
                 _track_cleanup(config_path, cleanup_paths)
                 mcp_args = ["--mcp-config", str(config_path), "--strict-mcp-config"]
-            cmd = ["claude", "-p", *mcp_args, "--dangerously-skip-permissions"]
+            cmd = [
+                "claude",
+                "-p",
+                *mcp_args,
+                "--dangerously-skip-permissions",
+                "--no-session-persistence",
+                "--output-format",
+                "json",
+            ]
             stdin_data = prompt.encode("utf-8")
         elif backend == "codex":
             # Codex reads prompt from stdin when "-" is passed
@@ -284,13 +399,13 @@ async def _run_with_tempfile(
             cmd = ["codex", *overrides, "exec", "--skip-git-repo-check", "--full-auto", "-"]
             stdin_data = prompt.encode("utf-8")
         elif backend == "gemini":
-            # Gemini: -y for yolo mode, pass prompt via stdin
+            # Gemini headless mode appends stdin to the explicit prompt.
             if mcp_server_url:
                 env, settings_path = _gemini_env_for_mcp(
                     mcp_server_url, mcp_server_name, trust_mcp_server
                 )
                 _track_cleanup(settings_path, cleanup_paths)
-            cmd = ["gemini", "-y"]
+            cmd = [*_gemini_base_cmd(), "-o", "json", "-p", ""]
             stdin_data = prompt.encode("utf-8")
         elif backend == "kimi":
             # Kimi: --print --final-message-only for clean text, reads prompt via stdin
@@ -327,7 +442,7 @@ async def _run_with_tempfile(
                     return False, f"CLI error (exit {proc.returncode}): {err[:500]}\nOutput: {output[:500]}"
                 return False, f"CLI error (exit {proc.returncode}): {err[:1000]}"
 
-            return True, output
+            return True, _normalize_cli_output(backend, output)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()

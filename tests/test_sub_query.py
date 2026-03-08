@@ -10,6 +10,9 @@ import pytest
 
 from aleph.sub_query import (
     SubQueryConfig,
+    DEFAULT_CODEX_MODE,
+    DEFAULT_CODEX_MODEL,
+    DEFAULT_CODEX_REASONING_EFFORT,
     detect_backend,
     has_api_credentials,
     DEFAULT_API_KEY_ENV,
@@ -17,6 +20,10 @@ from aleph.sub_query import (
     DEFAULT_API_MODEL_ENV,
 )
 from aleph.sub_query.cli_backend import run_cli_sub_query, CLI_BACKENDS
+from aleph.sub_query.codex_mcp_backend import (
+    build_codex_mcp_tool_call,
+    extract_codex_mcp_result_text,
+)
 from aleph.sub_query.api_backend import run_api_sub_query
 
 
@@ -32,6 +39,9 @@ class TestSubQueryConfig:
         assert config.api_model_env == DEFAULT_API_MODEL_ENV
         assert config.validation_regex is None
         assert config.max_retries == 0
+        assert config.codex_mode == DEFAULT_CODEX_MODE
+        assert config.codex_model == DEFAULT_CODEX_MODEL
+        assert config.codex_reasoning_effort == DEFAULT_CODEX_REASONING_EFFORT
 
     def test_custom_config(self):
         config = SubQueryConfig(
@@ -47,16 +57,55 @@ class TestSubQueryConfig:
         assert config.validation_regex == r"^OK:"
         assert config.max_retries == 2
 
+    def test_codex_mcp_config_from_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "ALEPH_SUB_QUERY_CODEX_MODE": "mcp",
+                "ALEPH_SUB_QUERY_CODEX_MODEL": "gpt-5.4",
+                "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT": "low",
+                "ALEPH_SUB_QUERY_CODEX_PROFILE": "subquery",
+            },
+            clear=True,
+        ):
+            config = SubQueryConfig()
+
+        assert config.codex_mode == "mcp"
+        assert config.codex_model == "gpt-5.4"
+        assert config.codex_reasoning_effort == "low"
+        assert config.codex_profile == "subquery"
+
+    def test_programmatic_codex_config_beats_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "ALEPH_SUB_QUERY_CODEX_MODE": "mcp",
+                "ALEPH_SUB_QUERY_CODEX_MODEL": "gpt-5.4",
+                "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT": "low",
+                "ALEPH_SUB_QUERY_CODEX_PROFILE": "subquery",
+            },
+            clear=True,
+        ):
+            config = SubQueryConfig(
+                codex_mode="exec",
+                codex_model="custom-model",
+                codex_reasoning_effort="medium",
+                codex_profile="custom-profile",
+            )
+
+        assert config.codex_mode == "exec"
+        assert config.codex_model == "custom-model"
+        assert config.codex_reasoning_effort == "medium"
+        assert config.codex_profile == "custom-profile"
+
 
 class TestDetectBackend:
     """Tests for backend detection.
 
-    Priority order (CLI-first):
+    Priority order (Codex-first):
     1. ALEPH_SUB_QUERY_BACKEND env var (explicit override)
     2. codex CLI (if installed)
-    3. gemini CLI (if installed)
-    4. claude CLI (if installed)
-    5. API fallback (will error with helpful message)
+    3. API fallback (will error with helpful message)
     """
 
     def test_detect_backend_cli_preferred_with_aleph_key(self):
@@ -91,12 +140,22 @@ class TestDetectBackend:
             with patch("aleph.sub_query.shutil.which", return_value="/usr/bin/codex"):
                 assert detect_backend(SubQueryConfig(backend="api")) == "api"
 
-    def test_detect_backend_claude_when_no_codex_gemini(self):
-        """Claude CLI should be used when codex/gemini are unavailable."""
+    def test_detect_backend_explicit_override_claude(self):
+        """Claude stays available when explicitly selected."""
+        with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "claude"}, clear=True):
+            assert detect_backend() == "claude"
+
+    def test_detect_backend_explicit_override_gemini(self):
+        """Gemini stays available when explicitly selected."""
+        with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "gemini"}, clear=True):
+            assert detect_backend() == "gemini"
+
+    def test_detect_backend_does_not_auto_select_claude(self):
+        """Auto mode should fall back to API instead of selecting Claude."""
         with patch.dict(os.environ, {}, clear=True):
             with patch("aleph.sub_query.shutil.which") as mock_which:
                 mock_which.side_effect = lambda x: "/usr/bin/claude" if x == "claude" else None
-                assert detect_backend() == "claude"
+                assert detect_backend() == "api"
 
     def test_detect_backend_codex_when_available(self):
         """Codex CLI should be used when available."""
@@ -105,12 +164,12 @@ class TestDetectBackend:
                 mock_which.side_effect = lambda x: "/usr/bin/codex" if x == "codex" else None
                 assert detect_backend() == "codex"
 
-    def test_detect_backend_gemini_when_no_codex(self):
-        """Gemini CLI should be used when codex is unavailable."""
+    def test_detect_backend_does_not_auto_select_gemini(self):
+        """Auto mode should fall back to API instead of selecting Gemini."""
         with patch.dict(os.environ, {}, clear=True):
             with patch("aleph.sub_query.shutil.which") as mock_which:
                 mock_which.side_effect = lambda x: "/usr/bin/gemini" if x == "gemini" else None
-                assert detect_backend() == "gemini"
+                assert detect_backend() == "api"
 
     def test_detect_backend_api_fallback(self):
         """API fallback when nothing else available (will error with helpful message)."""
@@ -223,12 +282,167 @@ class TestCliBackend:
             mock_exec.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_cli_context_slice_respects_max_context_chars(self):
+    async def test_claude_cli_extracts_result_from_json_output(self):
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(b"OK", b""))
+        mock_proc.communicate = AsyncMock(
+            return_value=(b'{"result":"Claude response"}', b"")
+        )
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            success, output = await run_cli_sub_query(
+                prompt="test prompt",
+                backend="claude",
+            )
+
+        assert success is True
+        assert output == "Claude response"
+
+    @pytest.mark.asyncio
+    async def test_claude_cli_disables_session_persistence(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b'{"result":"Claude response"}', b""))
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            success, output = await run_cli_sub_query(
+                prompt="test prompt",
+                backend="claude",
+            )
+
+        assert success is True
+        assert output == "Claude response"
+        cmd = mock_exec.call_args.args
+        assert "--no-session-persistence" in cmd
+
+    @pytest.mark.asyncio
+    async def test_gemini_cli_extracts_response_from_json_output(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        payload = (
+            b"startup noise\n"
+            b'{"session_id":"abc","response":"Gemini response","stats":{}}'
+        )
+        mock_proc.communicate = AsyncMock(return_value=(payload, b""))
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            success, output = await run_cli_sub_query(
+                prompt="test prompt",
+                backend="gemini",
+            )
+
+        assert success is True
+        assert output == "Gemini response"
+
+    @pytest.mark.asyncio
+    async def test_gemini_cli_disables_sandbox_by_default(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"Gemini response", b""))
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            success, output = await run_cli_sub_query(
+                prompt="test prompt",
+                backend="gemini",
+            )
+
+        assert success is True
+        assert output == "Gemini response"
+        cmd = mock_exec.call_args.args
+        assert cmd[:9] == (
+            "gemini",
+            "-y",
+            "--sandbox=false",
+            "--extensions",
+            "",
+            "-o",
+            "json",
+            "-p",
+            "test prompt",
+        )
+
+    @pytest.mark.asyncio
+    async def test_gemini_cli_disables_extensions(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"Gemini response", b""))
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            success, output = await run_cli_sub_query(
+                prompt="test prompt",
+                backend="gemini",
+                mcp_server_url="http://127.0.0.1:8765/mcp",
+                mcp_server_name="aleph_shared",
+            )
+
+        assert success is True
+        assert output == "Gemini response"
+        cmd = mock_exec.call_args.args
+        assert "--extensions" in cmd
+        idx = cmd.index("--extensions")
+        assert cmd[idx + 1] == ""
+
+    @pytest.mark.asyncio
+    async def test_gemini_cli_respects_sandbox_env_override(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"Gemini response", b""))
+
+        with patch.dict(os.environ, {"ALEPH_SUB_QUERY_GEMINI_SANDBOX": "true"}, clear=True):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+                success, output = await run_cli_sub_query(
+                    prompt="test prompt",
+                    backend="gemini",
+                )
+
+        assert success is True
+        assert output == "Gemini response"
+        cmd = mock_exec.call_args.args
+        assert cmd[:9] == (
+            "gemini",
+            "-y",
+            "--sandbox=true",
+            "--extensions",
+            "",
+            "-o",
+            "json",
+            "-p",
+            "test prompt",
+        )
+
+    @pytest.mark.asyncio
+    async def test_gemini_tempfile_mode_disables_sandbox_by_default(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"Gemini response", b""))
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            success, output = await run_cli_sub_query(
+                prompt="P" * 12_000,
+                backend="gemini",
+            )
+
+        assert success is True
+        assert output == "Gemini response"
+        cmd = mock_exec.call_args.args
+        assert cmd[:9] == (
+            "gemini",
+            "-y",
+            "--sandbox=false",
+            "--extensions",
+            "",
+            "-o",
+            "json",
+            "-p",
+            "",
+        )
+
+    @pytest.mark.asyncio
+    async def test_cli_context_slice_respects_max_context_chars(self):
+        with patch(
+            "aleph.sub_query.cli_backend.run_codex_mcp_sub_query",
+            new=AsyncMock(return_value=(True, "OK", "thread-123")),
+        ) as mock_codex_mcp:
             success, output = await run_cli_sub_query(
                 prompt="Summarize this:",
                 context_slice="ABCDEFGHIJ",
@@ -237,18 +451,15 @@ class TestCliBackend:
             )
             assert success is True
             assert output == "OK"
-            mock_exec.assert_called_once()
-            cmd = list(mock_exec.call_args.args)
-            assert "ABCD" in cmd[-1]
-            assert "ABCDE" not in cmd[-1]
+            mock_codex_mcp.assert_awaited_once()
+            assert mock_codex_mcp.await_args.kwargs["context_slice"] == "ABCD"
 
     @pytest.mark.asyncio
     async def test_cli_with_shared_mcp_does_not_embed_context_slice(self):
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(b"OK", b""))
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        with patch(
+            "aleph.sub_query.cli_backend.run_codex_mcp_sub_query",
+            new=AsyncMock(return_value=(True, "OK", "thread-123")),
+        ) as mock_codex_mcp:
             success, output = await run_cli_sub_query(
                 prompt="Summarize this",
                 context_slice="VERY_SECRET_CONTEXT",
@@ -257,10 +468,94 @@ class TestCliBackend:
             )
             assert success is True
             assert output == "OK"
-            mock_exec.assert_called_once()
-            cmd = list(mock_exec.call_args.args)
-            assert cmd[-1] == "Summarize this"
-            assert "VERY_SECRET_CONTEXT" not in cmd[-1]
+            mock_codex_mcp.assert_awaited_once()
+            kwargs = mock_codex_mcp.await_args.kwargs
+            assert kwargs["prompt"] == "Summarize this"
+            assert kwargs["context_slice"] == "VERY_SECRET_CONTEXT"
+            assert kwargs["mcp_server_url"] == "http://127.0.0.1:8765/mcp"
+
+    @pytest.mark.asyncio
+    async def test_codex_mcp_mode_routes_to_codex_mcp_backend(self):
+        with patch.dict(
+            os.environ,
+            {
+                "ALEPH_SUB_QUERY_CODEX_MODE": "mcp",
+                "ALEPH_SUB_QUERY_CODEX_MODEL": "gpt-5.4",
+                "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT": "low",
+            },
+            clear=True,
+        ):
+            with patch(
+                "aleph.sub_query.cli_backend.run_codex_mcp_sub_query",
+                new=AsyncMock(return_value=(True, "OK", "thread-123")),
+            ) as mock_codex_mcp:
+                success, output = await run_cli_sub_query(
+                    prompt="Summarize this",
+                    context_slice="VERY_SECRET_CONTEXT",
+                    backend="codex",
+                    mcp_server_url="http://127.0.0.1:8765/mcp",
+                    mcp_server_name="aleph_shared",
+                )
+
+        assert success is True
+        assert output == "OK"
+        mock_codex_mcp.assert_awaited_once()
+        kwargs = mock_codex_mcp.await_args.kwargs
+        assert kwargs["prompt"] == "Summarize this"
+        assert kwargs["context_slice"] == "VERY_SECRET_CONTEXT"
+        assert kwargs["mcp_server_url"] == "http://127.0.0.1:8765/mcp"
+        assert kwargs["mcp_server_name"] == "aleph_shared"
+        assert kwargs["model"] == "gpt-5.4"
+        assert kwargs["reasoning_effort"] == "low"
+
+    @pytest.mark.asyncio
+    async def test_codex_defaults_to_mcp_backend(self):
+        with patch(
+            "aleph.sub_query.cli_backend.run_codex_mcp_sub_query",
+            new=AsyncMock(return_value=(True, "OK", "thread-123")),
+        ) as mock_codex_mcp:
+            success, output = await run_cli_sub_query(
+                prompt="Summarize this",
+                context_slice="VERY_SECRET_CONTEXT",
+                backend="codex",
+            )
+
+        assert success is True
+        assert output == "OK"
+        mock_codex_mcp.assert_awaited_once()
+        kwargs = mock_codex_mcp.await_args.kwargs
+        assert kwargs["model"] == DEFAULT_CODEX_MODEL
+        assert kwargs["reasoning_effort"] == DEFAULT_CODEX_REASONING_EFFORT
+
+
+class TestCodexMcpBackend:
+    def test_build_codex_tool_call_uses_reply_thread(self):
+        tool_name, arguments = build_codex_mcp_tool_call(
+            prompt="Continue",
+            thread_id="thread-123",
+        )
+
+        assert tool_name == "codex-reply"
+        assert arguments == {
+            "prompt": "Continue",
+            "threadId": "thread-123",
+        }
+
+    def test_extract_codex_result_from_jsonable_payload(self):
+        result = {
+            "structuredContent": {
+                "threadId": "thread-123",
+                "content": "OK",
+            },
+            "content": [
+                {"type": "text", "text": "OK"},
+            ],
+        }
+
+        output, thread_id = extract_codex_mcp_result_text(result)
+
+        assert output == "OK"
+        assert thread_id == "thread-123"
 
 
 class TestApiBackend:

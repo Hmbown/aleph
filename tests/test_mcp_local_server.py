@@ -1150,10 +1150,10 @@ class TestConvergenceMetrics:
 @pytest.mark.asyncio
 async def test_sub_query_validation_retry():
     server = AlephMCPServerLocal(sub_query_config=SubQueryConfig(validation_regex=r"^OK:", max_retries=1))
-    with patch("aleph.mcp.local_server.run_cli_sub_query", new=AsyncMock()) as mock_run:
+    with patch.object(server, "_run_internal_codex_mcp_query", new=AsyncMock()) as mock_run:
         mock_run.side_effect = [
-            (True, "BAD OUTPUT"),
-            (True, "OK: good"),
+            (True, "BAD OUTPUT", "thread-1"),
+            (True, "OK: good", "thread-1"),
         ]
         success, output, truncated, backend = await server._run_sub_query(
             prompt="Return OK: ...",
@@ -1166,6 +1166,8 @@ async def test_sub_query_validation_retry():
     assert truncated is False
     assert backend == "codex"
     assert mock_run.call_count == 2
+    assert mock_run.call_args_list[0].kwargs["thread_id"] is None
+    assert mock_run.call_args_list[1].kwargs["thread_id"] == "thread-1"
 
 
 @pytest.mark.asyncio
@@ -1177,10 +1179,10 @@ async def test_sub_query_retry_prompt_does_not_duplicate_share_session_note():
             "_ensure_streamable_http_server",
             new=AsyncMock(return_value=(True, "http://127.0.0.1:8765/mcp")),
         ):
-            with patch("aleph.mcp.local_server.run_cli_sub_query", new=AsyncMock()) as mock_run:
+            with patch.object(server, "_run_internal_codex_mcp_query", new=AsyncMock()) as mock_run:
                 mock_run.side_effect = [
-                    (True, "BAD OUTPUT"),
-                    (True, "OK: good"),
+                    (True, "BAD OUTPUT", "thread-1"),
+                    (True, "OK: good", "thread-1"),
                 ]
                 success, output, _, _ = await server._run_sub_query(
                     prompt="Return OK: ...",
@@ -1203,8 +1205,8 @@ async def test_sub_query_retry_prompt_does_not_duplicate_share_session_note():
 @pytest.mark.asyncio
 async def test_sub_query_validation_failure():
     server = AlephMCPServerLocal(sub_query_config=SubQueryConfig(validation_regex=r"^OK:", max_retries=0))
-    with patch("aleph.mcp.local_server.run_cli_sub_query", new=AsyncMock()) as mock_run:
-        mock_run.return_value = (True, "NOPE")
+    with patch.object(server, "_run_internal_codex_mcp_query", new=AsyncMock()) as mock_run:
+        mock_run.return_value = (True, "NOPE", "thread-1")
         success, output, _, _ = await server._run_sub_query(
             prompt="Return OK: ...",
             context_slice="ctx",
@@ -1245,7 +1247,11 @@ async def test_run_sub_aleph_does_not_auto_use_session_context(loaded_server):
 @pytest.mark.asyncio
 async def test_run_sub_query_does_not_auto_use_session_context(loaded_server):
     with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "codex"}, clear=True):
-        with patch("aleph.mcp.local_server.run_cli_sub_query", new=AsyncMock(return_value=(True, "OK"))) as mock_run:
+        with patch.object(
+            loaded_server,
+            "_run_internal_codex_mcp_query",
+            new=AsyncMock(return_value=(True, "OK", "thread-1")),
+        ) as mock_run:
             success, output, truncated, backend = await loaded_server._run_sub_query(
                 prompt="Return ok",
                 context_slice=None,
@@ -1260,9 +1266,78 @@ async def test_run_sub_query_does_not_auto_use_session_context(loaded_server):
 
 
 @pytest.mark.asyncio
+async def test_run_sub_query_passes_programmatic_codex_mcp_config(loaded_server):
+    loaded_server.sub_query_config.codex_mode = "mcp"
+    loaded_server.sub_query_config.codex_model = "gpt-5.4"
+    loaded_server.sub_query_config.codex_reasoning_effort = "low"
+    loaded_server.sub_query_config.codex_profile = "subquery"
+
+    with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "codex"}, clear=True):
+        with patch.object(
+            loaded_server,
+            "_run_internal_codex_mcp_query",
+            new=AsyncMock(return_value=(True, "OK", "thread-123")),
+        ) as mock_run:
+            success, output, truncated, backend = await loaded_server._run_sub_query(
+                prompt="Return ok",
+                context_slice=None,
+                context_id="test",
+                backend="codex",
+            )
+
+    assert success is True
+    assert output == "OK"
+    assert truncated is False
+    assert backend == "codex"
+    kwargs = mock_run.await_args.kwargs
+    assert kwargs["prompt"] == "Return ok"
+    assert kwargs["context_slice"] is None
+    assert kwargs["mcp_server_url"] is None
+    assert kwargs["thread_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_sub_query_defaults_codex_to_internal_mcp(loaded_server):
+    with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "codex"}, clear=True):
+        with patch.object(
+            loaded_server,
+            "_run_internal_codex_mcp_query",
+            new=AsyncMock(return_value=(True, "OK", "thread-123")),
+        ) as mock_run:
+            success, output, truncated, backend = await loaded_server._run_sub_query(
+                prompt="Return ok",
+                context_slice=None,
+                context_id="test",
+                backend="codex",
+            )
+
+    assert success is True
+    assert output == "OK"
+    assert truncated is False
+    assert backend == "codex"
+    mock_run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_internal_codex_mcp_server_uses_clean_codex_config(loaded_server):
+    with patch.object(loaded_server, "_ensure_remote_server", new=AsyncMock(return_value=(True, object()))):
+        server_id = await loaded_server._ensure_internal_codex_mcp_server(None)
+
+    assert server_id == "__aleph_internal_codex__"
+    handle = loaded_server._remote_servers[server_id]
+    assert handle.command == "codex"
+    assert handle.args == ["mcp-server", "-c", "mcp_servers={}"]
+    assert handle.allow_tools == ["codex", "codex-reply"]
+
+
+@pytest.mark.asyncio
 async def test_run_sub_aleph_cli_single_shot(loaded_server):
     with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "codex"}, clear=True):
-        with patch("aleph.mcp.local_server.run_cli_sub_query", new=AsyncMock(return_value=(True, "FINAL(ok)"))) as mock_run:
+        with patch.object(
+            loaded_server,
+            "_run_internal_codex_mcp_query",
+            new=AsyncMock(return_value=(True, "FINAL(ok)", "thread-1")),
+        ) as mock_run:
             result, meta = await loaded_server._run_sub_aleph(
                 query="Return ok",
                 context_slice=None,
@@ -1464,3 +1539,6 @@ def test_sub_query_config_snapshot_uses_programmatic_backend(sandbox_config):
     snapshot = server._get_sub_query_config_snapshot()
     assert snapshot["sub_query_backend"] == "codex"
     assert snapshot["sub_query_backend_resolved"] == "codex"
+    assert snapshot["sub_query_codex"]["mode"] == "mcp"
+    assert snapshot["sub_query_codex"]["model"] == "gpt-5.4"
+    assert snapshot["sub_query_codex"]["reasoning_effort"] == "low"

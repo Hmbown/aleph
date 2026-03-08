@@ -19,7 +19,17 @@ from aleph.repl.sandbox import REPLEnvironment, SandboxConfig  # noqa: E402
 @pytest.fixture(autouse=True)
 def _clean_aleph_env_vars() -> None:
     """Prevent ALEPH_* env var leakage between tests."""
-    keys = ("ALEPH_CONTEXT_POLICY", "ALEPH_OUTPUT_FEEDBACK")
+    keys = (
+        "ALEPH_CONTEXT_POLICY",
+        "ALEPH_OUTPUT_FEEDBACK",
+        "ALEPH_SUB_QUERY_BACKEND",
+        "ALEPH_SUB_QUERY_TIMEOUT",
+        "ALEPH_SUB_QUERY_SHARE_SESSION",
+        "ALEPH_SUB_QUERY_CODEX_MODE",
+        "ALEPH_SUB_QUERY_CODEX_MODEL",
+        "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT",
+        "ALEPH_SUB_QUERY_CODEX_PROFILE",
+    )
     saved = {k: os.environ.get(k) for k in keys}
     yield
     for k, v in saved.items():

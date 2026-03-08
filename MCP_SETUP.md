@@ -26,6 +26,29 @@ This enables:
 - **Any git repo access** (not limited to a single workspace root)
 - **Concise tool descriptions** (cleaner MCP tool list)
 
+## Recommended Nested Setup
+
+For the simplest validated setup:
+
+1. Install the Codex CLI
+2. Run `aleph-rlm install`
+3. Restart your MCP client
+
+That is the recommended path even if your top-level client is Claude Code.
+Aleph can keep Claude as the outer client and still use Codex for nested
+`sub_query` work, which is currently the cleanest and most reliable shared-
+session backend.
+
+If you want an all-Claude setup instead, keep Aleph installed normally and add:
+
+```bash
+export ALEPH_SUB_QUERY_BACKEND=claude
+export ALEPH_SUB_QUERY_SHARE_SESSION=true
+```
+
+Claude works as an explicit fallback, but Codex is the better default for
+nested MCP/shared-session recursion.
+
 ---
 
 ## Shared Sub-Query Sessions (Live Sandbox)
@@ -42,6 +65,10 @@ sharing:
       "args": ["--enable-actions", "--workspace-mode", "any", "--tool-docs", "concise"],
       "env": {
         "ALEPH_SUB_QUERY_SHARE_SESSION": "true",
+        "ALEPH_SUB_QUERY_BACKEND": "codex",
+        "ALEPH_SUB_QUERY_CODEX_MODE": "mcp",
+        "ALEPH_SUB_QUERY_CODEX_MODEL": "gpt-5.4",
+        "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT": "low",
         "ALEPH_SUB_QUERY_HTTP_PORT": "8765",
         "ALEPH_SUB_QUERY_MCP_SERVER_NAME": "aleph_shared"
       }
@@ -53,15 +80,24 @@ sharing:
 Notes:
 
 - The Aleph server spins up a **local streamable HTTP endpoint** on demand.
-- CLI sub-agents (claude/codex/gemini) are pointed at that live server
-  automatically.
+- The nested CLI is pointed at that live server automatically.
+- With `ALEPH_SUB_QUERY_CODEX_MODE=mcp`, Aleph talks to `codex mcp-server`
+  instead of `codex exec`, and Codex receives the live Aleph server as a nested
+  MCP server.
+- Claude receives the shared session through `--mcp-config` and
+  `--strict-mcp-config`, which keeps the nested run isolated from unrelated
+  Claude MCP config.
+- Gemini receives the shared session through a temp settings file via
+  `GEMINI_CLI_SYSTEM_SETTINGS_PATH`; this works, but it is still the noisier
+  experimental path.
 - Customize host/path with `ALEPH_SUB_QUERY_HTTP_HOST` and
   `ALEPH_SUB_QUERY_HTTP_PATH` if needed.
 - Tools are exposed under the server name you choose (default: `aleph_shared`).
 - `aleph_shared` avoids conflicts with an existing `aleph` stdio entry in Codex
   config.
-- For Claude, the shared session is passed via `--mcp-config` and
-  `--strict-mcp-config` flags.
+- Runtime default remains `ALEPH_SUB_QUERY_SHARE_SESSION=false`, but generated
+  Codex configs pin it to `true` because that is the validated best default for
+  nested Codex MCP use.
 
 For even higher limits:
 
@@ -360,10 +396,16 @@ Key parameters:
 available:
 
 1. **codex CLI** -- if installed
-2. **gemini CLI** -- if installed
-3. **kimi CLI** -- if installed
-4. **claude CLI** -- if installed (deprioritized in MCP/sandbox contexts)
-5. **API** -- if API credentials are available (fallback)
+2. **API** -- if API credentials are available (fallback)
+
+`claude`, `gemini`, and `kimi` remain available only when explicitly selected.
+
+Practical guidance:
+
+- **Use Codex** for the default nested/shared-session path
+- **Use Claude** when you explicitly want all-Claude operation
+- **Use Gemini** only as an explicit experimental override
+- **Use API** when CLI backends are unavailable or you need an OpenAI-compatible endpoint
 
 ### API Configuration
 
@@ -399,6 +441,10 @@ export ALEPH_SUB_QUERY_MODEL=llama3.2
 | Variable                          | Description                                                    |
 |-----------------------------------|----------------------------------------------------------------|
 | `ALEPH_SUB_QUERY_BACKEND`        | Force backend: `api`, `claude`, `codex`, `gemini`, `kimi`, `auto` |
+| `ALEPH_SUB_QUERY_SHARE_SESSION`  | Share the live Aleph MCP session with nested CLI sub-agents    |
+| `ALEPH_SUB_QUERY_CODEX_MODE`     | Codex mode: `mcp` (default) or `exec`                          |
+| `ALEPH_SUB_QUERY_CODEX_MODEL`    | Codex MCP model override (default: `gpt-5.4`)                  |
+| `ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT` | Codex MCP reasoning effort (default: `low`)          |
 | `ALEPH_SUB_QUERY_API_KEY`        | API key (fallback: `OPENAI_API_KEY`)                           |
 | `ALEPH_SUB_QUERY_URL`            | API base URL (fallback: `OPENAI_BASE_URL`)                     |
 | `ALEPH_SUB_QUERY_MODEL`          | Model name (required for API backend)                          |
@@ -407,8 +453,9 @@ Use `ALEPH_SUB_QUERY_BACKEND` to pin a backend or bypass auto-detection;
 otherwise leave it unset for the default `auto` selection order.
 
 Runtime `configure(sub_query_backend=...)` overrides auto-detection for the
-active server session. The install/configure wizard also suggests `codex`
-first when the `codex` CLI is already available.
+active server session. The install/configure wizard now treats Codex as the
+default sub-query path and pins the Codex MCP defaults when the CLI is
+available.
 
 > **Note:** Some MCP clients don't reliably pass `env` vars from their config to
 > the server process. If `sub_query` reports "API key not found" despite your

@@ -75,8 +75,19 @@ from ..providers.registry import get_provider
 from ..repl import helpers as repl_helpers
 from ..repl.sandbox import REPLEnvironment, SandboxConfig
 from ..types import AlephResponse, ContentFormat, ContextMetadata, ContextType, ExecutionResult
-from ..sub_query import SubQueryConfig, detect_backend
+from ..sub_query import (
+    DEFAULT_CODEX_MODE,
+    DEFAULT_CODEX_MODEL,
+    DEFAULT_CODEX_REASONING_EFFORT,
+    SubQueryConfig,
+    detect_backend,
+)
 from ..sub_query.cli_backend import run_cli_sub_query, CLI_BACKENDS
+from ..sub_query.codex_mcp_backend import (
+    build_codex_mcp_tool_call,
+    extract_codex_mcp_result_text,
+    suppress_mcp_notification_validation_logs,
+)
 from ..sub_query.api_backend import run_api_sub_query
 from .recipes import estimate_recipe as _estimate_recipe
 from .recipes import validate_recipe as _validate_recipe
@@ -860,6 +871,107 @@ class AlephMCPServerLocal:
             normalized_path,
         )
 
+    def _resolved_codex_mode(self) -> str:
+        value = (
+            self.sub_query_config.codex_mode
+            or os.environ.get("ALEPH_SUB_QUERY_CODEX_MODE", "").strip().lower()
+            or DEFAULT_CODEX_MODE
+        )
+        if value in {"mcp", "server"}:
+            return "mcp"
+        return "exec"
+
+    def _resolved_codex_model(self) -> str | None:
+        value = (
+            self.sub_query_config.codex_model
+            or os.environ.get("ALEPH_SUB_QUERY_CODEX_MODEL")
+            or DEFAULT_CODEX_MODEL
+        )
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    def _resolved_codex_reasoning_effort(self) -> str | None:
+        value = (
+            self.sub_query_config.codex_reasoning_effort
+            or os.environ.get("ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT")
+            or DEFAULT_CODEX_REASONING_EFFORT
+        )
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    def _resolved_codex_profile(self) -> str | None:
+        value = self.sub_query_config.codex_profile or os.environ.get("ALEPH_SUB_QUERY_CODEX_PROFILE")
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    async def _ensure_internal_codex_mcp_server(self, cwd: Path | None) -> str:
+        server_id = "__aleph_internal_codex__"
+        handle = self._remote_servers.get(server_id)
+        if handle is None:
+            handle = _RemoteServerHandle(
+                command="codex",
+                args=["mcp-server", "-c", "mcp_servers={}"],
+                cwd=cwd,
+                allow_tools=["codex", "codex-reply"],
+            )
+            self._remote_servers[server_id] = handle
+        elif handle.cwd != cwd:
+            await self._reset_remote_server_handle(handle)
+            handle.cwd = cwd
+
+        with suppress_mcp_notification_validation_logs():
+            ok, res = await self._ensure_remote_server(server_id)
+        if not ok:
+            raise RuntimeError(str(res))
+        return server_id
+
+    async def _run_internal_codex_mcp_query(
+        self,
+        *,
+        prompt: str,
+        context_slice: str | None,
+        cwd: Path | None,
+        mcp_server_url: str | None,
+        mcp_server_name: str,
+        thread_id: str | None = None,
+    ) -> tuple[bool, str, str | None]:
+        full_prompt = prompt
+        if context_slice and not mcp_server_url:
+            full_prompt = f"{prompt}\n\n---\nContext:\n{context_slice}"
+
+        tool_name, arguments = build_codex_mcp_tool_call(
+            prompt=full_prompt,
+            cwd=cwd,
+            mcp_server_url=mcp_server_url,
+            mcp_server_name=mcp_server_name,
+            trust_mcp_server=True,
+            model=self._resolved_codex_model(),
+            reasoning_effort=self._resolved_codex_reasoning_effort(),
+            profile=self._resolved_codex_profile(),
+            thread_id=thread_id,
+        )
+
+        try:
+            server_id = await self._ensure_internal_codex_mcp_server(cwd)
+        except Exception as e:
+            return False, f"Failed to start internal Codex MCP server: {e}", None
+
+        with suppress_mcp_notification_validation_logs():
+            ok, result = await self._remote_call_tool(
+                server_id,
+                tool_name,
+                arguments,
+                timeout_seconds=self.sub_query_config.cli_timeout_seconds,
+            )
+        if not ok:
+            return False, str(result), None
+
+        output, resolved_thread_id = extract_codex_mcp_result_text(result)
+        if not output:
+            output = json.dumps(_to_jsonable(result), ensure_ascii=True)
+
+        if len(output) > self.sub_query_config.cli_max_output_chars:
+            output = output[: self.sub_query_config.cli_max_output_chars] + "\n...[truncated]"
+
+        return True, output, resolved_thread_id
+
     async def _run_sub_query(
         self,
         *,
@@ -927,6 +1039,7 @@ class AlephMCPServerLocal:
         attempt = 0
         base_prompt = prompt
         prompt_for_attempt = base_prompt
+        codex_thread_id: str | None = None
 
         try:
             while True:
@@ -953,18 +1066,33 @@ class AlephMCPServerLocal:
                             f"Use context_id={context_id!r} when calling tools. "
                             f"Tools are prefixed with `mcp__{server_name}__`.]"
                         )
-                    success, output = await run_cli_sub_query(
-                        prompt=run_prompt,
-                        context_slice=context_slice,
-                        backend=resolved_backend,  # type: ignore[arg-type]
-                        timeout=self.sub_query_config.cli_timeout_seconds,
-                        cwd=self.action_config.workspace_root if self.action_config.enabled else None,
-                        max_output_chars=self.sub_query_config.cli_max_output_chars,
-                        max_context_chars=self.sub_query_config.max_context_chars,
-                        mcp_server_url=mcp_server_url,
-                        mcp_server_name=server_name,
-                        trust_mcp_server=True,
-                    )
+                    cwd = self.action_config.workspace_root if self.action_config.enabled else None
+                    if resolved_backend == "codex" and self._resolved_codex_mode() == "mcp":
+                        success, output, codex_thread_id = await self._run_internal_codex_mcp_query(
+                            prompt=run_prompt,
+                            context_slice=context_slice,
+                            cwd=cwd,
+                            mcp_server_url=mcp_server_url,
+                            mcp_server_name=server_name,
+                            thread_id=codex_thread_id,
+                        )
+                    else:
+                        success, output = await run_cli_sub_query(
+                            prompt=run_prompt,
+                            context_slice=context_slice,
+                            backend=resolved_backend,  # type: ignore[arg-type]
+                            timeout=self.sub_query_config.cli_timeout_seconds,
+                            cwd=cwd,
+                            max_output_chars=self.sub_query_config.cli_max_output_chars,
+                            max_context_chars=self.sub_query_config.max_context_chars,
+                            mcp_server_url=mcp_server_url,
+                            mcp_server_name=server_name,
+                            trust_mcp_server=True,
+                            codex_mode=self.sub_query_config.codex_mode,
+                            codex_model=self.sub_query_config.codex_model,
+                            codex_reasoning_effort=self.sub_query_config.codex_reasoning_effort,
+                            codex_profile=self.sub_query_config.codex_profile,
+                        )
                 else:
                     success, output = await run_api_sub_query(
                         prompt=run_prompt,
@@ -1119,18 +1247,32 @@ class AlephMCPServerLocal:
 
             if mcp_server_url is not None or not share_session:
                 try:
-                    success, output = await run_cli_sub_query(
-                        prompt=prompt,
-                        context_slice=cli_context if cli_context else None,
-                        backend=resolved_backend,  # type: ignore[arg-type]
-                        timeout=self.sub_query_config.cli_timeout_seconds,
-                        cwd=self.action_config.workspace_root if self.action_config.enabled else None,
-                        max_output_chars=self.sub_query_config.cli_max_output_chars,
-                        max_context_chars=self.sub_query_config.max_context_chars,
-                        mcp_server_url=mcp_server_url,
-                        mcp_server_name=server_name,
-                        trust_mcp_server=True,
-                    )
+                    cwd = self.action_config.workspace_root if self.action_config.enabled else None
+                    if resolved_backend == "codex" and self._resolved_codex_mode() == "mcp":
+                        success, output, _thread_id = await self._run_internal_codex_mcp_query(
+                            prompt=prompt,
+                            context_slice=cli_context if cli_context else None,
+                            cwd=cwd,
+                            mcp_server_url=mcp_server_url,
+                            mcp_server_name=server_name,
+                        )
+                    else:
+                        success, output = await run_cli_sub_query(
+                            prompt=prompt,
+                            context_slice=cli_context if cli_context else None,
+                            backend=resolved_backend,  # type: ignore[arg-type]
+                            timeout=self.sub_query_config.cli_timeout_seconds,
+                            cwd=cwd,
+                            max_output_chars=self.sub_query_config.cli_max_output_chars,
+                            max_context_chars=self.sub_query_config.max_context_chars,
+                            mcp_server_url=mcp_server_url,
+                            mcp_server_name=server_name,
+                            trust_mcp_server=True,
+                            codex_mode=self.sub_query_config.codex_mode,
+                            codex_model=self.sub_query_config.codex_model,
+                            codex_reasoning_effort=self.sub_query_config.codex_reasoning_effort,
+                            codex_profile=self.sub_query_config.codex_profile,
+                        )
                 except Exception as e:
                     success, output = False, f"{type(e).__name__}: {e}"
 
@@ -1636,7 +1778,10 @@ class AlephMCPServerLocal:
     def _get_sub_query_config_snapshot(self) -> dict[str, Any]:
         backend_env = os.environ.get("ALEPH_SUB_QUERY_BACKEND", "").strip().lower()
         configured_backend = getattr(self.sub_query_config, "backend", "auto")
-        backend_display = backend_env or configured_backend or "auto"
+        if configured_backend and configured_backend != "auto":
+            backend_display = configured_backend
+        else:
+            backend_display = backend_env or configured_backend or "auto"
         return {
             "sub_query_backend": backend_display,
             "sub_query_backend_resolved": detect_backend(self.sub_query_config),
@@ -1645,6 +1790,12 @@ class AlephMCPServerLocal:
                 "api": self.sub_query_config.api_timeout_seconds,
             },
             "sub_query_share_session": _get_env_bool("ALEPH_SUB_QUERY_SHARE_SESSION", False),
+            "sub_query_codex": {
+                "mode": self._resolved_codex_mode(),
+                "model": self._resolved_codex_model(),
+                "reasoning_effort": self._resolved_codex_reasoning_effort(),
+                "profile": self._resolved_codex_profile(),
+            },
             "context_policy": self.context_policy,
         }
 
@@ -3945,9 +4096,13 @@ def main() -> None:
     parser.add_argument(
         "--sub-query-backend",
         type=str,
-        choices=["codex", "claude", "gemini", "api", "auto"],
+        choices=["codex", "claude", "gemini", "kimi", "api", "auto"],
         default=None,
-        help="Override sub-query backend (codex|claude|gemini|kimi|api|auto).",
+        help=(
+            "Override sub-query backend "
+            "(codex|claude|gemini|kimi|api|auto). "
+            "Auto mode only selects codex or api; other CLI backends are explicit experimental overrides."
+        ),
     )
     parser.add_argument(
         "--sub-query-timeout",

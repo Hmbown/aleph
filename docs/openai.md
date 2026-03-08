@@ -17,6 +17,13 @@ Manual config in your Codex config file:
 [mcp_servers.aleph]
 command = "aleph"
 args = ["--enable-actions", "--tool-docs", "concise"]
+
+[mcp_servers.aleph.env]
+ALEPH_SUB_QUERY_BACKEND = "codex"
+ALEPH_SUB_QUERY_CODEX_MODE = "mcp"
+ALEPH_SUB_QUERY_CODEX_MODEL = "gpt-5.4"
+ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT = "low"
+ALEPH_SUB_QUERY_SHARE_SESSION = "true"
 ```
 
 Restart Codex CLI after changes.

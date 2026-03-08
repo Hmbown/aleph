@@ -30,6 +30,10 @@ I need you to install and configure Aleph (an MCP server for recursive LLM reaso
    aleph-rlm install
    ```
 
+   Treat this as the preferred nested sub-query setup if Codex CLI is
+   installed. Aleph's validated default is to keep Codex as the nested
+   sub-query backend even when the outer assistant is Claude Code.
+
 3. For any environments not auto-detected, manually configure:
 
    **Claude Desktop:**
@@ -127,7 +131,28 @@ I need you to install and configure Aleph (an MCP server for recursive LLM reaso
    $env:ALEPH_SUB_QUERY_MODEL = "your-model-name"
    ```
 
-   CLI backends (`claude`, `codex`, `gemini`) do not require an API key. Aleph will auto-detect the first available backend unless you set `ALEPH_SUB_QUERY_BACKEND`.
+   CLI backends (`claude`, `codex`, `gemini`) do not require an API key. Aleph
+   now treats Codex as the default sub-query path: auto mode resolves to Codex
+   when it is installed and otherwise falls back to API. Generated configs pin
+   the nested Codex MCP defaults (`backend=codex`, `mode=mcp`, `model=gpt-5.4`,
+   `reasoning=low`, `share_session=true`) whenever Codex is available unless
+   you override them. Other CLI backends remain explicit experimental
+   overrides via `ALEPH_SUB_QUERY_BACKEND`.
+
+   If you want an all-Claude setup instead of the recommended Codex-backed
+   nested path, explicitly add:
+
+   **macOS/Linux**
+   ```bash
+   export ALEPH_SUB_QUERY_BACKEND=claude
+   export ALEPH_SUB_QUERY_SHARE_SESSION=true
+   ```
+
+   **Windows**
+   ```powershell
+   $env:ALEPH_SUB_QUERY_BACKEND = "claude"
+   $env:ALEPH_SUB_QUERY_SHARE_SESSION = "true"
+   ```
 
 6. Verify installation:
    ```bash
@@ -140,6 +165,8 @@ I need you to install and configure Aleph (an MCP server for recursive LLM reaso
 - The `--enable-actions` flag allows file read/write and command execution
 - `--enable-actions` also enables rg-based search, smart loaders, and memory pack auto-save
 - In CLI environments (Claude Code, Codex, Gemini), `sub_query` can use the local CLI backend - no API key needed
+- Best validated nested setup: Codex for sub-queries, even if Claude Code is the outer client
+- Claude remains a supported explicit fallback for all-Claude nested operation
 - The installer should handle most of this automatically, but verify each environment works
 - For per-project scoping, set `--workspace-root /absolute/path/to/project` instead of `--workspace-mode git`. See MCP_SETUP.md for details.
 - Some MCP clients don't reliably pass `env` vars from config to the server process. If `sub_query` reports missing credentials, add exports to your shell profile and restart the client.

@@ -40,6 +40,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from .sub_query import DEFAULT_CODEX_MODE, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT
+
 __all__ = ["main"]
 
 # Try to import rich for colored output, fall back to plain text
@@ -267,6 +269,25 @@ def _default_mcp_config() -> MCPServerConfig:
     )
 
 
+def _apply_client_mcp_defaults(client: ClientConfig, config: MCPServerConfig) -> MCPServerConfig:
+    env = dict(config.env)
+    should_pin_codex = client.name == "codex" or shutil.which("codex") is not None
+    if should_pin_codex:
+        env.setdefault("ALEPH_SUB_QUERY_BACKEND", "codex")
+        env.setdefault("ALEPH_SUB_QUERY_CODEX_MODE", DEFAULT_CODEX_MODE)
+        env.setdefault("ALEPH_SUB_QUERY_CODEX_MODEL", DEFAULT_CODEX_MODEL)
+        env.setdefault(
+            "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT",
+            DEFAULT_CODEX_REASONING_EFFORT,
+        )
+        env.setdefault("ALEPH_SUB_QUERY_SHARE_SESSION", "true")
+    return MCPServerConfig(
+        command=config.command,
+        args=list(config.args),
+        env=env,
+    )
+
+
 def _format_toml_array(values: list[str]) -> str:
     quoted = [json.dumps(v) for v in values]
     return "[" + ", ".join(quoted) + "]"
@@ -434,15 +455,17 @@ def _collect_install_config() -> MCPServerConfig:
     unrestricted = _prompt_bool("Disable sandbox restrictions (unrestricted)?", default=False)
 
     available_backends = []
-    for backend in ("codex", "gemini", "claude"):
+    for backend in ("codex", "gemini", "kimi", "claude"):
         if shutil.which(backend):
             available_backends.append(backend)
-    backend_labels = ["auto (detect installed CLI or API)"]
+    backend_labels = ["auto (codex if installed, else API)"]
     backend_options = ["auto"]
-    for backend in ("codex", "gemini", "claude", "api"):
+    for backend in ("codex", "gemini", "kimi", "claude", "api"):
         label = backend
         if backend in available_backends:
             label += " (detected)"
+        if backend in {"gemini", "kimi", "claude"}:
+            label += " (experimental)"
         backend_labels.append(label)
         backend_options.append(backend)
     sub_query_backend = _prompt_choice(
@@ -727,7 +750,7 @@ def install_to_toml_config(
         print_warning(f"Aleph is already configured in {client.display_name}")
         return True
 
-    config = mcp_config or _default_mcp_config()
+    config = _apply_client_mcp_defaults(client, mcp_config or _default_mcp_config())
     block = _format_toml_mcp_config(config)
 
     if dry_run:

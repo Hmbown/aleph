@@ -3,10 +3,12 @@
 This module enables Aleph to spawn sub-agents that can reason over context slices,
 following the Recursive Language Model (RLM) paradigm.
 
-Backend priority (configurable via ALEPH_SUB_QUERY_BACKEND):
-1. CLI backends (codex, gemini) - uses existing subscriptions
-   Note: claude CLI is deprioritized as it hangs in MCP/sandbox contexts
-2. API (if credentials available) - OpenAI-compatible APIs only (last resort)
+Default backend policy (configurable via ALEPH_SUB_QUERY_BACKEND):
+1. codex CLI - first-class nested MCP path
+2. API (if credentials available) - OpenAI-compatible fallback
+
+Other CLI backends (claude, gemini, kimi) remain available via explicit override,
+but are treated as experimental rather than auto-selected defaults.
 
 Configuration via environment:
 - ALEPH_SUB_QUERY_API_KEY (or OPENAI_API_KEY fallback)
@@ -14,6 +16,10 @@ Configuration via environment:
 - ALEPH_SUB_QUERY_MODEL (required)
 - ALEPH_SUB_QUERY_TIMEOUT (seconds, applies to CLI + API sub-queries)
 - ALEPH_SUB_QUERY_SHARE_SESSION (share live MCP session with CLI sub-agents)
+- ALEPH_SUB_QUERY_CODEX_MODE (codex only: "exec" or "mcp")
+- ALEPH_SUB_QUERY_CODEX_MODEL (optional Codex MCP model override)
+- ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT (optional Codex MCP reasoning effort)
+- ALEPH_SUB_QUERY_CODEX_PROFILE (optional Codex MCP profile override)
 - ALEPH_SUB_QUERY_HTTP_HOST / ALEPH_SUB_QUERY_HTTP_PORT / ALEPH_SUB_QUERY_HTTP_PATH
 - ALEPH_SUB_QUERY_MCP_SERVER_NAME (server name exposed to sub-agents)
 - ALEPH_SUB_QUERY_VALIDATION_REGEX (optional regex for strict output validation)
@@ -32,17 +38,24 @@ __all__ = [
     "SubQueryConfig",
     "detect_backend",
     "DEFAULT_CONFIG",
+    "DEFAULT_CODEX_MODE",
+    "DEFAULT_CODEX_MODEL",
+    "DEFAULT_CODEX_REASONING_EFFORT",
     "has_api_credentials",
 ]
 
 
 BackendType = Literal["claude", "codex", "gemini", "kimi", "api", "auto"]
+CodexMode = Literal["exec", "mcp"]
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_API_KEY_ENV = "ALEPH_SUB_QUERY_API_KEY"
 DEFAULT_API_BASE_URL_ENV = "ALEPH_SUB_QUERY_URL"
 DEFAULT_API_MODEL_ENV = "ALEPH_SUB_QUERY_MODEL"
 DEFAULT_TIMEOUT_ENV = "ALEPH_SUB_QUERY_TIMEOUT"
+DEFAULT_CODEX_MODE: CodexMode = "mcp"
+DEFAULT_CODEX_MODEL = "gpt-5.4"
+DEFAULT_CODEX_REASONING_EFFORT = "low"
 
 
 @dataclass
@@ -57,14 +70,18 @@ class SubQueryConfig:
     - ALEPH_SUB_QUERY_MODEL: Model name (required)
     - ALEPH_SUB_QUERY_TIMEOUT: Timeout in seconds for CLI/API backends
     - ALEPH_SUB_QUERY_SHARE_SESSION: Share live MCP session with CLI sub-agents
+    - ALEPH_SUB_QUERY_CODEX_MODE: Route codex through `codex exec` or `codex mcp-server`
+    - ALEPH_SUB_QUERY_CODEX_MODEL: Optional Codex MCP model override
+    - ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT: Optional Codex MCP reasoning effort
+    - ALEPH_SUB_QUERY_CODEX_PROFILE: Optional Codex MCP profile override
     - ALEPH_SUB_QUERY_HTTP_HOST / ALEPH_SUB_QUERY_HTTP_PORT / ALEPH_SUB_QUERY_HTTP_PATH
     - ALEPH_SUB_QUERY_MCP_SERVER_NAME: Server name exposed to sub-agents
 
     When backend="auto" (default), the priority is:
     1. codex CLI - if installed
-    2. gemini CLI - if installed
-    3. claude CLI - if installed (deprioritized: hangs in MCP/sandbox contexts)
-    4. API - if credentials are available (fallback)
+    2. API - fallback
+
+    Other CLI backends stay available via explicit backend selection.
 
     Attributes:
         backend: Which backend to use. "auto" prioritizes CLI, then API.
@@ -100,6 +117,10 @@ class SubQueryConfig:
     include_system_prompt: bool = True
     validation_regex: str | None = None
     max_retries: int = 0
+    codex_mode: CodexMode | None = None
+    codex_model: str | None = None
+    codex_reasoning_effort: str | None = None
+    codex_profile: str | None = None
     retry_prompt: str = (
         "The previous output did not match the required format. "
         "Respond again and match the required format exactly."
@@ -125,6 +146,34 @@ OUTPUT FORMAT:
     )
 
     def __post_init__(self) -> None:
+        if self.codex_mode is None:
+            codex_mode_env = os.environ.get("ALEPH_SUB_QUERY_CODEX_MODE", "").strip().lower()
+            if codex_mode_env in {"exec", "mcp"}:
+                self.codex_mode = codex_mode_env  # type: ignore[assignment]
+        if self.codex_mode is None:
+            self.codex_mode = DEFAULT_CODEX_MODE
+
+        if self.codex_model is None:
+            codex_model_env = os.environ.get("ALEPH_SUB_QUERY_CODEX_MODEL", "").strip()
+            if codex_model_env:
+                self.codex_model = codex_model_env
+        if self.codex_model is None:
+            self.codex_model = DEFAULT_CODEX_MODEL
+
+        if self.codex_reasoning_effort is None:
+            codex_reasoning_env = os.environ.get(
+                "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT", ""
+            ).strip()
+            if codex_reasoning_env:
+                self.codex_reasoning_effort = codex_reasoning_env
+        if self.codex_reasoning_effort is None:
+            self.codex_reasoning_effort = DEFAULT_CODEX_REASONING_EFFORT
+
+        if self.codex_profile is None:
+            codex_profile_env = os.environ.get("ALEPH_SUB_QUERY_CODEX_PROFILE", "").strip()
+            if codex_profile_env:
+                self.codex_profile = codex_profile_env
+
         timeout_env = os.environ.get(DEFAULT_TIMEOUT_ENV, "").strip()
         if not timeout_env:
             return
@@ -152,12 +201,10 @@ def has_api_credentials(config: SubQueryConfig | None = None) -> bool:
 def detect_backend(config: SubQueryConfig | None = None) -> BackendType:
     """Auto-detect the best available backend.
 
-    Priority (CLI-first; API is last resort):
+    Priority (Codex-first; API is fallback):
     1. Check ALEPH_SUB_QUERY_BACKEND env var for explicit override
     2. codex CLI - if installed
-    3. gemini CLI - if installed
-    4. claude CLI - if installed (deprioritized: hangs in MCP/sandbox contexts)
-    5. api (fallback) - will error if no credentials, but gives helpful message
+    3. api (fallback) - will error with a helpful message if no credentials
 
     Returns:
         The detected backend type.
@@ -173,18 +220,11 @@ def detect_backend(config: SubQueryConfig | None = None) -> BackendType:
     if explicit_backend in ("api", "claude", "codex", "gemini", "kimi"):
         return explicit_backend  # type: ignore
 
-    # Priority 2-5: CLI backends (codex/gemini/kimi preferred over claude)
-    # Note: claude CLI hangs in MCP/sandbox contexts, so it's deprioritized
+    # Priority 2: Codex is the only auto-selected CLI backend.
     if shutil.which("codex"):
         return "codex"
-    if shutil.which("gemini"):
-        return "gemini"
-    if shutil.which("kimi"):
-        return "kimi"
-    if shutil.which("claude"):
-        return "claude"
 
-    # Fallback to API (will error with helpful message if no credentials)
+    # Fallback to API (will error with helpful message if no credentials).
     return "api"
 
 

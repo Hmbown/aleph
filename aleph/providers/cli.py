@@ -1,6 +1,7 @@
 """CLI provider.
 
-Routes Aleph root calls through local CLI tools (claude/codex/gemini).
+Routes Aleph root calls through local CLI tools, with Codex as the default
+auto-selected backend and other CLIs available by explicit choice.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from ..types import Message
 from ..utils.tokens import estimate_tokens
 
 
-CLIBackend = Literal["claude", "codex", "gemini"]
+CLIBackend = Literal["claude", "codex", "gemini", "kimi"]
 
 DEFAULT_CONTEXT_LIMIT = 200_000
 DEFAULT_OUTPUT_LIMIT = 8_192
@@ -82,7 +83,7 @@ class CLIProvider:
             detected = detect_backend()
             if detected == "api":
                 raise ProviderError(
-                    "No CLI backend detected. Install claude/codex/gemini or set ALEPH_CLI_BACKEND."
+                    "No Codex CLI backend detected. Install codex or set ALEPH_CLI_BACKEND to an explicit backend."
                 )
             return cast(CLIBackend, detected)
         if key in CLI_BACKENDS:

@@ -42,9 +42,22 @@ pip install "aleph-rlm[mcp]"
 aleph-rlm install
 ```
 
-`aleph-rlm install` / `aleph-rlm configure` prefers `codex` as the suggested
-sub-query backend when the `codex` CLI is already installed. Otherwise the
-generated config stays on `auto`.
+`aleph-rlm install` / `aleph-rlm configure` now treats Codex as the default
+sub-query path. When the `codex` CLI is installed, generated configs pin the
+Codex MCP defaults (`backend=codex`, `mode=mcp`, `model=gpt-5.4`,
+`reasoning=low`, `share_session=true`) unless you override them. Other CLI
+backends remain available as explicit experimental overrides.
+
+Recommended setup:
+
+- Best default: install Codex CLI, then run `aleph-rlm install`. This is the
+  simplest and strongest path even if your top-level client is Claude Code.
+  Aleph can keep Claude as the outer client and still use Codex for nested
+  sub-queries.
+- All-Claude alternative: if you want Claude to handle nested sub-queries too,
+  explicitly set `ALEPH_SUB_QUERY_BACKEND=claude` and
+  `ALEPH_SUB_QUERY_SHARE_SESSION=true`, or pick `claude` in
+  `aleph-rlm configure`.
 
 3. Verify Aleph is reachable in your assistant:
 
@@ -214,10 +227,29 @@ Aleph resolves the active sub-query backend in this order:
 
 1. Programmatic config via `configure(sub_query_backend=...)` or `SubQueryConfig(backend=...)`
 2. `ALEPH_SUB_QUERY_BACKEND` when it is set to a concrete backend
-3. Auto-detection: `codex` -> `gemini` -> `kimi` -> `claude` -> `api`
+3. Auto-detection: `codex` -> `api`
 
 That means an explicit runtime switch wins over ambient shell state, while
-`auto` keeps the CLI-first fallback order.
+`auto` keeps the first-class Codex path and otherwise falls back to API.
+
+### Shared-Session Architecture
+
+When `ALEPH_SUB_QUERY_SHARE_SESSION=true`, Aleph starts a local streamable HTTP
+server and points the sub-query CLI back at that live Aleph session. That is
+what lets nested sub-agents use `search_context`, `peek_context`,
+`exec_python`, and the rest of Aleph's MCP tools instead of relying on a pasted
+prompt slice.
+
+How Aleph injects that live MCP server depends on the backend:
+
+| Backend | How shared-session MCP is injected |
+|---|---|
+| `codex` | Native Codex MCP config overrides via `codex mcp-server` |
+| `claude` | Temp JSON file via `--mcp-config` and `--strict-mcp-config` |
+| `gemini` | Temp JSON file via `GEMINI_CLI_SYSTEM_SETTINGS_PATH` |
+
+This is why Codex is the recommended default: it has the cleanest nested MCP
+path, the least ambient config leakage, and the best retry/thread behavior.
 
 ## Core Workflow Patterns
 
@@ -296,13 +328,13 @@ Use this when you want Aleph without MCP integration.
 
 ```bash
 # Basic
-aleph run "What is 2+2?" --provider cli --model claude
+aleph run "What is 2+2?" --provider cli --model codex
 
 # With file context
-aleph run "Summarize this log" --provider cli --model claude --context-file app.log
+aleph run "Summarize this log" --provider cli --model codex --context-file app.log
 
 # JSON output with trajectory
-aleph run "Analyze" --provider cli --model claude --context-file data.json --json --include-trajectory
+aleph run "Analyze" --provider cli --model codex --context-file data.json --json --include-trajectory
 ```
 
 ### Common Flags
@@ -310,7 +342,7 @@ aleph run "Analyze" --provider cli --model claude --context-file data.json --jso
 | Flag | Description |
 |---|---|
 | `--provider cli` | Use local CLI tools instead of API provider |
-| `--model claude|codex|gemini` | CLI backend to use |
+| `--model codex|claude|gemini|kimi` | CLI backend to use (`codex` recommended; others are explicit experimental overrides) |
 | `--context-file <path>` | Load context from file |
 | `--context-stdin` | Read context from stdin |
 | `--json` | Emit JSON output |
@@ -324,7 +356,62 @@ aleph run "Analyze" --provider cli --model claude --context-file data.json --jso
 | `ALEPH_SUB_QUERY_BACKEND` | `auto`, `codex`, `gemini`, `kimi`, `claude`, or `api` |
 | `ALEPH_SUB_QUERY_TIMEOUT` | Sub-query timeout in seconds |
 | `ALEPH_SUB_QUERY_SHARE_SESSION` | Share MCP session with CLI sub-agents |
+| `ALEPH_SUB_QUERY_CODEX_MODE` | Codex backend mode: defaults to `mcp` |
+| `ALEPH_SUB_QUERY_CODEX_MODEL` | Codex MCP model override, default `gpt-5.4` |
+| `ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT` | Codex MCP reasoning effort, default `low` |
+| `ALEPH_SUB_QUERY_GEMINI_SANDBOX` | Opt back into Gemini CLI sandboxing (`false` by default for Aleph sub-queries) |
 | `ALEPH_CLI_TIMEOUT` | Timeout for CLI calls |
+
+When Aleph resolves to the `codex` backend, it now defaults to the internal
+`codex mcp-server` path with a clean MCP graph (`-c mcp_servers={}`).
+
+`gemini`, `claude`, and `kimi` remain available only when you explicitly pin
+them via `ALEPH_SUB_QUERY_BACKEND` or runtime `configure(...)`.
+
+In live dogfooding, `claude` and `gemini` both worked as shared-session Aleph
+MCP backends after explicit selection, but Codex was more reliable for
+exact-output and retry-sensitive tasks.
+
+Aleph launches Gemini sub-queries with `--extensions ""` so the nested run does
+not inherit unrelated user extensions from `~/.gemini`.
+
+If you want the simplest Codex-backed shared-session setup:
+
+```bash
+aleph-rlm install
+```
+
+If you want an all-Claude setup instead:
+
+```bash
+export ALEPH_SUB_QUERY_BACKEND=claude
+export ALEPH_SUB_QUERY_SHARE_SESSION=true
+```
+
+If Codex is installed, `aleph-rlm install` will still pin Codex by default
+until you override it.
+
+Use these env vars if you want to pin the Codex defaults explicitly:
+
+```bash
+export ALEPH_SUB_QUERY_BACKEND=codex
+export ALEPH_SUB_QUERY_CODEX_MODE=mcp
+export ALEPH_SUB_QUERY_CODEX_MODEL=gpt-5.4
+export ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT=low
+export ALEPH_SUB_QUERY_SHARE_SESSION=true
+```
+
+Quick smoke for the nested Codex MCP path:
+
+```text
+load_context(content="Fact: nested codex mcp smoke works", context_id="smoke")
+exec_python(code="result = sub_query(\"Use Aleph MCP tools to inspect context_id='smoke'. Return exactly the fact text and nothing else. Do not rely on embedded context.\")", context_id="smoke")
+get_variable(name="result", context_id="smoke")
+```
+
+If `get_variable(...)` returns `nested codex mcp smoke works` exactly, Aleph is
+sharing the live MCP session with the nested Codex agent and the nested agent
+is reading through Aleph tools instead of prompt-stuffed context.
 
 ## Tool Overview
 
