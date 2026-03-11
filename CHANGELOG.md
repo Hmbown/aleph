@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.7
+## 0.8.8
 
 - Docs: Simplified the README into a shorter front door focused on what Aleph
   is, how to start, and how to use it safely.
@@ -8,7 +8,18 @@
   tells the same load/search/compute/recurse story.
 - Chore: Updated `scripts/sync_versions.py` to keep the landing page version
   badge in sync with the package version.
-- Release: Finalized the 0.8.7 docs-and-positioning refresh.
+- Release: Finalized the 0.8.8 docs-and-positioning refresh.
+
+## 0.8.7
+
+- Added: Codex as the first-class Aleph sub-query backend for nested
+  MCP/shared-session recursion.
+- Improved: Installer defaults now pin the internal `codex mcp-server` path
+  with clean MCP config and Codex-oriented defaults when Codex CLI is present.
+- Docs: Clarified shared-session architecture, backend selection, and when to
+  use Codex versus explicit Claude/Gemini overrides.
+- Tests: Expanded regression coverage for CLI selection, shared-session MCP
+  behavior, retries, and backend defaults.
 
 ## 0.8.6
 
