@@ -47,10 +47,9 @@ def _sync_init(version: str, check: bool) -> bool:
 def _sync_web(version: str, check: bool) -> bool:
     path = pathlib.Path("web/index.html")
     text = path.read_text()
-    dash = "\u2014"
     new_text, count = re.subn(
-        r'(<div class="version-badge">)v[^<]+(</div>)',
-        f"\\g<1>v{version} {dash} Recursive Reasoning\\2",
+        r'(<div class="version-badge">)[^<]+(</div>)',
+        f"\\g<1>v{version}\\2",
         text,
         count=1,
     )

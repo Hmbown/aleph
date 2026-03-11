@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Aleph - Recursive Agent Memory</title>
-  <meta name="description" content="MCP server and skill workflow for recursive agent memory. Load a repo, log, or document once, then search, run Python, recurse, and converge with provenance.">
+  <title>Aleph - MCP Memory for Large Context</title>
+  <meta name="description" content="Load a repo, log, or document once. Aleph keeps context in memory so agents can search, run Python, recurse, and return small answers instead of pasting raw context.">
 
   <!-- Open Graph -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://aleph-web.pages.dev/">
-  <meta property="og:title" content="Aleph - Recursive Agent Memory">
-  <meta property="og:description" content="The Whole in Parts. Shared MCP memory for agents working over repos, logs, and large documents.">
+  <meta property="og:title" content="Aleph - MCP Memory for Large Context">
+  <meta property="og:description" content="Load once, work many times. Aleph keeps large context in memory so agents can search, compute, recurse, and finalize without prompt stuffing.">
 
   <!-- Fonts: Match Hegelion exactly -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -148,6 +148,37 @@
       padding-top: 0.5rem;
       padding-bottom: 0.5rem;
       max-width: 28rem;
+    }
+
+    .release-note {
+      max-width: 34rem;
+      border: 1px solid var(--text);
+      background: rgba(0,0,0,0.03);
+      padding: 1rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .release-note .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .release-note p {
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      line-height: 1.7;
+    }
+
+    .release-note code {
+      font-family: var(--font-mono);
+      font-size: 0.85em;
+      background: var(--text);
+      color: var(--bg);
+      padding: 0.1rem 0.35rem;
     }
 
     .cta-buttons {
@@ -584,11 +615,17 @@
     <section class="hero">
       <div class="container" style="display: contents;">
         <div class="hero-content">
-          <div class="version-badge">v0.8.7 — Recursive Reasoning</div>
-          <h1>The Whole<br>in Parts.</h1>
+          <div class="version-badge">v0.8.7</div>
+          <h1>Load It<br>Once.</h1>
           <p class="tagline">
-            Shared memory for agents. Load a repo, log, or document once, then search, run Python, recurse, and converge without pasting raw context.
+            Aleph keeps big working context in RAM so agents can search, run Python, recurse, and return small answers instead of re-sending the whole file.
           </p>
+          <div class="release-note">
+            <span class="eyebrow">Recommended Path</span>
+            <p>
+              Install the Codex CLI, run <code>aleph-rlm install</code>, and let Aleph wire the default shared-session sub-query setup for you.
+            </p>
+          </div>
           <div class="cta-buttons">
             <a href="https://github.com/Hmbown/aleph#quick-start" class="btn btn-primary">Get Started</a>
             <a href="https://github.com/Hmbown/aleph" class="btn btn-secondary">View on GitHub</a>
@@ -608,22 +645,22 @@
     <section class="loop-section">
       <div class="container">
         <div class="header">
-          <h2>The Process</h2>
-          <p>Load once. Search, execute, cite, and finalize.</p>
+          <h2>The Loop</h2>
+          <p>Load once. Search, compute, recurse, finalize.</p>
         </div>
         <div class="loop-flow">
           <span class="loop-step">Load</span>
           <span class="arrow">→</span>
           <span class="loop-step">Search</span>
           <span class="arrow">→</span>
-          <span class="loop-step">Cite</span>
+          <span class="loop-step">Compute</span>
           <span class="arrow">→</span>
-          <span class="loop-step">Evaluate</span>
+          <span class="loop-step">Recurse</span>
           <span class="arrow">→</span>
           <span class="loop-step highlight">Finalize</span>
         </div>
         <div class="loop-cta">
-          <a href="https://github.com/Hmbown/aleph#the-solution">↻ The Recursive Loop</a>
+          <a href="https://github.com/Hmbown/aleph#quick-start">Open the quick start</a>
         </div>
       </div>
     </section>
@@ -632,27 +669,27 @@
       <div class="container">
         <div class="features-grid">
           <div class="features-content">
-            <div class="badge">MCP Server</div>
-            <h2>Provenance<br>Tracking.</h2>
+            <div class="badge">Core Workflow</div>
+            <h2>Work On Data,<br>Not Prompts.</h2>
             <p>
-              Every search, every citation, every piece of evidence is logged automatically. When you finalize, you get a complete audit trail.
+              Aleph stores the full working set in a Python process, then gives the model tools for targeted inspection and computation instead of repeated paste-and-pray prompting.
             </p>
             <ul class="feature-list">
-              <li><span class="icon">&lt;&gt;</span> <span><strong>exec_python</strong> — Run code against context</span></li>
-              <li><span class="icon">⌕</span> <span><strong>search_context</strong> — Regex search with evidence logging</span></li>
-              <li><span class="icon">✓</span> <span><strong>cite()</strong> — Tag findings with notes</span></li>
-              <li><span class="icon">◉</span> <span><strong>evaluate_progress</strong> — Track convergence</span></li>
+              <li><span class="icon">+</span> <span><strong>load_file</strong> — Put repos, logs, and docs into Aleph memory</span></li>
+              <li><span class="icon">⌕</span> <span><strong>search_context</strong> — Find the relevant slice first</span></li>
+              <li><span class="icon">&lt;&gt;</span> <span><strong>exec_python</strong> — Compute against the whole context</span></li>
+              <li><span class="icon">◎</span> <span><strong>save_session</strong> — Resume long investigations later</span></li>
             </ul>
           </div>
           <div class="provenance-card">
-            <h3>EVIDENCE TRAIL</h3>
-            <div class="evidence-item"><span class="search">⌕</span> [search] pattern: "liability" lines 42-58</div>
-            <div class="evidence-item"><span class="check">✓</span> [manual] note: "key exclusion clause"</div>
-            <div class="evidence-item"><span class="search">⌕</span> [search] pattern: "indemnif" lines 112-130</div>
-            <div class="evidence-item"><span class="check">✓</span> [manual] note: "carve-out for negligence"</div>
+            <h3>SESSION TRACE</h3>
+            <div class="evidence-item"><span class="search">⌕</span> load_file("/repo/server.log") -> context_id="prod-log"</div>
+            <div class="evidence-item"><span class="search">⌕</span> search_context("ERROR|WARN") -> 18 hits</div>
+            <div class="evidence-item"><span class="check">✓</span> exec_python(...) -> grouped failures by service</div>
+            <div class="evidence-item"><span class="check">✓</span> get_variable("result") -> compact summary</div>
             <hr class="card-divider">
-            <p class="verdict">CONFIDENCE: <span class="status">HIGH (0.92)</span></p>
-            <p class="verdict-note">→ Ready to finalize with 4 citations</p>
+            <p class="verdict">STATE: <span class="status">READY TO FINALIZE</span></p>
+            <p class="verdict-note">Small answer out, full context still in memory</p>
           </div>
         </div>
       </div>
@@ -661,9 +698,9 @@
     <section class="quote-section">
       <div class="container">
         <div class="quote-content">
-          <h2>The Recursive<br>Method.</h2>
+          <h2>Recursive By<br>Design.</h2>
           <p>
-            Aleph is inspired by research on Recursive Language Models. Rather than solving context limits at the architecture level, let models partition context and make recursive calls to themselves.
+            Aleph is shaped by Recursive Language Models: keep the working set outside the prompt, let the model search and compute over it, and recurse only when one pass is not enough.
           </p>
           <blockquote>
             "Each iteration lets the model refine its search based on what it learned, rather than betting everything on one attention pass."

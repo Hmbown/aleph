@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.7
+
+- Docs: Simplified the README into a shorter front door focused on what Aleph
+  is, how to start, and how to use it safely.
+- Docs: Synced the web landing page copy with the README so the product page
+  tells the same load/search/compute/recurse story.
+- Chore: Updated `scripts/sync_versions.py` to keep the landing page version
+  badge in sync with the package version.
+- Release: Finalized the 0.8.7 docs-and-positioning refresh.
+
 ## 0.8.6
 
 - Fixed: `detect_backend()` now respects an explicit `SubQueryConfig.backend`
