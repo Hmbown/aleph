@@ -1,0 +1,15 @@
+{
+  "name": "aleph-local-marketplace",
+  "plugins": [
+    {
+      "name": "aleph",
+      "source": {
+        "source": "local",
+        "path": "./plugins/aleph"
+      },
+      "installPolicy": "AVAILABLE",
+      "authPolicy": "ON_INSTALL",
+      "category": "Productivity"
+    }
+  ]
+}

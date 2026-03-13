@@ -29,6 +29,7 @@ ENV/
 
 # Local MCP host configs (per-user)
 .mcp.json
+!plugins/**/.mcp.json
 .claude/
 .gemini/
 

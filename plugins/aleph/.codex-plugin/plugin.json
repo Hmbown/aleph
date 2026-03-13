@@ -1,0 +1,39 @@
+{
+  "name": "aleph",
+  "version": "0.8.9",
+  "description": "MCP server for recursive LLM reasoning over large local data.",
+  "author": {
+    "name": "Hunter Bown",
+    "url": "https://github.com/Hmbown"
+  },
+  "homepage": "https://github.com/Hmbown/aleph",
+  "repository": "https://github.com/Hmbown/aleph",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "rlm",
+    "external-memory",
+    "search",
+    "reasoning"
+  ],
+  "interface": {
+    "displayName": "Aleph",
+    "developerName": "Hunter Bown",
+    "shortDescription": "External memory workflow for large local data.",
+    "longDescription": "Aleph keeps large files, repos, logs, and documents in an MCP-backed Python process so Codex can search, peek, run code, recurse, and return compact results instead of stuffing raw data into the prompt.",
+    "capabilities": [
+      "MCP server",
+      "Skill",
+      "External memory"
+    ],
+    "screenshots": [],
+    "category": "Productivity",
+    "brandColor": "#0f766e",
+    "defaultPrompt": "$aleph /absolute/path/to/file.log",
+    "websiteUrl": "https://github.com/Hmbown/aleph",
+    "privacyPolicyUrl": null,
+    "termsOfServiceUrl": null,
+    "logo": null,
+    "composerIcon": null
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "aleph-marketplace",
+  "description": "Aleph MCP server plugin for recursive LLM reasoning over large local data",
+  "owner": {
+    "name": "Hunter Bown",
+    "url": "https://github.com/Hmbown"
+  },
+  "plugins": [
+    {
+      "name": "aleph",
+      "description": "External memory workflow for large local data — load, search, peek, execute, and recurse without consuming the context window.",
+      "version": "0.8.9",
+      "author": {
+        "name": "Hunter Bown",
+        "url": "https://github.com/Hmbown"
+      },
+      "source": "./plugins/aleph",
+      "category": "productivity",
+      "homepage": "https://github.com/Hmbown/aleph"
+    }
+  ]
+}
