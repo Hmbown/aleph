@@ -27,8 +27,89 @@ programmatic configuration.
 | `ALEPH_SUB_QUERY_HTTP_PORT`          | Port for shared MCP session                      | `8765`                        |
 | `ALEPH_SUB_QUERY_HTTP_PATH`          | Path for shared MCP session                      | `/mcp`                        |
 | `ALEPH_SUB_QUERY_MCP_SERVER_NAME`    | Server name exposed to sub-agents                | `aleph_shared`                |
+| `ALEPH_PROVIDER`                      | LLM provider (`anthropic`, `openai`, `llamacpp`, `cli`) | `anthropic`             |
+| `ALEPH_MODEL`                         | Model name for the RLM loop                      | `claude-sonnet-4-20250514`    |
+| `ALEPH_BASE_URL`                      | Override provider's default API endpoint          | --                            |
+| `ALEPH_LLAMACPP_URL`                 | llama-server URL                                  | `http://127.0.0.1:8080`      |
+| `ALEPH_LLAMACPP_MODEL`              | Path to GGUF model file (for auto-start)          | --                            |
+| `ALEPH_LLAMACPP_CTX`                | Context size in tokens                             | `8192`                        |
+| `ALEPH_LLAMACPP_GPU_LAYERS`         | Layers to offload to GPU                           | `99` (all)                    |
+| `ALEPH_LLAMACPP_AUTO_START`         | Auto-start llama-server if not running             | `true`                        |
 | `ALEPH_MAX_ITERATIONS`                | Maximum iterations per session                   | `100`                         |
 | `ALEPH_MAX_DEPTH`                     | Maximum recursion depth for sub_aleph            | `2`                           |
+
+---
+
+## Local Models (llama.cpp)
+
+The `llamacpp` provider runs the RLM loop against a local
+[llama.cpp](https://github.com/ggml-org/llama.cpp) server. No API key, no
+network, zero cost.
+
+### Setup
+
+Install llama.cpp:
+
+```bash
+brew install llama.cpp          # Mac
+winget install ggml.LlamaCpp    # Windows
+```
+
+Download a GGUF model (any will work — Q4_K_M for speed, Q8_0 for quality):
+
+```bash
+# Example: Qwen 3.5 9B Q8_0 (~9 GB)
+huggingface-cli download Qwen/Qwen3.5-9B-GGUF qwen3.5-9b-q8_0.gguf --local-dir ./models
+```
+
+### Option A: Start the server yourself
+
+```bash
+llama-server -m ./models/qwen3.5-9b-q8_0.gguf -c 16384 -ngl 99 --port 8080
+```
+
+Then configure Aleph:
+
+```bash
+export ALEPH_PROVIDER=llamacpp
+export ALEPH_LLAMACPP_URL=http://127.0.0.1:8080
+export ALEPH_MODEL=local
+aleph
+```
+
+### Option B: Let Aleph manage the server
+
+```bash
+export ALEPH_PROVIDER=llamacpp
+export ALEPH_LLAMACPP_MODEL=./models/qwen3.5-9b-q8_0.gguf
+export ALEPH_LLAMACPP_CTX=16384
+export ALEPH_MODEL=local
+aleph
+```
+
+Aleph starts `llama-server` on first use and shuts it down when the MCP
+session ends.
+
+### Environment Variables
+
+| Variable                      | Description                              | Default                    |
+|-------------------------------|------------------------------------------|----------------------------|
+| `ALEPH_LLAMACPP_URL`        | Server URL                                | `http://127.0.0.1:8080`   |
+| `ALEPH_LLAMACPP_MODEL`      | Path to `.gguf` file (enables auto-start) | --                         |
+| `ALEPH_LLAMACPP_CTX`        | Context size in tokens                    | `8192`                     |
+| `ALEPH_LLAMACPP_GPU_LAYERS` | GPU layers (`-ngl`), `99` = all           | `99`                       |
+| `ALEPH_LLAMACPP_AUTO_START` | Start server if not running               | `true`                     |
+
+### Notes
+
+- **Model name doesn't matter.** Set `ALEPH_MODEL=local` (or any string).
+  llama-server always uses the model it was started with.
+- **Reasoning models work.** Qwen 3.5, QwQ, and other models that put
+  chain-of-thought in a `reasoning_content` field are handled automatically.
+- **Cost is always $0.** Token counts are tracked for budgeting but cost is
+  reported as zero.
+- **Cross-platform.** Same setup on Mac (ARM/Intel), Windows, and Linux.
+  `llama-server` binary name is the same everywhere.
 
 ---
 

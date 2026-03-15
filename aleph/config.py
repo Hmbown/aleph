@@ -31,6 +31,7 @@ class AlephConfig:
     root_model: str = "claude-sonnet-4-20250514"
     sub_model: str | None = None
     api_key: str | None = None
+    base_url: str | None = None  # Override provider's default base URL
 
     # Budget defaults
     max_tokens: int | None = None
@@ -113,6 +114,7 @@ class AlephConfig:
             root_model=os.getenv("ALEPH_MODEL", os.getenv("RLM_MODEL", "claude-sonnet-4-20250514")),
             sub_model=os.getenv("ALEPH_SUB_MODEL", os.getenv("RLM_SUB_MODEL")),
             api_key=os.getenv("ALEPH_API_KEY", os.getenv("RLM_API_KEY")),
+            base_url=os.getenv("ALEPH_BASE_URL"),
             max_tokens=getenv_int("ALEPH_MAX_TOKENS", None),
             max_iterations=int(os.getenv("ALEPH_MAX_ITERATIONS", "100")),
             max_depth=int(os.getenv("ALEPH_MAX_DEPTH", "2")),
@@ -165,7 +167,10 @@ def create_aleph(config: AlephConfig | Mapping[str, object] | str | Path | None 
         raise TypeError(f"Invalid config type: {type(config)}")
 
     # Provider instance
-    provider = get_provider(cfg.provider, api_key=cfg.api_key)
+    provider_kwargs: dict[str, object] = {"api_key": cfg.api_key}
+    if cfg.base_url:
+        provider_kwargs["base_url"] = cfg.base_url
+    provider = get_provider(cfg.provider, **provider_kwargs)
 
     return Aleph(
         provider=provider,

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.0
+
+- Added: `llamacpp` provider for local LLM inference via llama.cpp. Run the
+  full RLM loop on-device with any GGUF model at zero API cost.
+- Added: Auto-start for llama-server with health checking and configurable
+  context size, GPU layers, and model path (`ALEPH_LLAMACPP_*` env vars).
+- Added: `base_url` field on `AlephConfig` and `ALEPH_BASE_URL` env var for
+  overriding any provider's default endpoint.
+- Added: Handling for reasoning models (e.g. Qwen 3.5) that separate
+  chain-of-thought into a `reasoning_content` field.
+- Tests: 28 new tests for the llamacpp provider (init, protocol, health
+  check, completion, auto-start, config integration).
+- Docs: Local Models section in README, full llamacpp setup guide in
+  CONFIGURATION.md.
+
 ## 0.8.8
 
 - Docs: Simplified the README into a shorter front door focused on what Aleph

@@ -92,6 +92,49 @@ If you want terminal-only mode instead of MCP, use:
 aleph run "Summarize this log" --provider cli --model codex --context-file app.log
 ```
 
+## Local Models (llama.cpp)
+
+Aleph can use a local model instead of a cloud API. This runs the full RLM
+loop — search, code execution, convergence — entirely on your machine with
+zero API cost.
+
+**Prerequisites:** [llama.cpp](https://github.com/ggml-org/llama.cpp) and a
+GGUF model file.
+
+```bash
+# Install llama.cpp
+brew install llama.cpp          # Mac
+winget install ggml.LlamaCpp    # Windows
+
+# Start the server with your model
+llama-server -m /path/to/model.gguf -c 16384 -ngl 99 --port 8080
+```
+
+Point Aleph at the running server:
+
+```bash
+export ALEPH_PROVIDER=llamacpp
+export ALEPH_LLAMACPP_URL=http://127.0.0.1:8080
+export ALEPH_MODEL=local
+aleph
+```
+
+Or let Aleph start the server automatically:
+
+```bash
+export ALEPH_PROVIDER=llamacpp
+export ALEPH_LLAMACPP_MODEL=/path/to/model.gguf
+export ALEPH_LLAMACPP_CTX=16384
+export ALEPH_MODEL=local
+aleph
+```
+
+Tested with Qwen 3.5 9B (Q8_0, ~9 GB). Any GGUF model works — larger models
+give better results in the RLM loop. Models with reasoning/thinking support
+(Qwen 3.5, QwQ, etc.) are handled automatically. See
+[CONFIGURATION.md](docs/CONFIGURATION.md) for all `ALEPH_LLAMACPP_*`
+variables.
+
 ## Common Workloads
 
 | Scenario | What Aleph Is Good At |

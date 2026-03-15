@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .anthropic import AnthropicProvider
 from .cli import CLIProvider
+from .llamacpp import LlamaCppProvider
 from .openai import OpenAIProvider
 from .base import LLMProvider
 
@@ -12,6 +13,7 @@ PROVIDERS: dict[str, type[LLMProvider]] = {
     "anthropic": AnthropicProvider,
     "openai": OpenAIProvider,
     "cli": CLIProvider,
+    "llamacpp": LlamaCppProvider,
 }
 
 
