@@ -4,10 +4,10 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI version](https://img.shields.io/pypi/v/aleph-rlm.svg)](https://pypi.org/project/aleph-rlm/)
 
-Aleph is an [MCP server](https://modelcontextprotocol.io/) for working on large
-repos, logs, and documents without stuffing them into the model prompt. It
-keeps the working context in a Python process, then exposes tools so the model
-can search, peek, run code, recurse, and return small derived results.
+Aleph is a skill + [MCP server](https://modelcontextprotocol.io/) that turns
+your coding agent into an RLM. It keeps large repos, logs, and documents in a
+Python process instead of the model prompt, and exposes tools so the agent can
+search, peek, run code, recurse, and return small derived results.
 
 Recommended default: install the Codex CLI, then run `aleph-rlm install`.
 Aleph still works with Claude Code, Cursor, VS Code, and other MCP clients, but
