@@ -10,7 +10,7 @@ Aleph is an MCP server implementing Recursive Language Models (RLMs). It loads l
 
 ```bash
 pip install -e ".[dev,mcp]"
-pytest tests/ -v          # 276 tests, ~4s
+pytest tests/ -v          # ~426 tests, ~5s
 ruff check aleph/ tests/  # linter
 ```
 

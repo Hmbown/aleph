@@ -24,18 +24,27 @@ aleph/
 ├── cli.py               # CLI entry points (aleph-rlm install/doctor)
 ├── mcp/
 │   ├── local_server.py  # MCP server (main entry point)
+│   ├── tool_registry.py # Tool registration helpers
+│   ├── actions.py       # Action tools (read/write/run)
+│   ├── recipes.py       # Recipe schema validation
+│   ├── session.py       # Session serialization
+│   ├── workspace.py     # Workspace root detection
 │   └── server.py        # Compatibility entry point (aliases local_server)
 ├── repl/
 │   ├── sandbox.py       # REPLEnvironment -- sandboxed code execution
 │   └── helpers.py       # 100+ helper functions (peek, search, extract_*)
 ├── sub_query/
 │   ├── __init__.py      # SubQueryConfig, detect_backend()
-│   ├── cli_backend.py   # Claude / Codex / Gemini CLI spawning
+│   ├── cli_backend.py   # Claude / Codex / Gemini / Kimi CLI spawning
+│   ├── codex_mcp_backend.py  # Codex MCP-mode sub-queries
 │   └── api_backend.py   # OpenAI-compatible API calls
 ├── providers/
 │   ├── base.py          # LLMProvider protocol
+│   ├── registry.py      # get_provider() factory
 │   ├── anthropic.py     # Anthropic provider
-│   └── openai.py        # OpenAI provider
+│   ├── openai.py        # OpenAI provider
+│   ├── llamacpp.py      # Local llama.cpp provider
+│   └── cli.py           # CLI provider (claude/codex/gemini)
 └── prompts/
     └── system.py        # Default system prompt template
 ```
@@ -107,11 +116,9 @@ Enables RLM-style recursive reasoning:
 # Backend selection precedence:
 # 1. SubQueryConfig.backend when it is set to a concrete backend
 # 2. ALEPH_SUB_QUERY_BACKEND env var (explicit override)
-# 3. codex CLI (if installed)
-# 4. gemini CLI (if installed)
-# 5. kimi CLI (if installed)
-# 6. claude CLI (if installed; deprioritized in MCP/sandbox contexts)
-# 7. API fallback
+# 3. codex CLI (if installed) -- only auto-selected CLI
+# 4. API fallback
+# claude, gemini, and kimi are available only when explicitly selected.
 ```
 
 - **CLI backend:** spawns subprocess, passes prompt via stdin or temp file
@@ -172,15 +179,9 @@ pytest -k "test_search"
 ## Code Style
 
 - Python 3.10+ with type hints
-- Formatted with `black` and `isort`
 - Linted with `ruff`
 
 ```bash
-# Format
-black aleph tests
-isort aleph tests
-
-# Lint
 ruff check aleph tests
 ```
 
