@@ -637,5 +637,5 @@ def merge_swarm_findings(swarm: dict) -> dict:
         "findings_by_agent": by_agent,
         "findings_by_type": by_type,
         "all_findings": all_findings,
-        "generated_at": datetime.utcnow().isoformat()
+        "generated_at": _utcnow_iso()
     }

@@ -26,9 +26,7 @@ MEMORY_PACK_RELATIVE_PATH = ".aleph/memory_pack.json"
 EvidenceSource = Literal[
     "search", "peek", "exec", "manual", "action", "sub_query", "sub_aleph",
 ]
-_VALID_EVIDENCE_SOURCES: set[str] = {
-    "search", "peek", "exec", "manual", "action", "sub_query", "sub_aleph",
-}
+_VALID_EVIDENCE_SOURCES: set[str] = set(EvidenceSource.__args__)  # type: ignore[attr-defined]
 
 # ---------------------------------------------------------------------------
 # Context locks — per-context asyncio locks for concurrent safety

@@ -12,6 +12,11 @@ document analysis. Instead of stuffing context into prompts, Aleph stores
 documents in a sandboxed Python REPL and provides tools for iterative
 exploration.
 
+Aleph operates in two modes: **(1) the RLM Core Loop**, where the LLM
+iteratively writes and executes code in a REPL to reason over context, and
+**(2) MCP Tool Server mode**, where an external client (Cursor, Claude Desktop,
+Codex, etc.) calls Aleph tools directly without running the internal loop.
+
 ---
 
 ## Project Structure
@@ -116,8 +121,8 @@ Enables RLM-style recursive reasoning:
 # Backend selection precedence:
 # 1. SubQueryConfig.backend when it is set to a concrete backend
 # 2. ALEPH_SUB_QUERY_BACKEND env var (explicit override)
-# 3. codex CLI (if installed) -- only auto-selected CLI
-# 4. API fallback
+# 3. API (if credentials available) -- preferred auto-selected backend
+# 4. codex CLI (if installed) -- fallback
 # claude, gemini, and kimi are available only when explicitly selected.
 ```
 

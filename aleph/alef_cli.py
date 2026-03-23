@@ -29,11 +29,7 @@ def _die(message: str) -> int:
 
 
 def _format_label(fmt: ContentFormat) -> str:
-    if fmt == ContentFormat.JSON:
-        return "json"
-    if fmt == ContentFormat.JSONL:
-        return "jsonl"
-    return "text"
+    return fmt.value
 
 
 def _parse_context_text(text: str, fmt: str, source: str | None = None) -> ContextType:

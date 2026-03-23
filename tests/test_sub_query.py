@@ -102,29 +102,40 @@ class TestSubQueryConfig:
 class TestDetectBackend:
     """Tests for backend detection.
 
-    Priority order (Codex-first):
+    Priority order (API-first, per RLM paper):
     1. ALEPH_SUB_QUERY_BACKEND env var (explicit override)
-    2. codex CLI (if installed)
-    3. API fallback (will error with helpful message)
+    2. API (if credentials available)
+    3. codex CLI (fallback when API credentials absent)
+    4. API (final fallback, will error with helpful message)
     """
 
-    def test_detect_backend_cli_preferred_with_aleph_key(self):
-        """CLI should be preferred even when ALEPH_SUB_QUERY_API_KEY is set."""
-        with patch.dict(os.environ, {"ALEPH_SUB_QUERY_API_KEY": "test-key"}, clear=True):
+    def test_detect_backend_api_preferred_with_aleph_key(self):
+        """API should be preferred when ALEPH_SUB_QUERY_API_KEY is set."""
+        with patch.dict(
+            os.environ, {"ALEPH_SUB_QUERY_API_KEY": "test-key"}, clear=True
+        ):
             with patch("aleph.sub_query.shutil.which") as mock_which:
-                mock_which.side_effect = lambda x: "/usr/bin/codex" if x == "codex" else None
-                assert detect_backend() == "codex"
+                mock_which.side_effect = (
+                    lambda x: "/usr/bin/codex" if x == "codex" else None
+                )
+                assert detect_backend() == "api"
 
-    def test_detect_backend_cli_preferred_with_openai_key(self):
-        """CLI should be preferred even when OPENAI_API_KEY is set (fallback)."""
+    def test_detect_backend_api_preferred_with_openai_key(self):
+        """API should be preferred when OPENAI_API_KEY is set."""
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=True):
             with patch("aleph.sub_query.shutil.which") as mock_which:
-                mock_which.side_effect = lambda x: "/usr/bin/codex" if x == "codex" else None
-                assert detect_backend() == "codex"
+                mock_which.side_effect = (
+                    lambda x: "/usr/bin/codex" if x == "codex" else None
+                )
+                assert detect_backend() == "api"
 
     def test_detect_backend_explicit_override(self):
         """ALEPH_SUB_QUERY_BACKEND should override all other detection."""
-        with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "codex", "ALEPH_SUB_QUERY_API_KEY": "key"}, clear=True):
+        with patch.dict(
+            os.environ,
+            {"ALEPH_SUB_QUERY_BACKEND": "codex", "ALEPH_SUB_QUERY_API_KEY": "key"},
+            clear=True,
+        ):
             with patch("aleph.sub_query.shutil.which") as mock_which:
                 mock_which.return_value = "/usr/bin/something"
                 assert detect_backend() == "codex"
@@ -150,25 +161,38 @@ class TestDetectBackend:
         with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "gemini"}, clear=True):
             assert detect_backend() == "gemini"
 
+    def test_detect_backend_explicit_override_opencode(self):
+        """Opencode stays available when explicitly selected."""
+        with patch.dict(
+            os.environ, {"ALEPH_SUB_QUERY_BACKEND": "opencode"}, clear=True
+        ):
+            assert detect_backend() == "opencode"
+
     def test_detect_backend_does_not_auto_select_claude(self):
         """Auto mode should fall back to API instead of selecting Claude."""
         with patch.dict(os.environ, {}, clear=True):
             with patch("aleph.sub_query.shutil.which") as mock_which:
-                mock_which.side_effect = lambda x: "/usr/bin/claude" if x == "claude" else None
+                mock_which.side_effect = (
+                    lambda x: "/usr/bin/claude" if x == "claude" else None
+                )
                 assert detect_backend() == "api"
 
-    def test_detect_backend_codex_when_available(self):
-        """Codex CLI should be used when available."""
+    def test_detect_backend_codex_when_no_api_key(self):
+        """Codex CLI should be used when no API credentials are available."""
         with patch.dict(os.environ, {}, clear=True):
             with patch("aleph.sub_query.shutil.which") as mock_which:
-                mock_which.side_effect = lambda x: "/usr/bin/codex" if x == "codex" else None
+                mock_which.side_effect = (
+                    lambda x: "/usr/bin/codex" if x == "codex" else None
+                )
                 assert detect_backend() == "codex"
 
     def test_detect_backend_does_not_auto_select_gemini(self):
         """Auto mode should fall back to API instead of selecting Gemini."""
         with patch.dict(os.environ, {}, clear=True):
             with patch("aleph.sub_query.shutil.which") as mock_which:
-                mock_which.side_effect = lambda x: "/usr/bin/gemini" if x == "gemini" else None
+                mock_which.side_effect = (
+                    lambda x: "/usr/bin/gemini" if x == "gemini" else None
+                )
                 assert detect_backend() == "api"
 
     def test_detect_backend_api_fallback(self):
@@ -178,12 +202,18 @@ class TestDetectBackend:
                 mock_which.return_value = None
                 assert detect_backend() == "api"
 
-    def test_detect_backend_model_override_does_not_beat_cli(self):
-        """ALEPH_SUB_QUERY_MODEL should not override CLI preference."""
-        with patch.dict(os.environ, {"ALEPH_SUB_QUERY_MODEL": "gpt-5.2-codex", "OPENAI_API_KEY": "key"}, clear=True):
+    def test_detect_backend_api_wins_over_codex_when_key_set(self):
+        """API should win over codex when API credentials are available."""
+        with patch.dict(
+            os.environ,
+            {"ALEPH_SUB_QUERY_MODEL": "gpt-5.2-codex", "OPENAI_API_KEY": "key"},
+            clear=True,
+        ):
             with patch("aleph.sub_query.shutil.which") as mock_which:
-                mock_which.side_effect = lambda x: "/usr/bin/codex" if x == "codex" else None
-                assert detect_backend() == "codex"
+                mock_which.side_effect = (
+                    lambda x: "/usr/bin/codex" if x == "codex" else None
+                )
+                assert detect_backend() == "api"
 
 
 class TestHasApiCredentials:
@@ -191,7 +221,9 @@ class TestHasApiCredentials:
 
     def test_has_aleph_credentials(self):
         """ALEPH_SUB_QUERY_API_KEY should be detected."""
-        with patch.dict(os.environ, {"ALEPH_SUB_QUERY_API_KEY": "test-key"}, clear=True):
+        with patch.dict(
+            os.environ, {"ALEPH_SUB_QUERY_API_KEY": "test-key"}, clear=True
+        ):
             assert has_api_credentials() is True
 
     def test_has_openai_credentials_fallback(self):
@@ -254,7 +286,9 @@ class TestCliBackend:
         """Non-zero exit code should return failure even if stdout has content."""
         mock_proc = AsyncMock()
         mock_proc.returncode = 1
-        mock_proc.communicate = AsyncMock(return_value=(b"echoed prompt text", b"some error"))
+        mock_proc.communicate = AsyncMock(
+            return_value=(b"echoed prompt text", b"some error")
+        )
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             success, output = await run_cli_sub_query(
@@ -271,7 +305,9 @@ class TestCliBackend:
         mock_proc.returncode = 0
         mock_proc.communicate = AsyncMock(return_value=(b"Result with context", b""))
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
             success, output = await run_cli_sub_query(
                 prompt="Summarize this:",
                 context_slice="Some important text here.",
@@ -302,9 +338,13 @@ class TestCliBackend:
     async def test_claude_cli_disables_session_persistence(self):
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(b'{"result":"Claude response"}', b""))
+        mock_proc.communicate = AsyncMock(
+            return_value=(b'{"result":"Claude response"}', b"")
+        )
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
             success, output = await run_cli_sub_query(
                 prompt="test prompt",
                 backend="claude",
@@ -340,7 +380,9 @@ class TestCliBackend:
         mock_proc.returncode = 0
         mock_proc.communicate = AsyncMock(return_value=(b"Gemini response", b""))
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
             success, output = await run_cli_sub_query(
                 prompt="test prompt",
                 backend="gemini",
@@ -367,7 +409,9 @@ class TestCliBackend:
         mock_proc.returncode = 0
         mock_proc.communicate = AsyncMock(return_value=(b"Gemini response", b""))
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
             success, output = await run_cli_sub_query(
                 prompt="test prompt",
                 backend="gemini",
@@ -388,8 +432,12 @@ class TestCliBackend:
         mock_proc.returncode = 0
         mock_proc.communicate = AsyncMock(return_value=(b"Gemini response", b""))
 
-        with patch.dict(os.environ, {"ALEPH_SUB_QUERY_GEMINI_SANDBOX": "true"}, clear=True):
-            with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        with patch.dict(
+            os.environ, {"ALEPH_SUB_QUERY_GEMINI_SANDBOX": "true"}, clear=True
+        ):
+            with patch(
+                "asyncio.create_subprocess_exec", return_value=mock_proc
+            ) as mock_exec:
                 success, output = await run_cli_sub_query(
                     prompt="test prompt",
                     backend="gemini",
@@ -416,7 +464,9 @@ class TestCliBackend:
         mock_proc.returncode = 0
         mock_proc.communicate = AsyncMock(return_value=(b"Gemini response", b""))
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
             success, output = await run_cli_sub_query(
                 prompt="P" * 12_000,
                 backend="gemini",
@@ -436,6 +486,105 @@ class TestCliBackend:
             "-p",
             "",
         )
+
+    @pytest.mark.asyncio
+    async def test_opencode_cli_extracts_text_from_ndjson_events(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        payload = (
+            b'{"type":"step_start","timestamp":1,"part":{"type":"step-start"}}\n'
+            b'{"type":"text","timestamp":2,"part":{"type":"text","text":"Opencode response"}}\n'
+            b'{"type":"step_finish","timestamp":3,"part":{"type":"step-finish"}}\n'
+        )
+        mock_proc.communicate = AsyncMock(return_value=(payload, b""))
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            success, output = await run_cli_sub_query(
+                prompt="test prompt",
+                backend="opencode",
+            )
+
+        assert success is True
+        assert output == "Opencode response"
+
+    @pytest.mark.asyncio
+    async def test_opencode_cli_uses_run_format_json(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(
+            return_value=(
+                b'{"type":"text","part":{"type":"text","text":"OK"}}',
+                b"",
+            )
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
+            success, output = await run_cli_sub_query(
+                prompt="test prompt",
+                backend="opencode",
+            )
+
+        assert success is True
+        assert output == "OK"
+        cmd = mock_exec.call_args.args
+        assert cmd[:3] == ("opencode", "run", "--format")
+        assert "json" in cmd
+        assert "test prompt" in cmd
+
+    @pytest.mark.asyncio
+    async def test_opencode_cli_uses_model_from_env(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(
+            return_value=(
+                b'{"type":"text","part":{"type":"text","text":"OK"}}',
+                b"",
+            )
+        )
+
+        with patch.dict(
+            os.environ,
+            {"ALEPH_SUB_QUERY_OPENCODE_MODEL": "anthropic/claude-sonnet-4-20250514"},
+            clear=False,
+        ):
+            with patch(
+                "asyncio.create_subprocess_exec", return_value=mock_proc
+            ) as mock_exec:
+                success, output = await run_cli_sub_query(
+                    prompt="test prompt",
+                    backend="opencode",
+                )
+
+        assert success is True
+        cmd = mock_exec.call_args.args
+        model_idx = cmd.index("--model")
+        assert cmd[model_idx + 1] == "anthropic/claude-sonnet-4-20250514"
+
+    @pytest.mark.asyncio
+    async def test_opencode_tempfile_mode_attaches_file(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(
+            return_value=(
+                b'{"type":"text","part":{"type":"text","text":"OK"}}',
+                b"",
+            )
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
+            success, output = await run_cli_sub_query(
+                prompt="P" * 12_000,
+                backend="opencode",
+            )
+
+        assert success is True
+        cmd = mock_exec.call_args.args
+        assert "-f" in cmd
+        assert "Process the attached content." in cmd
 
     @pytest.mark.asyncio
     async def test_cli_context_slice_respects_max_context_chars(self):
@@ -572,7 +721,9 @@ class TestApiBackend:
     @pytest.mark.asyncio
     async def test_api_no_model(self):
         """Should error without model configured."""
-        with patch.dict(os.environ, {"ALEPH_SUB_QUERY_API_KEY": "test-key"}, clear=True):
+        with patch.dict(
+            os.environ, {"ALEPH_SUB_QUERY_API_KEY": "test-key"}, clear=True
+        ):
             success, output = await run_api_sub_query(prompt="test")
             assert success is False
             assert "No model configured" in output
@@ -588,7 +739,10 @@ class TestApiBackend:
 
         with patch.dict(
             os.environ,
-            {"ALEPH_SUB_QUERY_API_KEY": "test-key", "ALEPH_SUB_QUERY_MODEL": "gpt-5.2-codex"},
+            {
+                "ALEPH_SUB_QUERY_API_KEY": "test-key",
+                "ALEPH_SUB_QUERY_MODEL": "gpt-5.2-codex",
+            },
             clear=True,
         ):
             with patch("httpx.AsyncClient") as mock_client:
@@ -636,7 +790,10 @@ class TestApiBackend:
 
         with patch.dict(
             os.environ,
-            {"ALEPH_SUB_QUERY_API_KEY": "test-key", "ALEPH_SUB_QUERY_MODEL": "gpt-5.2-codex"},
+            {
+                "ALEPH_SUB_QUERY_API_KEY": "test-key",
+                "ALEPH_SUB_QUERY_MODEL": "gpt-5.2-codex",
+            },
             clear=True,
         ):
             with patch("httpx.AsyncClient") as mock_client:
@@ -660,7 +817,10 @@ class TestApiBackend:
 
         with patch.dict(
             os.environ,
-            {"ALEPH_SUB_QUERY_API_KEY": "test-key", "ALEPH_SUB_QUERY_MODEL": "gpt-5.2-codex"},
+            {
+                "ALEPH_SUB_QUERY_API_KEY": "test-key",
+                "ALEPH_SUB_QUERY_MODEL": "gpt-5.2-codex",
+            },
             clear=True,
         ):
             with patch("httpx.AsyncClient") as mock_client:
@@ -678,7 +838,9 @@ class TestApiBackend:
 
                 # Verify system prompt was included
                 call_args = mock_instance.post.call_args
-                payload = call_args.kwargs.get("json", call_args.args[1] if len(call_args.args) > 1 else {})
+                payload = call_args.kwargs.get(
+                    "json", call_args.args[1] if len(call_args.args) > 1 else {}
+                )
                 messages = payload.get("messages", [])
                 assert any(m.get("role") == "system" for m in messages)
 
@@ -692,7 +854,10 @@ class TestApiBackend:
 
         with patch.dict(
             os.environ,
-            {"ALEPH_SUB_QUERY_API_KEY": "test-key", "ALEPH_SUB_QUERY_MODEL": "gpt-5.2-codex"},
+            {
+                "ALEPH_SUB_QUERY_API_KEY": "test-key",
+                "ALEPH_SUB_QUERY_MODEL": "gpt-5.2-codex",
+            },
             clear=True,
         ):
             with patch("httpx.AsyncClient") as mock_client:
@@ -711,9 +876,13 @@ class TestApiBackend:
                 assert output == "Response"
 
                 call_args = mock_instance.post.call_args
-                payload = call_args.kwargs.get("json", call_args.args[1] if len(call_args.args) > 1 else {})
+                payload = call_args.kwargs.get(
+                    "json", call_args.args[1] if len(call_args.args) > 1 else {}
+                )
                 messages = payload.get("messages", [])
-                user_message = next(m.get("content", "") for m in messages if m.get("role") == "user")
+                user_message = next(
+                    m.get("content", "") for m in messages if m.get("role") == "user"
+                )
                 assert "ABCD" in user_message
                 assert "ABCDE" not in user_message
 
@@ -728,7 +897,10 @@ class TestApiBackend:
 
         with patch.dict(
             os.environ,
-            {"ALEPH_SUB_QUERY_API_KEY": "test-key", "ALEPH_SUB_QUERY_MODEL": "env-model"},
+            {
+                "ALEPH_SUB_QUERY_API_KEY": "test-key",
+                "ALEPH_SUB_QUERY_MODEL": "env-model",
+            },
             clear=True,
         ):
             with patch("httpx.AsyncClient") as mock_client:
@@ -746,7 +918,9 @@ class TestApiBackend:
 
                 # Verify explicit model was used
                 call_args = mock_instance.post.call_args
-                payload = call_args.kwargs.get("json", call_args.args[1] if len(call_args.args) > 1 else {})
+                payload = call_args.kwargs.get(
+                    "json", call_args.args[1] if len(call_args.args) > 1 else {}
+                )
                 assert payload.get("model") == "explicit-model"
 
     @pytest.mark.asyncio
@@ -779,7 +953,9 @@ class TestApiBackend:
 
                 # Verify correct URL was called
                 call_args = mock_instance.post.call_args
-                url = call_args.args[0] if call_args.args else call_args.kwargs.get("url")
+                url = (
+                    call_args.args[0] if call_args.args else call_args.kwargs.get("url")
+                )
                 assert "groq.com" in url
 
 
@@ -791,3 +967,4 @@ class TestCliBackends:
         assert "claude" in CLI_BACKENDS
         assert "codex" in CLI_BACKENDS
         assert "gemini" in CLI_BACKENDS
+        assert "opencode" in CLI_BACKENDS

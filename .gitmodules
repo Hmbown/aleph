@@ -1,0 +1,3 @@
+[submodule "vendor/cliproxyapi"]
+	path = vendor/cliproxyapi
+	url = https://github.com/Hmbown/CLIProxyAPI.git

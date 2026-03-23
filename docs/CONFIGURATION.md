@@ -116,21 +116,23 @@ session ends.
 ## Sub-Query Configuration
 
 The `sub_query` tool spawns independent sub-agents for recursive reasoning. It
-can use an API backend (OpenAI-compatible) or a local CLI backend. Codex is the
-only auto-selected CLI backend; `claude`, `gemini`, and `kimi` remain available
-as explicit experimental overrides.
+can use an API backend (OpenAI-compatible) or a local CLI backend. The API
+backend is preferred when credentials are available; Codex CLI is the fallback.
+`claude`, `gemini`, `kimi`, and `opencode` remain available as explicit
+overrides.
 
 ### Environment Variables
 
 | Variable                              | Description                                                   | Default                       |
 |---------------------------------------|---------------------------------------------------------------|-------------------------------|
-| `ALEPH_SUB_QUERY_BACKEND`            | Backend override (`auto`, `api`, `codex`, `gemini`, `kimi`, `claude`) | `auto`                        |
+| `ALEPH_SUB_QUERY_BACKEND`            | Backend override (`auto`, `api`, `codex`, `gemini`, `kimi`, `claude`, `opencode`) | `auto`                        |
 | `ALEPH_SUB_QUERY_TIMEOUT`            | Timeout in seconds for CLI + API sub-queries                  | CLI 300 / API 120             |
 | `ALEPH_SUB_QUERY_SHARE_SESSION`      | Share MCP session with CLI sub-agents                         | `false`                       |
 | `ALEPH_SUB_QUERY_CODEX_MODE`         | Route codex through `codex exec` or `codex mcp-server`        | `mcp`                         |
 | `ALEPH_SUB_QUERY_CODEX_MODEL`        | Codex MCP model override                                       | `gpt-5.4`                     |
 | `ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT` | Codex MCP reasoning effort                                | `low`                         |
 | `ALEPH_SUB_QUERY_CODEX_PROFILE`      | Codex MCP profile override                                     | (unset)                       |
+| `ALEPH_SUB_QUERY_OPENCODE_MODEL`     | OpenCode model override                                       | `glm-5-turbo`                 |
 | `ALEPH_SUB_QUERY_GEMINI_SANDBOX`     | Re-enable Gemini CLI sandboxing for sub-queries               | `false`                       |
 | `ALEPH_SUB_QUERY_HTTP_HOST`          | Host for shared MCP session                                   | `127.0.0.1`                   |
 | `ALEPH_SUB_QUERY_HTTP_PORT`          | Port for shared MCP session                                   | `8765`                        |
@@ -147,8 +149,8 @@ as explicit experimental overrides.
 
 When `ALEPH_SUB_QUERY_BACKEND` is not set or set to `auto`:
 
-1. **codex CLI** -- if installed (uses OpenAI subscription)
-2. **API** -- if any API credentials are available (fallback)
+1. **API** -- if any API credentials are available (preferred)
+2. **codex CLI** -- if installed (fallback)
 
 `gemini`, `claude`, and `kimi` remain available only when explicitly selected.
 
@@ -197,7 +199,7 @@ Aleph resolves the sub-query backend in this order:
 
 1. Programmatic config (`SubQueryConfig(backend=...)` or `configure(sub_query_backend=...)`)
 2. `ALEPH_SUB_QUERY_BACKEND` when set to a concrete backend
-3. Auto-detection: `codex` -> `api`
+3. Auto-detection: `api` -> `codex`
 
 `aleph-rlm install` and `aleph-rlm configure` treat Codex as the default
 sub-query path. When the CLI is installed, generated configs pin the Codex MCP

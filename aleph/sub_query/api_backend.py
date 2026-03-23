@@ -20,12 +20,9 @@ from . import (
     DEFAULT_OPENAI_BASE_URL,
 )
 
+from . import DEFAULT_MAX_CONTEXT_CHARS, _get_api_key
+
 __all__ = ["run_api_sub_query"]
-DEFAULT_MAX_CONTEXT_CHARS = 20_000
-
-
-def _get_api_key(api_key_env: str) -> str | None:
-    return os.environ.get(api_key_env) or os.environ.get("OPENAI_API_KEY")
 
 
 def _get_base_url(api_base_url_env: str) -> str:

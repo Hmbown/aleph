@@ -16,7 +16,7 @@ from ..types import Message
 from ..utils.tokens import estimate_tokens
 
 
-CLIBackend = Literal["claude", "codex", "gemini", "kimi"]
+CLIBackend = Literal["claude", "codex", "gemini", "kimi", "opencode"]
 
 DEFAULT_CONTEXT_LIMIT = 200_000
 DEFAULT_OUTPUT_LIMIT = 8_192
@@ -89,7 +89,9 @@ class CLIProvider:
         if key in CLI_BACKENDS:
             return cast(CLIBackend, key)
         allowed = ", ".join(sorted(CLI_BACKENDS))
-        raise ProviderError(f"Unsupported CLI backend: {value}. Choose from: {allowed}.")
+        raise ProviderError(
+            f"Unsupported CLI backend: {value}. Choose from: {allowed}."
+        )
 
     def count_tokens(self, text: str, model: str) -> int:
         return estimate_tokens(text)
@@ -126,7 +128,9 @@ class CLIProvider:
         _ = max_tokens, temperature, stop_sequences
         backend = self._resolve_backend(model=model)
         prompt = self._format_messages(messages)
-        timeout = timeout_seconds if timeout_seconds is not None else self._timeout_seconds
+        timeout = (
+            timeout_seconds if timeout_seconds is not None else self._timeout_seconds
+        )
         success, output = await run_cli_sub_query(
             prompt=prompt,
             context_slice=None,

@@ -395,17 +395,18 @@ Key parameters:
 `ALEPH_SUB_QUERY_BACKEND` is `auto` (default), Aleph chooses the first
 available:
 
-1. **codex CLI** -- if installed
-2. **API** -- if API credentials are available (fallback)
+1. **API** -- if API credentials are available (preferred)
+2. **codex CLI** -- if installed (fallback)
 
-`claude`, `gemini`, and `kimi` remain available only when explicitly selected.
+`claude`, `gemini`, `kimi`, and `opencode` remain available only when explicitly selected.
 
 Practical guidance:
 
-- **Use Codex** for the default nested/shared-session path
+- **Use API** as the default when you have credentials for any OpenAI-compatible endpoint
+- **Use Codex** for nested/shared-session paths or when API credentials are unavailable
 - **Use Claude** when you explicitly want all-Claude operation
 - **Use Gemini** only as an explicit experimental override
-- **Use API** when CLI backends are unavailable or you need an OpenAI-compatible endpoint
+- **Use OpenCode** for GLM-series models via the OpenCode CLI
 
 ### API Configuration
 
@@ -434,13 +435,37 @@ export ALEPH_SUB_QUERY_MODEL=llama-3.3-70b-versatile
 export ALEPH_SUB_QUERY_API_KEY=ollama   # any non-empty value
 export ALEPH_SUB_QUERY_URL=http://localhost:11434/v1
 export ALEPH_SUB_QUERY_MODEL=llama3.2
+
+# OpenCode CLI (glm-5-turbo default)
+export ALEPH_SUB_QUERY_BACKEND=opencode
+# Optionally override model:
+export ALEPH_SUB_QUERY_OPENCODE_MODEL=glm-5-turbo
 ```
+
+### CLIProxyAPI
+
+`vendor/cliproxyapi` provides a unified OpenAI-compatible proxy that wraps all
+CLI backends (Codex, Claude, Gemini, Kimi, OpenCode) behind a single HTTP
+endpoint. When running CLIProxyAPI, you can point Aleph at the proxy and use the
+API backend for everything:
+
+```bash
+# Start the proxy (see vendor/cliproxyapi for details)
+# Then configure Aleph to use it:
+export ALEPH_SUB_QUERY_BACKEND=api
+export ALEPH_SUB_QUERY_URL=http://localhost:5000/v1
+export ALEPH_SUB_QUERY_API_KEY=proxy
+export ALEPH_SUB_QUERY_MODEL=your-model-name
+```
+
+This eliminates the need to configure individual CLI backends -- the proxy
+handles routing and credential management for all of them.
 
 ### All Sub-Query Variables
 
 | Variable                          | Description                                                    |
 |-----------------------------------|----------------------------------------------------------------|
-| `ALEPH_SUB_QUERY_BACKEND`        | Force backend: `api`, `claude`, `codex`, `gemini`, `kimi`, `auto` |
+| `ALEPH_SUB_QUERY_BACKEND`        | Force backend: `api`, `claude`, `codex`, `gemini`, `kimi`, `opencode`, `auto` |
 | `ALEPH_SUB_QUERY_SHARE_SESSION`  | Share the live Aleph MCP session with nested CLI sub-agents    |
 | `ALEPH_SUB_QUERY_CODEX_MODE`     | Codex mode: `mcp` (default) or `exec`                          |
 | `ALEPH_SUB_QUERY_CODEX_MODEL`    | Codex MCP model override (default: `gpt-5.4`)                  |
@@ -448,6 +473,7 @@ export ALEPH_SUB_QUERY_MODEL=llama3.2
 | `ALEPH_SUB_QUERY_API_KEY`        | API key (fallback: `OPENAI_API_KEY`)                           |
 | `ALEPH_SUB_QUERY_URL`            | API base URL (fallback: `OPENAI_BASE_URL`)                     |
 | `ALEPH_SUB_QUERY_MODEL`          | Model name (required for API backend)                          |
+| `ALEPH_SUB_QUERY_OPENCODE_MODEL` | OpenCode model override (default: `glm-5-turbo`)              |
 
 Use `ALEPH_SUB_QUERY_BACKEND` to pin a backend or bypass auto-detection;
 otherwise leave it unset for the default `auto` selection order.

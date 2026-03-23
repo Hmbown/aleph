@@ -581,18 +581,18 @@ async def run_tests(
     duration_ms = float(proc_payload.get("duration_ms") or 0.0)
     exit_code = int(proc_payload.get("exit_code") or 0)
 
-    m_passed = re.search(r"(\\d+)\\s+passed", raw_output)
+    m_passed = re.search(r"(\d+)\s+passed", raw_output)
     if m_passed:
         passed = int(m_passed.group(1))
-    m_failed = re.search(r"(\\d+)\\s+failed", raw_output)
+    m_failed = re.search(r"(\d+)\s+failed", raw_output)
     if m_failed:
         failed = int(m_failed.group(1))
-    m_errors = re.search(r"(\\d+)\\s+errors?", raw_output)
+    m_errors = re.search(r"(\d+)\s+errors?", raw_output)
     if m_errors:
         errors = int(m_errors.group(1))
 
     failures: list[dict[str, Any]] = []
-    section_re = re.compile(r"^_{3,}\\s+(?P<name>.+?)\\s+_{3,}\\s*$", re.MULTILINE)
+    section_re = re.compile(r"^_{3,}\s+(?P<name>.+?)\s+_{3,}\s*$", re.MULTILINE)
     matches = list(section_re.finditer(raw_output))
     for i, sm in enumerate(matches):
         start = sm.end()

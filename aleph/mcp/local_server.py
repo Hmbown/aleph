@@ -39,17 +39,13 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import bz2
 from collections import OrderedDict
 from contextlib import AsyncExitStack
 import difflib
 import fnmatch
-import gzip
-import importlib
 import inspect
 import io
 import json
-import lzma
 import os
 import re
 import shutil
@@ -57,7 +53,6 @@ import shlex
 import subprocess
 import sys
 import time
-import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -65,8 +60,6 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, cast
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
-import xml.etree.ElementTree as ET
-from html.parser import HTMLParser
 
 from ..config import AlephConfig
 from ..core import Aleph
@@ -74,7 +67,13 @@ from ..prompts.system import DEFAULT_SYSTEM_PROMPT
 from ..providers.registry import get_provider
 from ..repl import helpers as repl_helpers
 from ..repl.sandbox import REPLEnvironment, SandboxConfig
-from ..types import AlephResponse, ContentFormat, ContextMetadata, ContextType, ExecutionResult
+from ..types import (
+    AlephResponse,
+    ContentFormat,
+    ContextMetadata,
+    ContextType,
+    ExecutionResult,
+)
 from ..sub_query import (
     DEFAULT_CODEX_MODE,
     DEFAULT_CODEX_MODEL,
@@ -89,9 +88,29 @@ from ..sub_query.codex_mcp_backend import (
     suppress_mcp_notification_validation_logs,
 )
 from ..sub_query.api_backend import run_api_sub_query
+from .env_utils import (
+    _get_env_float,
+    _get_env_int,
+    _get_env_bool,
+    DEFAULT_REMOTE_TOOL_TIMEOUT_SECONDS,
+)
+from .formatting import _to_jsonable, _format_context_loaded
+from .io_utils import _detect_format, _detect_format_for_suffix, _load_text_from_path
 from .recipes import estimate_recipe as _estimate_recipe
 from .recipes import validate_recipe as _validate_recipe
-from .workspace import roots_to_workspace_root
+from .workspace import (
+    LineNumberBase,
+    DEFAULT_LINE_NUMBER_BASE,
+    WorkspaceMode,
+    DEFAULT_WORKSPACE_MODE,
+    _resolve_env_dir,
+    _detect_workspace_root,
+    _nearest_existing_parent,
+    _find_git_root,
+    _scoped_path,
+    _validate_line_number_base,
+    roots_to_workspace_root,
+)
 from .session import (
     _Evidence,
     _Session,
@@ -105,48 +124,12 @@ __all__ = ["AlephMCPServerLocal", "main", "mcp"]
 mcp: Any
 
 
-LineNumberBase = Literal[0, 1]
-DEFAULT_LINE_NUMBER_BASE: LineNumberBase = 1
-WorkspaceMode = Literal["fixed", "git", "any"]
-DEFAULT_WORKSPACE_MODE: WorkspaceMode = "fixed"
 ToolDocsMode = Literal["concise", "full"]
 DEFAULT_TOOL_DOCS_MODE: ToolDocsMode = "concise"
 ContextPolicy = Literal["trusted", "isolated"]
 DEFAULT_CONTEXT_POLICY: ContextPolicy = "trusted"
 DEFAULT_TOOL_RESPONSE_MAX_CHARS = 10_000
 _TOOL_TRUNCATION_SUFFIX = "\n... [TRUNCATED]"
-
-
-def _get_env_float(name: str, default: float) -> float:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        return default
-    try:
-        return float(value)
-    except ValueError:
-        return default
-
-
-def _get_env_int(name: str, default: int) -> int:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
-
-
-def _get_env_bool(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    value = value.strip().lower()
-    if value in {"1", "true", "yes", "y", "on"}:
-        return True
-    if value in {"0", "false", "no", "n", "off"}:
-        return False
-    return default
 
 
 def _normalize_context_policy(
@@ -163,188 +146,10 @@ def _normalize_context_policy(
     return default
 
 
-DEFAULT_REMOTE_TOOL_TIMEOUT_SECONDS = _get_env_float(
-    "ALEPH_REMOTE_TOOL_TIMEOUT",
-    120.0,
-)
-
-
-def _detect_format(text: str) -> ContentFormat:
-    """Detect content format from text."""
-    t = text.lstrip()
-    if t.startswith("{") or t.startswith("["):
-        try:
-            json.loads(text)
-            return ContentFormat.JSON
-        except Exception:
-            return ContentFormat.TEXT
-    return ContentFormat.TEXT
-
-
-def _detect_format_for_suffix(text: str, suffix: str) -> ContentFormat:
-    ext = suffix.lower()
-    if ext in {".jsonl", ".ndjson"}:
-        return ContentFormat.JSONL
-    if ext == ".csv":
-        return ContentFormat.CSV
-    if ext == ".json":
-        return ContentFormat.JSON if _detect_format(text) == ContentFormat.JSON else ContentFormat.TEXT
-    if ext in {
-        ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".rb", ".php", ".cs",
-        ".c", ".h", ".cpp", ".hpp",
-    }:
-        return ContentFormat.CODE
-    return _detect_format(text)
-
-
-def _effective_suffix(path: Path) -> str:
-    suffixes = [s.lower() for s in path.suffixes]
-    if suffixes and suffixes[-1] in {".gz", ".bz2", ".xz"}:
-        return suffixes[-2] if len(suffixes) > 1 else ""
-    return path.suffix.lower()
-
-
-def _decompress_bytes(path: Path, data: bytes) -> tuple[bytes, str | None]:
-    ext = path.suffix.lower()
-    if ext == ".gz":
-        return gzip.decompress(data), "gzip"
-    if ext == ".bz2":
-        return bz2.decompress(data), "bzip2"
-    if ext == ".xz":
-        return lzma.decompress(data), "xz"
-    return data, None
-
-
-class _HTMLTextExtractor(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self._chunks: list[str] = []
-        self._skip = False
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"script", "style"}:
-            self._skip = True
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in {"script", "style"}:
-            self._skip = False
-
-    def handle_data(self, data: str) -> None:
-        if self._skip:
-            return
-        stripped = data.strip()
-        if stripped:
-            self._chunks.append(stripped)
-
-    def text(self) -> str:
-        return "\n".join(self._chunks)
-
-
-def _extract_text_from_html(text: str) -> str:
-    parser = _HTMLTextExtractor()
-    parser.feed(text)
-    return parser.text()
-
-
-def _extract_text_from_docx(data: bytes) -> str:
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        xml_bytes = zf.read("word/document.xml")
-    root = ET.fromstring(xml_bytes)
-    paragraphs: list[str] = []
-    for para in root.iter():
-        if not para.tag.endswith("}p"):
-            continue
-        parts: list[str] = []
-        for node in para.iter():
-            if node.tag.endswith("}t") and node.text:
-                parts.append(node.text)
-        if parts:
-            paragraphs.append("".join(parts))
-    return "\n".join(paragraphs)
-
-
-def _extract_text_from_pdf(
-    data: bytes,
-    path: Path | None,
-    timeout_seconds: float,
-) -> tuple[str, str | None]:
-    for module_name in ("pypdf", "PyPDF2"):
-        try:
-            module = importlib.import_module(module_name)
-            reader = module.PdfReader(io.BytesIO(data))
-            pages: list[str] = []
-            for page in reader.pages:
-                try:
-                    page_text = page.extract_text() or ""
-                except Exception:
-                    page_text = ""
-                if page_text:
-                    pages.append(page_text)
-            text = "\n".join(pages).strip()
-            if text:
-                return text, None
-        except Exception:
-            continue
-
-    if path is not None:
-        pdf_tool = shutil.which("pdftotext")
-        if pdf_tool:
-            try:
-                result = subprocess.run(
-                    [pdf_tool, "-layout", str(path), "-"],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_seconds,
-                )
-            except Exception as e:
-                return "", f"pdftotext failed: {e}"
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout, None
-            stderr = result.stderr.strip()
-            if stderr:
-                return "", f"pdftotext error: {stderr}"
-
-    return "", "PDF extraction unavailable. Install `pypdf` or `pdftotext` for best results."
-
-
-def _load_text_from_path(
-    path: Path,
-    max_bytes: int,
-    timeout_seconds: float,
-) -> tuple[str, ContentFormat, str | None]:
-    data = path.read_bytes()
-    if len(data) > max_bytes:
-        raise ValueError(f"File too large to read (>{max_bytes} bytes): {path}")
-
-    data, compression = _decompress_bytes(path, data)
-    if compression and len(data) > max_bytes:
-        raise ValueError(f"Decompressed file too large (>{max_bytes} bytes): {path}")
-
-    suffix = _effective_suffix(path)
-    warning: str | None = None
-
-    if suffix == ".pdf":
-        text, warning = _extract_text_from_pdf(data, path, timeout_seconds)
-        if not text.strip():
-            raise ValueError(warning or "Failed to extract PDF text")
-    elif suffix == ".docx":
-        try:
-            text = _extract_text_from_docx(data)
-        except Exception as e:
-            raise ValueError(f"Failed to extract DOCX text: {e}") from e
-        if not text.strip():
-            warning = "DOCX extraction produced empty text"
-    elif suffix in {".html", ".htm"}:
-        text = _extract_text_from_html(data.decode("utf-8", errors="replace"))
-    else:
-        text = data.decode("utf-8", errors="replace")
-
-    fmt = _detect_format_for_suffix(text, suffix)
-    return text, fmt, warning
-
-
 _ANALYZE_CACHE_MAX = 64
-_ANALYZE_CACHE: OrderedDict[tuple[int, int, ContentFormat], ContextMetadata] = OrderedDict()
+_ANALYZE_CACHE: OrderedDict[tuple[int, int, ContentFormat], ContextMetadata] = (
+    OrderedDict()
+)
 
 
 def _analyze_text_context(text: str, fmt: ContentFormat) -> ContextMetadata:
@@ -414,80 +219,6 @@ def _build_sub_aleph_cli_prompt(
     return f"{system_prompt}\n\n{instructions}\nQUERY:\n{query}"
 
 
-def _resolve_env_dir(name: str, require_exists: bool = True) -> Path | None:
-    value = os.environ.get(name)
-    if value is None:
-        return None
-    value = value.strip()
-    if not value:
-        return None
-    try:
-        path = Path(value).expanduser()
-    except Exception:
-        return None
-    if require_exists and not path.exists():
-        return None
-    try:
-        path = path.resolve()
-    except Exception:
-        pass
-    if path.is_file():
-        return path.parent
-    return path
-
-
-def _detect_workspace_root() -> Path:
-    env_root = _resolve_env_dir("ALEPH_WORKSPACE_ROOT", require_exists=False)
-    if env_root is not None:
-        return env_root
-    cwd = _resolve_env_dir("PWD") or _resolve_env_dir("INIT_CWD") or Path.cwd()
-    for parent in [cwd, *cwd.parents]:
-        if (parent / ".git").exists():
-            return parent
-    return cwd
-
-
-def _nearest_existing_parent(path: Path) -> Path:
-    for parent in [path, *path.parents]:
-        if parent.exists():
-            return parent
-    return path
-
-
-def _find_git_root(path: Path) -> Path | None:
-    start = _nearest_existing_parent(path)
-    if start.is_file():
-        start = start.parent
-    for parent in [start, *start.parents]:
-        if (parent / ".git").exists():
-            return parent
-    return None
-
-
-def _scoped_path(workspace_root: Path, path: str, mode: WorkspaceMode) -> Path:
-    root = workspace_root.resolve()
-    p = Path(path)
-    if p.is_absolute():
-        resolved = p.resolve()
-    else:
-        resolved = (root / p).resolve()
-
-    if mode == "any":
-        return resolved
-
-    if mode == "git":
-        git_root = _find_git_root(resolved)
-        if git_root is None:
-            raise ValueError(f"Path '{path}' is not inside a git repository (workspace mode: git)")
-        if not resolved.is_relative_to(git_root):
-            raise ValueError(f"Path '{path}' escapes git root '{git_root}'")
-        return resolved
-
-    if not resolved.is_relative_to(root):
-        raise ValueError(f"Path '{path}' escapes workspace root '{root}'")
-    return resolved
-
-
 def _format_payload(
     payload: dict[str, Any],
     output: Literal["json", "markdown", "object"],
@@ -497,7 +228,9 @@ def _format_payload(
             return text
         if limit <= len(_TOOL_TRUNCATION_SUFFIX):
             return _TOOL_TRUNCATION_SUFFIX[:limit]
-        preview_each_side = min(400, max(0, (limit - len(_TOOL_TRUNCATION_SUFFIX)) // 2))
+        preview_each_side = min(
+            400, max(0, (limit - len(_TOOL_TRUNCATION_SUFFIX)) // 2)
+        )
         if preview_each_side == 0:
             keep = limit - len(_TOOL_TRUNCATION_SUFFIX)
             return text[:keep] + _TOOL_TRUNCATION_SUFFIX
@@ -514,14 +247,13 @@ def _format_payload(
                 "redacted": True,
                 "reason": "context_field_blocked",
                 "original_chars": len(text),
-                "value_preview": _truncate_inline(text, min(200, DEFAULT_TOOL_RESPONSE_MAX_CHARS)),
+                "value_preview": _truncate_inline(
+                    text, min(200, DEFAULT_TOOL_RESPONSE_MAX_CHARS)
+                ),
             }
 
         if isinstance(value, dict):
-            return {
-                str(k): _sanitize(v, key=str(k))
-                for k, v in value.items()
-            }
+            return {str(k): _sanitize(v, key=str(k)) for k, v in value.items()}
         if isinstance(value, list):
             return [_sanitize(v, key=key) for v in value]
         if isinstance(value, str):
@@ -549,12 +281,6 @@ def _format_error(
     if output == "markdown":
         return f"Error: {message}"
     return _format_payload({"error": message}, output=output)
-
-
-def _validate_line_number_base(value: int) -> LineNumberBase:
-    if value not in (0, 1):
-        raise ValueError("line_number_base must be 0 or 1")
-    return cast(LineNumberBase, value)
 
 
 def _resolve_line_number_base(
@@ -609,27 +335,6 @@ def _get_repl_helper(repl: REPLEnvironment, name: str) -> object | None:
     return repl.get_variable(name)
 
 
-def _to_jsonable(obj: Any) -> Any:
-    """Best-effort conversion of MCP/Pydantic objects into JSON-serializable data."""
-    if obj is None or isinstance(obj, (str, int, float, bool)):
-        return obj
-    if isinstance(obj, dict):
-        return {str(k): _to_jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_to_jsonable(v) for v in obj]
-    if hasattr(obj, "model_dump"):
-        try:
-            return obj.model_dump()
-        except Exception:
-            pass
-    if hasattr(obj, "__dict__"):
-        try:
-            return _to_jsonable(vars(obj))
-        except Exception:
-            pass
-    return str(obj)
-
-
 @dataclass(slots=True)
 class ActionConfig:
     enabled: bool = False
@@ -639,9 +344,11 @@ class ActionConfig:
     require_confirmation: bool = False
     max_cmd_seconds: float = 60.0
     max_output_chars: int = 50_000
-    max_read_bytes: int = 1_000_000_000   # Default 1GB. Increase if you have more RAM - the LLM only sees query results, not the file.
-    max_write_bytes: int = 100_000_000    # 100 MB
-    workspace_root_explicit: bool = False  # True when set via CLI arg, env var, or configure()
+    max_read_bytes: int = 1_000_000_000  # Default 1GB. Increase if you have more RAM - the LLM only sees query results, not the file.
+    max_write_bytes: int = 100_000_000  # 100 MB
+    workspace_root_explicit: bool = (
+        False  # True when set via CLI arg, env var, or configure()
+    )
 
 
 @dataclass
@@ -656,7 +363,9 @@ class _RemoteServerHandle:
     deny_tools: list[str] | None = None
 
     connected_at: datetime | None = None
-    session: Any | None = None  # ClientSession (kept as Any to avoid hard dependency at import time)
+    session: Any | None = (
+        None  # ClientSession (kept as Any to avoid hard dependency at import time)
+    )
     _stack: AsyncExitStack | None = None
 
 
@@ -707,7 +416,9 @@ class AlephMCPServerLocal:
         # MCP roots-based workspace resolution (lazy, first action tool call)
         self._mcp_roots_resolved: bool = False
         self._workspace_root_source: str = (
-            "explicit" if self.action_config.workspace_root_explicit else "auto-detected"
+            "explicit"
+            if self.action_config.workspace_root_explicit
+            else "auto-detected"
         )
 
         # Import MCP lazily so it's an optional dependency
@@ -715,7 +426,7 @@ class AlephMCPServerLocal:
             from mcp.server.fastmcp import Context as _MCPContext, FastMCP
         except Exception as e:
             raise RuntimeError(
-                "MCP support requires the `mcp` package. Install with `pip install \"aleph-rlm[mcp]\"`."
+                'MCP support requires the `mcp` package. Install with `pip install "aleph-rlm[mcp]"`.'
             ) from e
 
         self._MCPContext = _MCPContext
@@ -759,11 +470,15 @@ class AlephMCPServerLocal:
             if not isinstance(payload, dict):
                 continue
             session_id = payload.get("context_id") or payload.get("session_id")
-            resolved_id = str(session_id) if session_id else f"session_{len(self._sessions) + 1}"
+            resolved_id = (
+                str(session_id) if session_id else f"session_{len(self._sessions) + 1}"
+            )
             if resolved_id in self._sessions:
                 continue
             try:
-                session = _session_from_payload(payload, resolved_id, self.sandbox_config, loop=None)
+                session = _session_from_payload(
+                    payload, resolved_id, self.sandbox_config, loop=None
+                )
             except Exception:
                 continue
             self._configure_session(session, resolved_id, loop=None)
@@ -804,7 +519,10 @@ class AlephMCPServerLocal:
             except Exception:
                 await asyncio.sleep(0.05)
 
-        return False, f"Timed out waiting for streamable HTTP server on {connect_host}:{port}."
+        return (
+            False,
+            f"Timed out waiting for streamable HTTP server on {connect_host}:{port}.",
+        )
 
     async def _run_streamable_http_server(self, host: str, port: int) -> None:
         try:
@@ -898,7 +616,9 @@ class AlephMCPServerLocal:
         return value.strip() if isinstance(value, str) and value.strip() else None
 
     def _resolved_codex_profile(self) -> str | None:
-        value = self.sub_query_config.codex_profile or os.environ.get("ALEPH_SUB_QUERY_CODEX_PROFILE")
+        value = self.sub_query_config.codex_profile or os.environ.get(
+            "ALEPH_SUB_QUERY_CODEX_PROFILE"
+        )
         return value.strip() if isinstance(value, str) and value.strip() else None
 
     async def _ensure_internal_codex_mcp_server(self, cwd: Path | None) -> str:
@@ -968,7 +688,10 @@ class AlephMCPServerLocal:
             output = json.dumps(_to_jsonable(result), ensure_ascii=True)
 
         if len(output) > self.sub_query_config.cli_max_output_chars:
-            output = output[: self.sub_query_config.cli_max_output_chars] + "\n...[truncated]"
+            output = (
+                output[: self.sub_query_config.cli_max_output_chars]
+                + "\n...[truncated]"
+            )
 
         return True, output, resolved_thread_id
 
@@ -988,7 +711,10 @@ class AlephMCPServerLocal:
             session.iterations += 1
 
         truncated = False
-        if context_slice and len(context_slice) > self.sub_query_config.max_context_chars:
+        if (
+            context_slice
+            and len(context_slice) > self.sub_query_config.max_context_chars
+        ):
             context_slice = context_slice[: self.sub_query_config.max_context_chars]
             truncated = True
 
@@ -1017,9 +743,13 @@ class AlephMCPServerLocal:
             if not resolved_validation_regex:
                 resolved_validation_regex = None
 
-        resolved_max_retries = self.sub_query_config.max_retries if max_retries is None else max_retries
+        resolved_max_retries = (
+            self.sub_query_config.max_retries if max_retries is None else max_retries
+        )
         if max_retries is None:
-            resolved_max_retries = _get_env_int("ALEPH_SUB_QUERY_MAX_RETRIES", resolved_max_retries)
+            resolved_max_retries = _get_env_int(
+                "ALEPH_SUB_QUERY_MAX_RETRIES", resolved_max_retries
+            )
 
         resolved_retry_prompt = (
             self.sub_query_config.retry_prompt if retry_prompt is None else retry_prompt
@@ -1034,7 +764,12 @@ class AlephMCPServerLocal:
             try:
                 validation_re = re.compile(resolved_validation_regex, re.MULTILINE)
             except re.error as e:
-                return False, f"Invalid validation regex: {e}", truncated, resolved_backend
+                return (
+                    False,
+                    f"Invalid validation regex: {e}",
+                    truncated,
+                    resolved_backend,
+                )
 
         attempt = 0
         base_prompt = prompt
@@ -1047,18 +782,36 @@ class AlephMCPServerLocal:
                 if resolved_backend in CLI_BACKENDS:
                     mcp_server_url = None
                     server_name = "aleph_shared"
-                    share_session = _get_env_bool("ALEPH_SUB_QUERY_SHARE_SESSION", False)
-                    if share_session and resolved_backend in {"claude", "codex", "gemini", "kimi"}:
+                    share_session = _get_env_bool(
+                        "ALEPH_SUB_QUERY_SHARE_SESSION", False
+                    )
+                    if share_session and resolved_backend in {
+                        "claude",
+                        "codex",
+                        "gemini",
+                        "kimi",
+                        "opencode",
+                    }:
                         host = os.environ.get("ALEPH_SUB_QUERY_HTTP_HOST", "127.0.0.1")
                         port = _get_env_int("ALEPH_SUB_QUERY_HTTP_PORT", 8765)
                         path = os.environ.get("ALEPH_SUB_QUERY_HTTP_PATH", "/mcp")
-                        server_name = os.environ.get(
-                            "ALEPH_SUB_QUERY_MCP_SERVER_NAME",
-                            "aleph_shared",
-                        ).strip() or "aleph_shared"
-                        ok, url_or_err = await self._ensure_streamable_http_server(host, port, path)
+                        server_name = (
+                            os.environ.get(
+                                "ALEPH_SUB_QUERY_MCP_SERVER_NAME",
+                                "aleph_shared",
+                            ).strip()
+                            or "aleph_shared"
+                        )
+                        ok, url_or_err = await self._ensure_streamable_http_server(
+                            host, port, path
+                        )
                         if not ok:
-                            return False, f"Failed to start streamable HTTP server: {url_or_err}", truncated, resolved_backend
+                            return (
+                                False,
+                                f"Failed to start streamable HTTP server: {url_or_err}",
+                                truncated,
+                                resolved_backend,
+                            )
                         mcp_server_url = url_or_err
                         run_prompt = (
                             f"{run_prompt}\n\n"
@@ -1066,9 +819,20 @@ class AlephMCPServerLocal:
                             f"Use context_id={context_id!r} when calling tools. "
                             f"Tools are prefixed with `mcp__{server_name}__`.]"
                         )
-                    cwd = self.action_config.workspace_root if self.action_config.enabled else None
-                    if resolved_backend == "codex" and self._resolved_codex_mode() == "mcp":
-                        success, output, codex_thread_id = await self._run_internal_codex_mcp_query(
+                    cwd = (
+                        self.action_config.workspace_root
+                        if self.action_config.enabled
+                        else None
+                    )
+                    if (
+                        resolved_backend == "codex"
+                        and self._resolved_codex_mode() == "mcp"
+                    ):
+                        (
+                            success,
+                            output,
+                            codex_thread_id,
+                        ) = await self._run_internal_codex_mcp_query(
                             prompt=run_prompt,
                             context_slice=context_slice,
                             cwd=cwd,
@@ -1102,7 +866,9 @@ class AlephMCPServerLocal:
                         api_base_url_env=self.sub_query_config.api_base_url_env,
                         api_model_env=self.sub_query_config.api_model_env,
                         timeout=self.sub_query_config.api_timeout_seconds,
-                        system_prompt=self.sub_query_config.system_prompt if self.sub_query_config.include_system_prompt else None,
+                        system_prompt=self.sub_query_config.system_prompt
+                        if self.sub_query_config.include_system_prompt
+                        else None,
                         max_context_chars=self.sub_query_config.max_context_chars,
                     )
 
@@ -1138,13 +904,15 @@ class AlephMCPServerLocal:
                     note_parts.append(f"retries={attempt}")
             if truncated:
                 note_parts.append("truncated_context")
-            session.evidence.append(_Evidence(
-                source="sub_query",
-                line_range=None,
-                pattern=None,
-                snippet=output[:200] if success else f"[ERROR] {output[:150]}",
-                note=" ".join(note_parts),
-            ))
+            session.evidence.append(
+                _Evidence(
+                    source="sub_query",
+                    line_range=None,
+                    pattern=None,
+                    snippet=output[:200] if success else f"[ERROR] {output[:150]}",
+                    note=" ".join(note_parts),
+                )
+            )
             session.information_gain.append(1 if success else 0)
 
         return success, output, truncated, resolved_backend
@@ -1199,7 +967,10 @@ class AlephMCPServerLocal:
 
         if resolved_backend in CLI_BACKENDS:
             cli_context = context_slice or ""
-            if cli_context and len(cli_context) > self.sub_query_config.max_context_chars:
+            if (
+                cli_context
+                and len(cli_context) > self.sub_query_config.max_context_chars
+            ):
                 cli_context = cli_context[: self.sub_query_config.max_context_chars]
                 truncated_context = True
 
@@ -1214,15 +985,26 @@ class AlephMCPServerLocal:
             mcp_server_url = None
             server_name = "aleph_shared"
             share_session = _get_env_bool("ALEPH_SUB_QUERY_SHARE_SESSION", False)
-            if share_session and resolved_backend in {"claude", "codex", "gemini", "kimi"}:
+            if share_session and resolved_backend in {
+                "claude",
+                "codex",
+                "gemini",
+                "kimi",
+                "opencode",
+            }:
                 host = os.environ.get("ALEPH_SUB_QUERY_HTTP_HOST", "127.0.0.1")
                 port = _get_env_int("ALEPH_SUB_QUERY_HTTP_PORT", 8765)
                 path = os.environ.get("ALEPH_SUB_QUERY_HTTP_PATH", "/mcp")
-                server_name = os.environ.get(
-                    "ALEPH_SUB_QUERY_MCP_SERVER_NAME",
-                    "aleph_shared",
-                ).strip() or "aleph_shared"
-                ok, url_or_err = await self._ensure_streamable_http_server(host, port, path)
+                server_name = (
+                    os.environ.get(
+                        "ALEPH_SUB_QUERY_MCP_SERVER_NAME",
+                        "aleph_shared",
+                    ).strip()
+                    or "aleph_shared"
+                )
+                ok, url_or_err = await self._ensure_streamable_http_server(
+                    host, port, path
+                )
                 if not ok:
                     response = AlephResponse(
                         answer="",
@@ -1247,9 +1029,20 @@ class AlephMCPServerLocal:
 
             if mcp_server_url is not None or not share_session:
                 try:
-                    cwd = self.action_config.workspace_root if self.action_config.enabled else None
-                    if resolved_backend == "codex" and self._resolved_codex_mode() == "mcp":
-                        success, output, _thread_id = await self._run_internal_codex_mcp_query(
+                    cwd = (
+                        self.action_config.workspace_root
+                        if self.action_config.enabled
+                        else None
+                    )
+                    if (
+                        resolved_backend == "codex"
+                        and self._resolved_codex_mode() == "mcp"
+                    ):
+                        (
+                            success,
+                            output,
+                            _thread_id,
+                        ) = await self._run_internal_codex_mcp_query(
                             prompt=prompt,
                             context_slice=cli_context if cli_context else None,
                             cwd=cwd,
@@ -1352,18 +1145,25 @@ class AlephMCPServerLocal:
                 )
 
         if session:
-            note_parts = [f"backend={resolved_backend}", f"models={resolved_root}/{resolved_sub}"]
+            note_parts = [
+                f"backend={resolved_backend}",
+                f"models={resolved_root}/{resolved_sub}",
+            ]
             if budget.max_depth is not None:
                 note_parts.append(f"max_depth={budget.max_depth}")
             if truncated_context:
                 note_parts.append("truncated_context")
-            session.evidence.append(_Evidence(
-                source="sub_aleph",
-                line_range=None,
-                pattern=None,
-                snippet=response.answer[:200] if response.success else f"[ERROR] {str(response.error)[:150]}",
-                note=" ".join(note_parts),
-            ))
+            session.evidence.append(
+                _Evidence(
+                    source="sub_aleph",
+                    line_range=None,
+                    pattern=None,
+                    snippet=response.answer[:200]
+                    if response.success
+                    else f"[ERROR] {str(response.error)[:150]}",
+                    note=" ".join(note_parts),
+                )
+            )
             session.information_gain.append(1 if response.success else 0)
 
         meta: dict[str, object] = {
@@ -1405,7 +1205,8 @@ class AlephMCPServerLocal:
         recipe: dict[str, Any],
         context_id_override: str | None = None,
         dry_run: bool = False,
-        progress_callback: Callable[[float, float | None, str | None], Any] | None = None,
+        progress_callback: Callable[[float, float | None, str | None], Any]
+        | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         normalized, errors = _validate_recipe(recipe)
         if errors:
@@ -1414,7 +1215,9 @@ class AlephMCPServerLocal:
 
         resolved_context_id = context_id_override or normalized["context_id"]
         if resolved_context_id not in self._sessions:
-            return False, {"error": f"No context loaded with ID '{resolved_context_id}'."}
+            return False, {
+                "error": f"No context loaded with ID '{resolved_context_id}'."
+            }
 
         estimate = _estimate_recipe(normalized)
         if dry_run:
@@ -1436,7 +1239,9 @@ class AlephMCPServerLocal:
         sub_queries_used = 0
         total_steps = float(len(normalized["steps"]))
 
-        async def _report(progress: float, total: float | None = None, message: str | None = None) -> None:
+        async def _report(
+            progress: float, total: float | None = None, message: str | None = None
+        ) -> None:
             if progress_callback is not None:
                 try:
                     result = progress_callback(progress, total, message)
@@ -1479,7 +1284,9 @@ class AlephMCPServerLocal:
                         context_lines=step.get("context_lines", 2),
                         max_results=step.get("max_results", 20),
                     )
-                    step_trace["result_count"] = len(current) if isinstance(current, list) else 0
+                    step_trace["result_count"] = (
+                        len(current) if isinstance(current, list) else 0
+                    )
 
                 elif op == "peek":
                     current = repl_helpers.peek(
@@ -1548,7 +1355,9 @@ class AlephMCPServerLocal:
 
                 elif op == "map_sub_query":
                     if not isinstance(current, list):
-                        raise ValueError("map_sub_query requires current value to be a list")
+                        raise ValueError(
+                            "map_sub_query requires current value to be a list"
+                        )
 
                     limit = step.get("limit")
                     items = current[:limit] if isinstance(limit, int) else current
@@ -1564,12 +1373,18 @@ class AlephMCPServerLocal:
 
                     if parallel and len(items) > 1:
                         # Parallel execution with bounded concurrency
-                        parallel_limit = max(1, min(self.max_recipe_concurrency, len(items)))
+                        parallel_limit = max(
+                            1, min(self.max_recipe_concurrency, len(items))
+                        )
                         sem = asyncio.Semaphore(parallel_limit)
 
-                        async def _run_item(idx: int, item: object) -> tuple[int, bool, str]:
+                        async def _run_item(
+                            idx: int, item: object
+                        ) -> tuple[int, bool, str]:
                             async with sem:
-                                ctx_slice = self._recipe_context_slice(item, step.get("context_field"))
+                                ctx_slice = self._recipe_context_slice(
+                                    item, step.get("context_field")
+                                )
                                 ok, out, _trunc, _bk = await self._run_sub_query(
                                     prompt=step["prompt"],
                                     context_slice=ctx_slice,
@@ -1596,8 +1411,15 @@ class AlephMCPServerLocal:
                         # Sequential fallback
                         outputs = []
                         for item in items:
-                            context_slice = self._recipe_context_slice(item, step.get("context_field"))
-                            success, output, _truncated, _backend = await self._run_sub_query(
+                            context_slice = self._recipe_context_slice(
+                                item, step.get("context_field")
+                            )
+                            (
+                                success,
+                                output,
+                                _truncated,
+                                _backend,
+                            ) = await self._run_sub_query(
                                 prompt=step["prompt"],
                                 context_slice=context_slice,
                                 context_id=resolved_context_id,
@@ -1681,7 +1503,11 @@ class AlephMCPServerLocal:
             step_trace["status"] = "ok"
             step_trace["preview"] = self._recipe_preview(current)
             trace.append(step_trace)
-            await _report(float(step_index), total_steps, f"Step {step_index}/{int(total_steps)} ({op}) done")
+            await _report(
+                float(step_index),
+                total_steps,
+                f"Step {step_index}/{int(total_steps)} ({op}) done",
+            )
 
         session.evidence.append(
             _Evidence(
@@ -1789,7 +1615,9 @@ class AlephMCPServerLocal:
                 "cli": self.sub_query_config.cli_timeout_seconds,
                 "api": self.sub_query_config.api_timeout_seconds,
             },
-            "sub_query_share_session": _get_env_bool("ALEPH_SUB_QUERY_SHARE_SESSION", False),
+            "sub_query_share_session": _get_env_bool(
+                "ALEPH_SUB_QUERY_SHARE_SESSION", False
+            ),
             "sub_query_codex": {
                 "mode": self._resolved_codex_mode(),
                 "model": self._resolved_codex_model(),
@@ -1812,7 +1640,10 @@ class AlephMCPServerLocal:
             backend = sub_query_backend.strip().lower()
             if backend not in allowed_backends:
                 allowed_list = ", ".join(sorted(allowed_backends))
-                return False, f"Unsupported backend '{sub_query_backend}'. Choose from: {allowed_list}."
+                return (
+                    False,
+                    f"Unsupported backend '{sub_query_backend}'. Choose from: {allowed_list}.",
+                )
             os.environ["ALEPH_SUB_QUERY_BACKEND"] = backend
             self.sub_query_config.backend = backend  # type: ignore[assignment]
 
@@ -1832,7 +1663,9 @@ class AlephMCPServerLocal:
 
     def _inject_repl_config_helpers(self, session: _Session) -> None:
         def set_backend(backend: str) -> str:
-            ok, message = self._apply_sub_query_runtime_config(sub_query_backend=backend)
+            ok, message = self._apply_sub_query_runtime_config(
+                sub_query_backend=backend
+            )
             if not ok:
                 raise ValueError(message)
             snapshot = self._get_sub_query_config_snapshot()
@@ -1863,7 +1696,9 @@ class AlephMCPServerLocal:
         session.repl.inject_sub_query(sub_query)
 
     def _inject_repl_sub_aleph(self, session: _Session, context_id: str) -> None:
-        async def sub_aleph(query: str, context: ContextType | None = None) -> AlephResponse:
+        async def sub_aleph(
+            query: str, context: ContextType | None = None
+        ) -> AlephResponse:
             context_slice: str | None
             if context is None:
                 context_slice = None
@@ -1892,7 +1727,9 @@ class AlephMCPServerLocal:
         self._inject_repl_sub_aleph(session, context_id)
         self._inject_repl_config_helpers(session)
 
-    async def _ensure_remote_server(self, server_id: str) -> tuple[bool, str | _RemoteServerHandle]:
+    async def _ensure_remote_server(
+        self, server_id: str
+    ) -> tuple[bool, str | _RemoteServerHandle]:
         """Ensure a remote MCP server is connected and initialized."""
         if server_id not in self._remote_servers:
             return False, f"Error: Remote server '{server_id}' not registered."
@@ -1916,12 +1753,19 @@ class AlephMCPServerLocal:
 
         stack = AsyncExitStack()
         try:
-            read_stream, write_stream = await stack.enter_async_context(stdio_client(params))
-            session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+            read_stream, write_stream = await stack.enter_async_context(
+                stdio_client(params)
+            )
+            session = await stack.enter_async_context(
+                ClientSession(read_stream, write_stream)
+            )
             await session.initialize()
         except Exception as e:
             await stack.aclose()
-            return False, f"Error: Failed to connect to remote server '{server_id}': {e}"
+            return (
+                False,
+                f"Error: Failed to connect to remote server '{server_id}': {e}",
+            )
 
         handle._stack = stack
         handle.session = session
@@ -1995,7 +1839,10 @@ class AlephMCPServerLocal:
         handle = res
 
         if not self._remote_tool_allowed(handle, tool):
-            return False, f"Error: Tool '{tool}' is not allowed for remote server '{server_id}'."
+            return (
+                False,
+                f"Error: Tool '{tool}' is not allowed for remote server '{server_id}'.",
+            )
 
         from datetime import timedelta
 
@@ -2042,23 +1889,6 @@ class AlephMCPServerLocal:
             return False
         return True
 
-    def _format_context_loaded(
-        self,
-        context_id: str,
-        meta: ContextMetadata,
-        line_number_base: LineNumberBase,
-        note: str | None = None,
-    ) -> str:
-        line_desc = "1-based" if line_number_base == 1 else "0-based"
-        msg = (
-            f"Context loaded '{context_id}': {meta.size_chars:,} chars, "
-            f"{meta.size_lines:,} lines, ~{meta.size_tokens_estimate:,} tokens "
-            f"(line numbers {line_desc})."
-        )
-        if note:
-            msg += f"\nNote: {note}"
-        return msg
-
     def _create_session(
         self,
         context: str,
@@ -2079,7 +1909,9 @@ class AlephMCPServerLocal:
             meta=meta,
             line_number_base=line_number_base,
         )
-        self._configure_session(self._sessions[context_id], context_id, loop=asyncio.get_running_loop())
+        self._configure_session(
+            self._sessions[context_id], context_id, loop=asyncio.get_running_loop()
+        )
         return meta
 
     def _get_or_create_session(
@@ -2089,10 +1921,16 @@ class AlephMCPServerLocal:
     ) -> _Session:
         session = self._sessions.get(context_id)
         if session is not None:
-            self._configure_session(session, context_id, loop=asyncio.get_running_loop())
+            self._configure_session(
+                session, context_id, loop=asyncio.get_running_loop()
+            )
             return session
 
-        base = line_number_base if line_number_base is not None else DEFAULT_LINE_NUMBER_BASE
+        base = (
+            line_number_base
+            if line_number_base is not None
+            else DEFAULT_LINE_NUMBER_BASE
+        )
         meta = _analyze_text_context("", ContentFormat.TEXT)
         repl = REPLEnvironment(
             context="",
@@ -2185,7 +2023,9 @@ class AlephMCPServerLocal:
         skipped: list[str] = []
         for sid, sess in self._sessions.items():
             try:
-                sessions_payload.append(_session_to_payload(sid, sess, include_ctx=include_ctx))
+                sessions_payload.append(
+                    _session_to_payload(sid, sess, include_ctx=include_ctx)
+                )
             except Exception:
                 skipped.append(sid)
         payload = {
@@ -2211,7 +2051,9 @@ class AlephMCPServerLocal:
         )
         timed_out = False
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_seconds
+            )
         except asyncio.TimeoutError:
             timed_out = True
             proc.kill()
@@ -2235,7 +2077,9 @@ class AlephMCPServerLocal:
             "stderr": stderr,
         }
 
-    def _parse_rg_vimgrep(self, output: str, max_results: int) -> tuple[list[dict[str, Any]], bool]:
+    def _parse_rg_vimgrep(
+        self, output: str, max_results: int
+    ) -> tuple[list[dict[str, Any]], bool]:
         results: list[dict[str, Any]] = []
         truncated = False
         limit = max_results if max_results > 0 else None
@@ -2249,12 +2093,14 @@ class AlephMCPServerLocal:
                 col_no = int(col_str)
             except ValueError:
                 continue
-            results.append({
-                "path": path_str,
-                "line": line_no,
-                "column": col_no,
-                "text": text,
-            })
+            results.append(
+                {
+                    "path": path_str,
+                    "line": line_no,
+                    "column": col_no,
+                    "text": text,
+                }
+            )
             if limit is not None and len(results) >= limit:
                 truncated = True
                 break
@@ -2271,7 +2117,16 @@ class AlephMCPServerLocal:
         truncated = False
         limit = max_results if max_results > 0 else None
         rx = re.compile(pattern)
-        skip_dirs = {".git", ".venv", "node_modules", "dist", "build", "__pycache__", ".mypy_cache", ".pytest_cache"}
+        skip_dirs = {
+            ".git",
+            ".venv",
+            "node_modules",
+            "dist",
+            "build",
+            "__pycache__",
+            ".mypy_cache",
+            ".pytest_cache",
+        }
 
         def _iter_files(root: Path) -> Iterable[Path]:
             if root.is_file():
@@ -2296,12 +2151,14 @@ class AlephMCPServerLocal:
                             match = rx.search(line)
                             if not match:
                                 continue
-                            results.append({
-                                "path": str(path),
-                                "line": idx,
-                                "column": match.start() + 1,
-                                "text": line.rstrip("\n"),
-                            })
+                            results.append(
+                                {
+                                    "path": str(path),
+                                    "line": idx,
+                                    "column": match.start() + 1,
+                                    "text": line.rstrip("\n"),
+                                }
+                            )
                             if limit is not None and len(results) >= limit:
                                 truncated = True
                                 return results, truncated
@@ -2315,7 +2172,9 @@ class AlephMCPServerLocal:
         if not self.action_config.enabled or not self._sessions:
             return
         payload, _ = self._build_memory_pack_payload(include_ctx=True)
-        out_bytes = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8", errors="replace")
+        out_bytes = json.dumps(payload, ensure_ascii=False, indent=2).encode(
+            "utf-8", errors="replace"
+        )
         if len(out_bytes) > self.action_config.max_write_bytes:
             return
         try:
@@ -2371,7 +2230,7 @@ class AlephMCPServerLocal:
 
             fmt = _detect_format(text) if format == "auto" else ContentFormat(format)
             meta = self._create_session(text, context_id, fmt, base)
-            return self._format_context_loaded(context_id, meta, base)
+            return _format_context_loaded(context_id, meta, base)
 
         @_tool()
         async def list_contexts(
@@ -2380,13 +2239,15 @@ class AlephMCPServerLocal:
             """List all active context sessions and their status."""
             items = []
             for cid, session in self._sessions.items():
-                items.append({
-                    "id": cid,
-                    "chars": session.meta.size_chars,
-                    "lines": session.meta.size_lines,
-                    "iterations": session.iterations,
-                    "evidence": len(session.evidence),
-                })
+                items.append(
+                    {
+                        "id": cid,
+                        "chars": session.meta.size_chars,
+                        "lines": session.meta.size_lines,
+                        "iterations": session.iterations,
+                        "evidence": len(session.evidence),
+                    }
+                )
 
             if output == "object":
                 return {"count": len(items), "items": items}
@@ -2395,7 +2256,9 @@ class AlephMCPServerLocal:
 
             res = [f"Found {len(items)} active context session(s):\n"]
             for item in items:
-                res.append(f"- **{item['id']}**: {item['chars']:,} chars, {item['lines']:,} lines, {item['iterations']} iterations")
+                res.append(
+                    f"- **{item['id']}**: {item['chars']:,} chars, {item['lines']:,} lines, {item['iterations']} iterations"
+                )
             return "\n".join(res)
 
         @_tool()
@@ -2415,13 +2278,16 @@ class AlephMCPServerLocal:
             lines_a = str(self._sessions[a].repl.get_variable("ctx") or "").splitlines()
             lines_b = str(self._sessions[b].repl.get_variable("ctx") or "").splitlines()
 
-            diff = list(difflib.unified_diff(
-                lines_a, lines_b,
-                fromfile=f"context:{a}",
-                tofile=f"context:{b}",
-                n=context_lines,
-                lineterm=""
-            ))
+            diff = list(
+                difflib.unified_diff(
+                    lines_a,
+                    lines_b,
+                    fromfile=f"context:{a}",
+                    tofile=f"context:{b}",
+                    n=context_lines,
+                    lineterm="",
+                )
+            )
 
             if not diff:
                 return f"Contexts '{a}' and '{b}' are identical."
@@ -2460,7 +2326,11 @@ class AlephMCPServerLocal:
 
             payload, skipped = self._build_memory_pack_payload()
             try:
-                p = _scoped_path(self.action_config.workspace_root, path, self.action_config.workspace_mode)
+                p = _scoped_path(
+                    self.action_config.workspace_root,
+                    path,
+                    self.action_config.workspace_mode,
+                )
             except Exception as e:
                 return _format_error(f"Invalid path: {e}", output=output)
 
@@ -2478,7 +2348,9 @@ class AlephMCPServerLocal:
             if output == "object":
                 return {"status": "success", "path": str(p), "skipped": skipped}
             if output == "json":
-                return json.dumps({"status": "success", "path": str(p), "skipped": skipped})
+                return json.dumps(
+                    {"status": "success", "path": str(p), "skipped": skipped}
+                )
             return msg
 
         @_tool()
@@ -2502,7 +2374,11 @@ class AlephMCPServerLocal:
                 )
 
             try:
-                p = _scoped_path(self.action_config.workspace_root, path, self.action_config.workspace_mode)
+                p = _scoped_path(
+                    self.action_config.workspace_root,
+                    path,
+                    self.action_config.workspace_mode,
+                )
                 with open(p, "r", encoding="utf-8") as f:
                     payload = json.load(f)
             except Exception as e:
@@ -2516,11 +2392,17 @@ class AlephMCPServerLocal:
             for sp in payload.get("sessions", []):
                 sid = _resolve_session_payload_id(sp)
                 if not sid:
-                    skipped.append({"id": "<missing>", "error": "missing session identifier"})
+                    skipped.append(
+                        {"id": "<missing>", "error": "missing session identifier"}
+                    )
                     continue
                 try:
-                    session = _session_from_payload(sp, sid, self.sandbox_config, asyncio.get_running_loop())
-                    self._configure_session(session, sid, loop=asyncio.get_running_loop())
+                    session = _session_from_payload(
+                        sp, sid, self.sandbox_config, asyncio.get_running_loop()
+                    )
+                    self._configure_session(
+                        session, sid, loop=asyncio.get_running_loop()
+                    )
                     self._sessions[sid] = session
                     loaded.append(sid)
                 except Exception as e:
@@ -2532,7 +2414,9 @@ class AlephMCPServerLocal:
             if output == "object":
                 return {"status": "success", "loaded": loaded, "skipped": skipped}
             if output == "json":
-                return json.dumps({"status": "success", "loaded": loaded, "skipped": skipped})
+                return json.dumps(
+                    {"status": "success", "loaded": loaded, "skipped": skipped}
+                )
             return msg
 
     def _register_action_tools(self) -> None:
@@ -2565,7 +2449,11 @@ class AlephMCPServerLocal:
                 if cwd
                 else workspace_root
             )
-            timeout = timeout_seconds if timeout_seconds is not None else self.action_config.max_cmd_seconds
+            timeout = (
+                timeout_seconds
+                if timeout_seconds is not None
+                else self.action_config.max_cmd_seconds
+            )
 
             if shell:
                 user_shell = os.environ.get("SHELL", "/bin/sh")
@@ -2575,9 +2463,15 @@ class AlephMCPServerLocal:
                 if not argv:
                     return _format_error("Empty command", output=output)
 
-            payload = await self._run_subprocess(argv=argv, cwd=cwd_path, timeout_seconds=timeout)
+            payload = await self._run_subprocess(
+                argv=argv, cwd=cwd_path, timeout_seconds=timeout
+            )
             session.repl._namespace["last_command_result"] = payload
-            self._record_action(session, note="run_command", snippet=(payload.get("stdout") or payload.get("stderr") or "")[:200])
+            self._record_action(
+                session,
+                note="run_command",
+                snippet=(payload.get("stdout") or payload.get("stderr") or "")[:200],
+            )
             return _format_payload(payload, output=output)
 
         @_tool()
@@ -2610,7 +2504,9 @@ class AlephMCPServerLocal:
             resolved_paths: list[Path] = []
             for p in paths or [str(workspace_root)]:
                 try:
-                    resolved = _scoped_path(workspace_root, p, self.action_config.workspace_mode)
+                    resolved = _scoped_path(
+                        workspace_root, p, self.action_config.workspace_mode
+                    )
                 except Exception as e:
                     return _format_error(str(e), output=output)
                 resolved_paths.append(resolved)
@@ -2634,7 +2530,9 @@ class AlephMCPServerLocal:
                     cwd=workspace_root,
                     timeout_seconds=self.action_config.max_cmd_seconds,
                 )
-                matches, truncated = self._parse_rg_vimgrep(payload.get("stdout") or "", max_results)
+                matches, truncated = self._parse_rg_vimgrep(
+                    payload.get("stdout") or "", max_results
+                )
             else:
                 matches, truncated = self._python_rg_search(
                     pattern,
@@ -2647,7 +2545,12 @@ class AlephMCPServerLocal:
                 f"{m['path']}:{m['line']}:{m['column']}:{m['text']}" for m in matches
             )
             if load_context_id:
-                meta = self._create_session(hits_text, load_context_id, ContentFormat.TEXT, DEFAULT_LINE_NUMBER_BASE)
+                meta = self._create_session(
+                    hits_text,
+                    load_context_id,
+                    ContentFormat.TEXT,
+                    DEFAULT_LINE_NUMBER_BASE,
+                )
                 session.repl._namespace["last_rg_loaded_context"] = load_context_id
                 load_note = f"Loaded {len(matches)} match(es) into '{load_context_id}'."
             else:
@@ -2676,7 +2579,9 @@ class AlephMCPServerLocal:
                     result_payload["note"] = load_note
 
             session.repl._namespace["last_rg_result"] = result_payload
-            self._record_action(session, note="rg_search", snippet=f"{pattern} ({len(matches)} matches)")
+            self._record_action(
+                session, note="rg_search", snippet=f"{pattern} ({len(matches)} matches)"
+            )
 
             if output == "object":
                 return result_payload
@@ -2692,7 +2597,12 @@ class AlephMCPServerLocal:
                 parts.append(load_note)
             if matches:
                 parts.append("")
-                parts.extend([f"- {m['path']}:{m['line']}:{m['column']}: {m['text']}" for m in matches[:20]])
+                parts.extend(
+                    [
+                        f"- {m['path']}:{m['line']}:{m['column']}: {m['text']}"
+                        for m in matches[:20]
+                    ]
+                )
                 if len(matches) > 20:
                     parts.append(f"... {len(matches) - 20} more")
             return "\n".join(parts)
@@ -2736,7 +2646,11 @@ class AlephMCPServerLocal:
                 return _format_error(f"start_line must be >= {base}", output=output)
 
             try:
-                p = _scoped_path(self.action_config.workspace_root, path, self.action_config.workspace_mode)
+                p = _scoped_path(
+                    self.action_config.workspace_root,
+                    path,
+                    self.action_config.workspace_mode,
+                )
             except Exception as e:
                 return _format_error(str(e), output=output)
 
@@ -2756,9 +2670,12 @@ class AlephMCPServerLocal:
             end_idx = min(len(lines), start_idx + max(0, limit))
             slice_lines = lines[start_idx:end_idx]
             numbered = "\n".join(
-                f"{i + start_idx + base:>6}\t{line}" for i, line in enumerate(slice_lines)
+                f"{i + start_idx + base:>6}\t{line}"
+                for i, line in enumerate(slice_lines)
             )
-            end_line = (start_idx + len(slice_lines) - 1 + base) if slice_lines else start_line
+            end_line = (
+                (start_idx + len(slice_lines) - 1 + base) if slice_lines else start_line
+            )
 
             payload: dict[str, Any] = {
                 "path": str(p),
@@ -2772,7 +2689,9 @@ class AlephMCPServerLocal:
             if include_raw:
                 payload["content_raw"] = "\n".join(slice_lines)
             session.repl._namespace["last_read_file_result"] = payload
-            self._record_action(session, note="read_file", snippet=f"{path} ({start_line}-{end_line})")
+            self._record_action(
+                session, note="read_file", snippet=f"{path} ({start_line}-{end_line})"
+            )
             return _format_payload(payload, output=output)
 
         @_tool()
@@ -2797,7 +2716,11 @@ class AlephMCPServerLocal:
                 return f"Error: {e}"
 
             try:
-                p = _scoped_path(self.action_config.workspace_root, path, self.action_config.workspace_mode)
+                p = _scoped_path(
+                    self.action_config.workspace_root,
+                    path,
+                    self.action_config.workspace_mode,
+                )
             except Exception as e:
                 return f"Error: {e}"
 
@@ -2819,7 +2742,7 @@ class AlephMCPServerLocal:
             meta = self._create_session(text, context_id, fmt, base)
             session = self._get_or_create_session(context_id, base)
             self._record_action(session, note="load_file", snippet=str(p))
-            return self._format_context_loaded(context_id, meta, base, note=warning)
+            return _format_context_loaded(context_id, meta, base, note=warning)
 
         @_tool()
         async def write_file(
@@ -2842,7 +2765,11 @@ class AlephMCPServerLocal:
             session.iterations += 1
 
             try:
-                p = _scoped_path(self.action_config.workspace_root, path, self.action_config.workspace_mode)
+                p = _scoped_path(
+                    self.action_config.workspace_root,
+                    path,
+                    self.action_config.workspace_mode,
+                )
             except Exception as e:
                 return _format_error(str(e), output=output)
 
@@ -2864,7 +2791,11 @@ class AlephMCPServerLocal:
                 "mode": mode,
             }
             session.repl._namespace["last_write_file_result"] = payload
-            self._record_action(session, note="write_file", snippet=f"{path} ({len(payload_bytes)} bytes)")
+            self._record_action(
+                session,
+                note="write_file",
+                snippet=f"{path} ({len(payload_bytes)} bytes)",
+            )
             return _format_payload(payload, output=output)
 
         @_tool()
@@ -2903,8 +2834,16 @@ class AlephMCPServerLocal:
             if args:
                 argv.extend(args)
 
-            payload = await self._run_subprocess(argv=argv, cwd=cwd_path, timeout_seconds=self.action_config.max_cmd_seconds)
-            self._record_action(session, note=f"run_tests: {runner}", snippet=(payload.get("stdout") or payload.get("stderr") or "")[:200])
+            payload = await self._run_subprocess(
+                argv=argv,
+                cwd=cwd_path,
+                timeout_seconds=self.action_config.max_cmd_seconds,
+            )
+            self._record_action(
+                session,
+                note=f"run_tests: {runner}",
+                snippet=(payload.get("stdout") or payload.get("stderr") or "")[:200],
+            )
             return _format_payload(payload, output=output)
 
     def _format_execution_result(self, result: ExecutionResult) -> str | dict[str, Any]:
@@ -2929,7 +2868,9 @@ class AlephMCPServerLocal:
             formatting_truncated = formatting_truncated or was_truncated
             res.append(f"**Return Value:** `{rendered}`")
         if result.variables_updated:
-            res.append(f"\n**Variables Updated:** {', '.join(f'`{v}`' for v in result.variables_updated)}")
+            res.append(
+                f"\n**Variables Updated:** {', '.join(f'`{v}`' for v in result.variables_updated)}"
+            )
 
         if result.truncated or formatting_truncated:
             res.append("\n*Note: Output was truncated*")
@@ -2953,7 +2894,9 @@ class AlephMCPServerLocal:
         # Keep a compact prefix/suffix preview instead of a large contiguous head.
         # This avoids spilling big raw blocks (for example long repeated characters)
         # into the model context while still preserving enough signal for debugging.
-        preview_each_side = min(400, max(0, (limit - len(_TOOL_TRUNCATION_SUFFIX)) // 2))
+        preview_each_side = min(
+            400, max(0, (limit - len(_TOOL_TRUNCATION_SUFFIX)) // 2)
+        )
         if preview_each_side == 0:
             keep = limit - len(_TOOL_TRUNCATION_SUFFIX)
             return text[:keep] + _TOOL_TRUNCATION_SUFFIX, True
@@ -3038,7 +2981,11 @@ class AlephMCPServerLocal:
             repl = session.repl
             session.iterations += 1
 
-            fn = _get_repl_helper(repl, "peek") if unit == "chars" else _get_repl_helper(repl, "lines")
+            fn = (
+                _get_repl_helper(repl, "peek")
+                if unit == "chars"
+                else _get_repl_helper(repl, "lines")
+            )
             if not callable(fn):
                 return f"Error: {unit} helper is not available"
 
@@ -3050,7 +2997,9 @@ class AlephMCPServerLocal:
                         start_idx = 0
                         end_idx = end
                     else:
-                        start_idx = _to_internal_line_index(start, session.line_number_base)
+                        start_idx = _to_internal_line_index(
+                            start, session.line_number_base
+                        )
                         end_idx = _to_internal_line_index(end, session.line_number_base)
                     res = fn(start_idx, end_idx)
                 else:
@@ -3061,7 +3010,10 @@ class AlephMCPServerLocal:
             if record_evidence and res:
                 line_range = None
                 if unit == "lines":
-                    line_range = (start, end if end is not None else session.meta.size_lines)
+                    line_range = (
+                        start,
+                        end if end is not None else session.meta.size_lines,
+                    )
                 session.evidence.append(
                     _Evidence(
                         source="peek",
@@ -3097,7 +3049,9 @@ class AlephMCPServerLocal:
                 return "Error: search() helper is not available"
 
             try:
-                results = fn(pattern, context_lines=context_lines, max_results=max_results)
+                results = fn(
+                    pattern, context_lines=context_lines, max_results=max_results
+                )
             except Exception as e:
                 return f"Error: {e}"
 
@@ -3112,7 +3066,9 @@ class AlephMCPServerLocal:
                             line_range=None,
                             pattern=pattern,
                             note=f"{len(results)} match(es) (summary)",
-                            snippet=str(results[0].get("match", ""))[:200] if results else "",
+                            snippet=str(results[0].get("match", ""))[:200]
+                            if results
+                            else "",
                         )
                     )
                 else:
@@ -3137,7 +3093,9 @@ class AlephMCPServerLocal:
                 max_chars=self.max_tool_response_chars,
             )
             res = [f"## Search Results for `{pattern}`\n"]
-            res.append(f"Found {len(results)} match(es) (line numbers are {session.line_number_base}-based):\n")
+            res.append(
+                f"Found {len(results)} match(es) (line numbers are {session.line_number_base}-based):\n"
+            )
             if hits_truncated:
                 res.append(
                     f"Showing first {len(shown_results)} result(s) due to response size limit.\n"
@@ -3184,7 +3142,9 @@ class AlephMCPServerLocal:
                 return f"Error: {e}"
 
             if not isinstance(results, list):
-                return f"Error: semantic_search() returned unexpected type {type(results)}"
+                return (
+                    f"Error: semantic_search() returned unexpected type {type(results)}"
+                )
 
             if record_evidence and results:
                 session.evidence.append(
@@ -3193,7 +3153,9 @@ class AlephMCPServerLocal:
                         line_range=None,
                         pattern=None,
                         note=f"semantic search: {query}",
-                        snippet=str(results[0].get("preview", ""))[:200] if results else "",
+                        snippet=str(results[0].get("preview", ""))[:200]
+                        if results
+                        else "",
                     )
                 )
 
@@ -3313,13 +3275,19 @@ class AlephMCPServerLocal:
                 f"**Question:** {question}",
             ]
             if context_slice:
-                res.append("\n---\n\n*Context snippet captured in internal trace (not echoed to avoid context bloat).*")
+                res.append(
+                    "\n---\n\n*Context snippet captured in internal trace (not echoed to avoid context bloat).*"
+                )
 
-            res.append("\n---\n\n**Your task:** Reason through this step-by-step. Consider:")
+            res.append(
+                "\n---\n\n**Your task:** Reason through this step-by-step. Consider:"
+            )
             res.append("1. What information do you have?")
             res.append("2. What can you infer?")
             res.append("3. What's the answer to this sub-question?")
-            res.append("\n*After reasoning, use `exec_python` to verify or `finalize` if done.*")
+            res.append(
+                "\n*After reasoning, use `exec_python` to verify or `finalize` if done.*"
+            )
 
             return "\n".join(res)
 
@@ -3337,11 +3305,15 @@ class AlephMCPServerLocal:
 
             session = self._sessions[context_id]
             session.iterations += 1
-            tasks_list: list[dict[str, Any]] = session.repl._namespace.setdefault("_tasks", [])  # type: ignore
+            tasks_list: list[dict[str, Any]] = session.repl._namespace.setdefault(
+                "_tasks", []
+            )  # type: ignore
 
             if action == "add" and description:
                 new_id = task_id or f"T{len(tasks_list) + 1}"
-                tasks_list.append({"id": new_id, "description": description, "status": status})
+                tasks_list.append(
+                    {"id": new_id, "description": description, "status": status}
+                )
                 return f"Task {new_id} added."
 
             if action == "update" and task_id:
@@ -3363,7 +3335,13 @@ class AlephMCPServerLocal:
 
             res = ["## Task List\n"]
             for t in tasks_list:
-                icon = "✅" if t["status"] == "done" else "⏳" if t["status"] == "todo" else "🚫"
+                icon = (
+                    "✅"
+                    if t["status"] == "done"
+                    else "⏳"
+                    if t["status"] == "todo"
+                    else "🚫"
+                )
                 res.append(f"- {icon} **{t['id']}**: {t['description']}")
             return "\n".join(res)
 
@@ -3383,7 +3361,9 @@ class AlephMCPServerLocal:
                 "iterations": session.iterations,
                 "evidence_count": len(session.evidence),
                 "tasks_count": len(tasks_list),
-                "variables": [k for k in session.repl._namespace.keys() if not k.startswith("_")],
+                "variables": [
+                    k for k in session.repl._namespace.keys() if not k.startswith("_")
+                ],
                 "size_chars": session.meta.size_chars,
                 "size_lines": session.meta.size_lines,
                 "workspace_root": str(self.action_config.workspace_root),
@@ -3400,10 +3380,18 @@ class AlephMCPServerLocal:
             res = [f"## Session Status: {context_id}\n"]
             res.append(f"- **Iterations**: {session.iterations}")
             res.append(f"- **Evidence Items**: {len(session.evidence)}")
-            res.append(f"- **Tracked Tasks**: {len(session.repl._namespace.get('_tasks', []))}")  # type: ignore
-            res.append(f"- **User Variables**: {', '.join(status['variables']) or 'None'}")  # type: ignore
-            res.append(f"- **Context Size**: {session.meta.size_chars:,} chars ({session.meta.size_lines:,} lines)")
-            res.append(f"- **Workspace Root**: {self.action_config.workspace_root} ({self._workspace_root_source})")
+            res.append(
+                f"- **Tracked Tasks**: {len(session.repl._namespace.get('_tasks', []))}"
+            )  # type: ignore
+            res.append(
+                f"- **User Variables**: {', '.join(status['variables']) or 'None'}"
+            )  # type: ignore
+            res.append(
+                f"- **Context Size**: {session.meta.size_chars:,} chars ({session.meta.size_lines:,} lines)"
+            )
+            res.append(
+                f"- **Workspace Root**: {self.action_config.workspace_root} ({self._workspace_root_source})"
+            )
             res.append(f"- **Context Policy**: {self.context_policy}")
             return "\n".join(res)
 
@@ -3411,7 +3399,9 @@ class AlephMCPServerLocal:
         async def get_evidence(
             limit: int = 20,
             offset: int = 0,
-            source: Literal["any", "search", "peek", "exec", "manual", "action"] = "any",
+            source: Literal[
+                "any", "search", "peek", "exec", "manual", "action"
+            ] = "any",
             context_id: str = "default",
             output: Literal["markdown", "json", "object"] = "markdown",
         ) -> str | dict[str, Any]:
@@ -3429,13 +3419,15 @@ class AlephMCPServerLocal:
 
             items = []
             for ev in window:
-                items.append({
-                    "source": ev.source,
-                    "line_range": ev.line_range,
-                    "pattern": ev.pattern,
-                    "note": ev.note,
-                    "snippet": ev.snippet,
-                })
+                items.append(
+                    {
+                        "source": ev.source,
+                        "line_range": ev.line_range,
+                        "pattern": ev.pattern,
+                        "note": ev.note,
+                        "snippet": ev.snippet,
+                    }
+                )
 
             if output == "object":
                 return {"total": count, "items": items}
@@ -3455,7 +3447,7 @@ class AlephMCPServerLocal:
                     source_info += f" pattern: `{item['pattern']}`"
                 if item["note"]:
                     source_info += f" note: {item['note']}"
-                res.append(f"{i}. {source_info}: \"{item['snippet'][:100]}...\"")  # type: ignore
+                res.append(f'{i}. {source_info}: "{item["snippet"][:100]}..."')  # type: ignore
             return "\n".join(res)
 
         @_tool()
@@ -3472,7 +3464,9 @@ class AlephMCPServerLocal:
 
             if context_id in self._sessions:
                 session = self._sessions[context_id]
-                parts.extend(["", f"*Completed after {session.iterations} iterations.*"])
+                parts.extend(
+                    ["", f"*Completed after {session.iterations} iterations.*"]
+                )
 
             parts.append(f"\n**Confidence:** {confidence}")
 
@@ -3480,16 +3474,24 @@ class AlephMCPServerLocal:
                 session = self._sessions[context_id]
                 if session.evidence:
                     parts.extend(["", "---", "", "### Evidence Citations"])
-                    parts.append(f"*Line numbers are {'1-based' if session.line_number_base == 1 else '0-based'}.*")
+                    parts.append(
+                        f"*Line numbers are {'1-based' if session.line_number_base == 1 else '0-based'}.*"
+                    )
                     for i, ev in enumerate(session.evidence[-10:], 1):
                         source_info = f"[{ev.source}]"
                         if ev.line_range:
-                            source_info += f" lines {ev.line_range[0]}-{ev.line_range[1]}"
+                            source_info += (
+                                f" lines {ev.line_range[0]}-{ev.line_range[1]}"
+                            )
                         if ev.pattern:
                             source_info += f" pattern: `{ev.pattern}`"
                         if ev.note:
                             source_info += f" note: {ev.note}"
-                        parts.append(f"{i}. {source_info}: \"{ev.snippet[:80]}...\"" if len(ev.snippet) > 80 else f"{i}. {source_info}: \"{ev.snippet}\"")
+                        parts.append(
+                            f'{i}. {source_info}: "{ev.snippet[:80]}..."'
+                            if len(ev.snippet) > 80
+                            else f'{i}. {source_info}: "{ev.snippet}"'
+                        )
 
             self._auto_save_memory_pack()
             return "\n".join(parts)
@@ -3508,7 +3510,12 @@ class AlephMCPServerLocal:
             session = self._sessions[context_id]
             session.iterations += 1
 
-            res = ["## Progress Evaluation", "", f"**Current Understanding:** {current_understanding}", f"\n**Confidence Score:** {confidence_score:.2f}"]
+            res = [
+                "## Progress Evaluation",
+                "",
+                f"**Current Understanding:** {current_understanding}",
+                f"\n**Confidence Score:** {confidence_score:.2f}",
+            ]
             if remaining_questions:
                 res.append("\n**Remaining Questions:**")
                 if isinstance(remaining_questions, str):
@@ -3518,9 +3525,13 @@ class AlephMCPServerLocal:
                         res.append(f"- {q}")
 
             if confidence_score > 0.9:
-                res.append("\n*Confidence is high. Consider finalizing if the goal is met.*")
+                res.append(
+                    "\n*Confidence is high. Consider finalizing if the goal is met.*"
+                )
             elif confidence_score < 0.3:
-                res.append("\n*Confidence is low. Try a different search pattern or tool.*")
+                res.append(
+                    "\n*Confidence is low. Try a different search pattern or tool.*"
+                )
 
             return "\n".join(res)
 
@@ -3538,13 +3549,17 @@ class AlephMCPServerLocal:
             session = self._sessions[context_id]
             session.iterations += 1
 
-            summary = f"Session '{context_id}' has run for {session.iterations} iterations."
+            summary = (
+                f"Session '{context_id}' has run for {session.iterations} iterations."
+            )
             summary += f" Context size: {session.meta.size_chars:,} chars."
 
             if include_evidence and session.evidence:
                 summary += f"\nEvidence collected: {len(session.evidence)} items."
             if include_variables:
-                vars = [k for k in session.repl._namespace.keys() if not k.startswith("_")]
+                vars = [
+                    k for k in session.repl._namespace.keys() if not k.startswith("_")
+                ]
                 if vars:
                     summary += f"\nVariables defined: {', '.join(vars)}."
 
@@ -3570,7 +3585,13 @@ class AlephMCPServerLocal:
             if output == "json":
                 return json.dumps(payload, indent=2)
             if errors:
-                lines = ["## Recipe Validation", "", "**Status:** invalid", "", "**Errors:**"]
+                lines = [
+                    "## Recipe Validation",
+                    "",
+                    "**Status:** invalid",
+                    "",
+                    "**Errors:**",
+                ]
                 lines.extend(f"- {err}" for err in errors)
                 return "\n".join(lines)
             return "## Recipe Validation\n\n**Status:** valid"
@@ -3647,7 +3668,9 @@ class AlephMCPServerLocal:
                 message = payload.get("error")
                 if not message and "errors" in payload:
                     message = "; ".join(str(e) for e in payload.get("errors", []))
-                return _format_error(str(message or "Recipe execution failed"), output=output)
+                return _format_error(
+                    str(message or "Recipe execution failed"), output=output
+                )
 
             trace = payload.get("trace", [])
             lines = [
@@ -3671,14 +3694,18 @@ class AlephMCPServerLocal:
             output: Literal["markdown", "json", "object"] = "markdown",
         ) -> str | dict[str, Any]:
             """Compile Recipe DSL code into a validated recipe payload."""
-            ok, payload = await self._compile_recipe_code(code=code, context_id=context_id)
+            ok, payload = await self._compile_recipe_code(
+                code=code, context_id=context_id
+            )
             full_payload: dict[str, Any] = {"success": ok, **payload}
             if output == "object":
                 return full_payload
             if output == "json":
                 return json.dumps(full_payload, indent=2)
             if not ok:
-                return _format_error(str(payload.get("error", "Recipe compile failed")), output=output)
+                return _format_error(
+                    str(payload.get("error", "Recipe compile failed")), output=output
+                )
 
             recipe_payload = payload.get("recipe", {})
             estimate = payload.get("estimate", {})
@@ -3762,7 +3789,10 @@ class AlephMCPServerLocal:
 
         @_tool()
         async def configure(
-            sub_query_backend: Literal["api", "claude", "codex", "gemini", "kimi", "auto"] | None = None,
+            sub_query_backend: Literal[
+                "api", "claude", "codex", "gemini", "kimi", "opencode", "auto"
+            ]
+            | None = None,
             sub_query_share_session: bool | None = None,
             sub_query_timeout: float | None = None,
             max_cmd_seconds: float | None = None,
@@ -3887,12 +3917,16 @@ class AlephMCPServerLocal:
             """List all registered remote MCP servers."""
             items = []
             for sid, handle in self._remote_servers.items():
-                items.append({
-                    "id": sid,
-                    "connected": handle.session is not None,
-                    "command": handle.command,
-                    "connected_at": handle.connected_at.isoformat() if handle.connected_at else None,
-                })
+                items.append(
+                    {
+                        "id": sid,
+                        "connected": handle.session is not None,
+                        "command": handle.command,
+                        "connected_at": handle.connected_at.isoformat()
+                        if handle.connected_at
+                        else None,
+                    }
+                )
 
             if output == "object":
                 return {"count": len(items), "items": items}
@@ -3952,7 +3986,9 @@ class AlephMCPServerLocal:
 
             handle = cast(_RemoteServerHandle, handle_or_err)
             if not self._remote_tool_allowed(handle, tool):
-                return _format_error(f"Tool '{tool}' is denied on server '{server_id}'", output=output)
+                return _format_error(
+                    f"Tool '{tool}' is denied on server '{server_id}'", output=output
+                )
 
             assert handle.session is not None
             try:
@@ -3963,7 +3999,9 @@ class AlephMCPServerLocal:
             if output == "object":
                 return {"result": result.content}
             if output == "json":
-                return json.dumps({"result": [c.model_dump() for c in result.content]}, indent=2)
+                return json.dumps(
+                    {"result": [c.model_dump() for c in result.content]}, indent=2
+                )
 
             res = []
             for c in result.content:
@@ -3981,7 +4019,9 @@ class AlephMCPServerLocal:
         ) -> str | dict[str, Any]:
             """Close a remote MCP server connection."""
             if server_id not in self._remote_servers:
-                return _format_error(f"Remote server '{server_id}' not registered.", output=output)
+                return _format_error(
+                    f"Remote server '{server_id}' not registered.", output=output
+                )
 
             handle = self._remote_servers[server_id]
             await self._reset_remote_server_handle(handle)
@@ -4008,6 +4048,7 @@ class AlephMCPServerLocal:
 
         await self.server.run_stdio_async()
 
+
 def main() -> None:
     """CLI entry point: `aleph` or `python -m aleph.mcp.local_server`"""
     import argparse
@@ -4026,7 +4067,9 @@ def main() -> None:
         raise argparse.ArgumentTypeError("Expected a boolean value (true/false)")
 
     class _SafeArgumentParser(argparse.ArgumentParser):
-        def _print_message(self, message: str, file: io.TextIOBase | None = None) -> None:
+        def _print_message(
+            self, message: str, file: io.TextIOBase | None = None
+        ) -> None:
             if message:
                 file = file or sys.stderr
                 try:
@@ -4085,7 +4128,11 @@ def main() -> None:
         help="Max file size in bytes for write_file/save_session (default: 100MB).",
     )
     env_tool_docs = os.environ.get("ALEPH_TOOL_DOCS")
-    default_tool_docs = env_tool_docs if env_tool_docs in {"concise", "full"} else DEFAULT_TOOL_DOCS_MODE
+    default_tool_docs = (
+        env_tool_docs
+        if env_tool_docs in {"concise", "full"}
+        else DEFAULT_TOOL_DOCS_MODE
+    )
     parser.add_argument(
         "--tool-docs",
         type=str,
@@ -4192,10 +4239,14 @@ def main() -> None:
         unrestricted=args.unrestricted,
     )
 
-    _ws_explicit = bool(args.workspace_root) or bool(os.environ.get("ALEPH_WORKSPACE_ROOT", "").strip())
+    _ws_explicit = bool(args.workspace_root) or bool(
+        os.environ.get("ALEPH_WORKSPACE_ROOT", "").strip()
+    )
     action_cfg = ActionConfig(
         enabled=bool(args.enable_actions),
-        workspace_root=Path(args.workspace_root).resolve() if args.workspace_root else _detect_workspace_root(),
+        workspace_root=Path(args.workspace_root).resolve()
+        if args.workspace_root
+        else _detect_workspace_root(),
         workspace_mode=cast(WorkspaceMode, args.workspace_mode),
         context_policy=_normalize_context_policy(
             os.environ.get("ALEPH_CONTEXT_POLICY"),

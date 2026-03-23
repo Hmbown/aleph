@@ -4,11 +4,12 @@ This module enables Aleph to spawn sub-agents that can reason over context slice
 following the Recursive Language Model (RLM) paradigm.
 
 Default backend policy (configurable via ALEPH_SUB_QUERY_BACKEND):
-1. codex CLI - first-class nested MCP path
-2. API (if credentials available) - OpenAI-compatible fallback
+1. API (if credentials available) - direct function call per the RLM paper
+2. codex CLI - fallback when API credentials are absent
 
-Other CLI backends (claude, gemini, kimi) remain available via explicit override,
-but are treated as experimental rather than auto-selected defaults.
+Other CLI backends (claude, gemini, kimi, opencode) remain available via
+explicit override. For a unified API proxy that wraps all CLI tools, see
+vendor/cliproxyapi (CLIProxyAPI).
 
 Configuration via environment:
 - ALEPH_SUB_QUERY_API_KEY (or OPENAI_API_KEY fallback)
@@ -41,11 +42,12 @@ __all__ = [
     "DEFAULT_CODEX_MODE",
     "DEFAULT_CODEX_MODEL",
     "DEFAULT_CODEX_REASONING_EFFORT",
+    "DEFAULT_OPENCODE_MODEL",
     "has_api_credentials",
 ]
 
 
-BackendType = Literal["claude", "codex", "gemini", "kimi", "api", "auto"]
+BackendType = Literal["claude", "codex", "gemini", "kimi", "opencode", "api", "auto"]
 CodexMode = Literal["exec", "mcp"]
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -56,6 +58,8 @@ DEFAULT_TIMEOUT_ENV = "ALEPH_SUB_QUERY_TIMEOUT"
 DEFAULT_CODEX_MODE: CodexMode = "mcp"
 DEFAULT_CODEX_MODEL = "gpt-5.4"
 DEFAULT_CODEX_REASONING_EFFORT = "low"
+DEFAULT_OPENCODE_MODEL = "glm-5-turbo"
+DEFAULT_MAX_CONTEXT_CHARS = 20_000
 
 
 @dataclass
@@ -113,7 +117,7 @@ class SubQueryConfig:
     api_model: str | None = None
 
     # Behavior
-    max_context_chars: int = 20_000
+    max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS
     include_system_prompt: bool = True
     validation_regex: str | None = None
     max_retries: int = 0
@@ -147,7 +151,9 @@ OUTPUT FORMAT:
 
     def __post_init__(self) -> None:
         if self.codex_mode is None:
-            codex_mode_env = os.environ.get("ALEPH_SUB_QUERY_CODEX_MODE", "").strip().lower()
+            codex_mode_env = (
+                os.environ.get("ALEPH_SUB_QUERY_CODEX_MODE", "").strip().lower()
+            )
             if codex_mode_env in {"exec", "mcp"}:
                 self.codex_mode = codex_mode_env  # type: ignore[assignment]
         if self.codex_mode is None:
@@ -170,7 +176,9 @@ OUTPUT FORMAT:
             self.codex_reasoning_effort = DEFAULT_CODEX_REASONING_EFFORT
 
         if self.codex_profile is None:
-            codex_profile_env = os.environ.get("ALEPH_SUB_QUERY_CODEX_PROFILE", "").strip()
+            codex_profile_env = os.environ.get(
+                "ALEPH_SUB_QUERY_CODEX_PROFILE", ""
+            ).strip()
             if codex_profile_env:
                 self.codex_profile = codex_profile_env
 
@@ -201,10 +209,11 @@ def has_api_credentials(config: SubQueryConfig | None = None) -> bool:
 def detect_backend(config: SubQueryConfig | None = None) -> BackendType:
     """Auto-detect the best available backend.
 
-    Priority (Codex-first; API is fallback):
+    Priority (API-first, per the RLM paper — sub_query as direct function call):
     1. Check ALEPH_SUB_QUERY_BACKEND env var for explicit override
-    2. codex CLI - if installed
-    3. api (fallback) - will error with a helpful message if no credentials
+    2. API — when credentials are available (direct call, no subprocess)
+    3. codex CLI — fallback when API credentials are absent
+    4. API — final fallback (will error with helpful message if no credentials)
 
     Returns:
         The detected backend type.
@@ -217,10 +226,14 @@ def detect_backend(config: SubQueryConfig | None = None) -> BackendType:
 
     # Check for explicit backend override
     explicit_backend = os.environ.get("ALEPH_SUB_QUERY_BACKEND", "").lower().strip()
-    if explicit_backend in ("api", "claude", "codex", "gemini", "kimi"):
+    if explicit_backend in ("api", "claude", "codex", "gemini", "kimi", "opencode"):
         return explicit_backend  # type: ignore
 
-    # Priority 2: Codex is the only auto-selected CLI backend.
+    # Priority 1: API when credentials are available (direct call per RLM paper).
+    if _get_api_key(cfg.api_key_env) is not None:
+        return "api"
+
+    # Priority 2: Codex CLI when API credentials are absent.
     if shutil.which("codex"):
         return "codex"
 

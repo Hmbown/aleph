@@ -22,7 +22,15 @@ _ALLOWED_OPS: set[str] = {
     "finalize",
 }
 
-_ALLOWED_BACKENDS: set[str] = {"auto", "api", "claude", "codex", "gemini", "kimi"}
+_ALLOWED_BACKENDS: set[str] = {
+    "auto",
+    "api",
+    "claude",
+    "codex",
+    "gemini",
+    "kimi",
+    "opencode",
+}
 
 
 def _require_positive_int(
@@ -58,11 +66,17 @@ def _normalize_budget(raw: Any, step_count: int, errors: list[str]) -> dict[str,
     max_steps = raw.get("max_steps", step_count)
     max_sub_queries = raw.get("max_sub_queries", 20)
 
-    resolved_steps = _require_positive_int(max_steps, field="budget.max_steps", errors=errors)
-    resolved_sub = _require_positive_int(max_sub_queries, field="budget.max_sub_queries", errors=errors, min_value=0)
+    resolved_steps = _require_positive_int(
+        max_steps, field="budget.max_steps", errors=errors
+    )
+    resolved_sub = _require_positive_int(
+        max_sub_queries, field="budget.max_sub_queries", errors=errors, min_value=0
+    )
 
     return {
-        "max_steps": resolved_steps if resolved_steps is not None else max(step_count, 1),
+        "max_steps": resolved_steps
+        if resolved_steps is not None
+        else max(step_count, 1),
         "max_sub_queries": resolved_sub if resolved_sub is not None else 20,
     }
 
@@ -173,18 +187,25 @@ def validate_recipe(recipe: Any) -> tuple[dict[str, Any] | None, list[str]]:
 
         elif op == "take":
             count = raw_step.get("count")
-            resolved_count = _require_positive_int(count, field=f"{path}.count", errors=errors)
+            resolved_count = _require_positive_int(
+                count, field=f"{path}.count", errors=errors
+            )
             if resolved_count is not None:
                 step["count"] = resolved_count
 
         elif op == "chunk":
             chunk_size = raw_step.get("chunk_size")
-            resolved_chunk = _require_positive_int(chunk_size, field=f"{path}.chunk_size", errors=errors)
+            resolved_chunk = _require_positive_int(
+                chunk_size, field=f"{path}.chunk_size", errors=errors
+            )
             if resolved_chunk is not None:
                 step["chunk_size"] = resolved_chunk
             overlap = raw_step.get("overlap", 0)
             resolved_overlap = _require_positive_int(
-                overlap, field=f"{path}.overlap", errors=errors, min_value=0,
+                overlap,
+                field=f"{path}.overlap",
+                errors=errors,
+                min_value=0,
             )
             if resolved_overlap is not None:
                 step["overlap"] = resolved_overlap

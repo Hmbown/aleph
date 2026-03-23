@@ -19,8 +19,9 @@ from .codex_mcp_backend import run_codex_mcp_sub_query
 __all__ = ["run_cli_sub_query", "CLI_BACKENDS"]
 
 
-CLI_BACKENDS = ("claude", "codex", "gemini", "kimi")
-DEFAULT_MAX_CONTEXT_CHARS = 20_000
+from . import DEFAULT_MAX_CONTEXT_CHARS, DEFAULT_OPENCODE_MODEL
+
+CLI_BACKENDS = ("claude", "codex", "gemini", "kimi", "opencode")
 
 _KEEP_MCP_CONFIG_ENV = "ALEPH_SUB_QUERY_KEEP_MCP_CONFIG"
 _CODEX_MODE_ENV = "ALEPH_SUB_QUERY_CODEX_MODE"
@@ -28,6 +29,7 @@ _CODEX_MODEL_ENV = "ALEPH_SUB_QUERY_CODEX_MODEL"
 _CODEX_REASONING_ENV = "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT"
 _CODEX_PROFILE_ENV = "ALEPH_SUB_QUERY_CODEX_PROFILE"
 _GEMINI_SANDBOX_ENV = "ALEPH_SUB_QUERY_GEMINI_SANDBOX"
+_OPENCODE_MODEL_ENV = "ALEPH_SUB_QUERY_OPENCODE_MODEL"
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -108,10 +110,37 @@ def _normalize_cli_output(backend: str, output: str) -> str:
     return output
 
 
+def _normalize_opencode_output(output: str) -> str:
+    """Extract text from opencode JSON event stream.
+
+    Opencode emits newline-delimited JSON events. We collect all 'text' type
+    events and join them into the final response.
+    """
+    parts: list[str] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        part = event.get("part")
+        if isinstance(part, dict) and part.get("type") == "text":
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+    if parts:
+        return "\n".join(parts)
+    return output.strip()
+
+
 async def run_cli_sub_query(
     prompt: str,
     context_slice: str | None = None,
-    backend: Literal["claude", "codex", "gemini", "kimi"] = "claude",
+    backend: Literal["claude", "codex", "gemini", "kimi", "opencode"] = "claude",
     timeout: float = 300.0,
     cwd: Path | None = None,
     max_output_chars: int = 50_000,
@@ -125,7 +154,7 @@ async def run_cli_sub_query(
     codex_profile: str | None = None,
 ) -> tuple[bool, str]:
     """Spawn a CLI sub-agent and return its response.
-    
+
     Args:
         prompt: The question/task for the sub-agent.
         context_slice: Optional context to include.
@@ -133,11 +162,15 @@ async def run_cli_sub_query(
         timeout: Timeout in seconds.
         cwd: Working directory for the subprocess.
         max_output_chars: Maximum output characters.
-    
+
     Returns:
         Tuple of (success, output).
     """
-    if context_slice and max_context_chars > 0 and len(context_slice) > max_context_chars:
+    if (
+        context_slice
+        and max_context_chars > 0
+        and len(context_slice) > max_context_chars
+    ):
         context_slice = context_slice[:max_context_chars]
 
     resolved_codex_mode = (codex_mode or _codex_mode()).lower()
@@ -167,10 +200,10 @@ async def run_cli_sub_query(
     full_prompt = prompt
     if context_slice and not mcp_server_url:
         full_prompt = f"{prompt}\n\n---\nContext:\n{context_slice}"
-    
+
     # For very long prompts, write to a temp file and pass via stdin/file
     use_tempfile = len(full_prompt) > 10_000
-    
+
     try:
         if use_tempfile:
             return await _run_with_tempfile(
@@ -195,7 +228,10 @@ async def run_cli_sub_query(
                 trust_mcp_server=trust_mcp_server,
             )
     except FileNotFoundError:
-        return False, f"CLI backend '{backend}' not found. Install it or use API fallback."
+        return (
+            False,
+            f"CLI backend '{backend}' not found. Install it or use API fallback.",
+        )
     except Exception as e:
         return False, f"CLI error: {e}"
 
@@ -278,7 +314,7 @@ async def _run_with_arg(
     """Run CLI with prompt as argument."""
     env: dict[str, str] | None = None
     cleanup_paths: list[Path] = []
-    
+
     if backend == "claude":
         # Claude Code CLI: -p for print mode (non-interactive), --dangerously-skip-permissions to bypass
         mcp_args: list[str] = []
@@ -300,8 +336,17 @@ async def _run_with_arg(
         # OpenAI Codex CLI (non-interactive)
         overrides: list[str] = []
         if mcp_server_url:
-            overrides = _codex_mcp_overrides(mcp_server_url, mcp_server_name, trust_mcp_server)
-        cmd = ["codex", *overrides, "exec", "--skip-git-repo-check", "--full-auto", prompt]
+            overrides = _codex_mcp_overrides(
+                mcp_server_url, mcp_server_name, trust_mcp_server
+            )
+        cmd = [
+            "codex",
+            *overrides,
+            "exec",
+            "--skip-git-repo-check",
+            "--full-auto",
+            prompt,
+        ]
     elif backend == "gemini":
         # Google Gemini CLI: use headless prompt mode instead of positional
         # interactive mode, otherwise the CLI may relaunch into its sandbox path.
@@ -315,8 +360,23 @@ async def _run_with_arg(
         # Kimi CLI: --print --final-message-only for clean text output (implies --yolo)
         mcp_args_kimi: list[str] = []
         if mcp_server_url:
-            mcp_args_kimi = ["--mcp-config", json.dumps({"mcpServers": {mcp_server_name: {"type": "http", "url": mcp_server_url}}})]
+            mcp_args_kimi = [
+                "--mcp-config",
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            mcp_server_name: {"type": "http", "url": mcp_server_url}
+                        }
+                    }
+                ),
+            ]
         cmd = ["kimi", "--print", "--final-message-only", *mcp_args_kimi, "-p", prompt]
+    elif backend == "opencode":
+        # Opencode CLI: run mode with JSON output format
+        cmd = ["opencode", "run", "--format", "json"]
+        resolved_model = _env_text(_OPENCODE_MODEL_ENV) or DEFAULT_OPENCODE_MODEL
+        cmd.extend(["--model", resolved_model])
+        cmd.append(prompt)
     else:
         return False, f"Unknown CLI backend: {backend}"
 
@@ -331,17 +391,22 @@ async def _run_with_arg(
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         output = stdout.decode("utf-8", errors="replace")
-        
+
         if len(output) > max_output_chars:
             output = output[:max_output_chars] + "\n...[truncated]"
-        
+
         if proc.returncode != 0:
             err = stderr.decode("utf-8", errors="replace")
             if output.strip():
                 # Non-zero exit but got stdout — include both in error for debugging.
-                return False, f"CLI error (exit {proc.returncode}): {err[:500]}\nOutput: {output[:500]}"
+                return (
+                    False,
+                    f"CLI error (exit {proc.returncode}): {err[:500]}\nOutput: {output[:500]}",
+                )
             return False, f"CLI error (exit {proc.returncode}): {err[:1000]}"
 
+        if backend == "opencode":
+            return True, _normalize_opencode_output(output)
         return True, _normalize_cli_output(backend, output)
     except asyncio.TimeoutError:
         proc.kill()
@@ -369,7 +434,7 @@ async def _run_with_tempfile(
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         f.write(prompt)
         temp_path = f.name
-    
+
     try:
         env: dict[str, str] | None = None
         cleanup_paths: list[Path] = []
@@ -395,8 +460,17 @@ async def _run_with_tempfile(
             # Codex reads prompt from stdin when "-" is passed
             overrides: list[str] = []
             if mcp_server_url:
-                overrides = _codex_mcp_overrides(mcp_server_url, mcp_server_name, trust_mcp_server)
-            cmd = ["codex", *overrides, "exec", "--skip-git-repo-check", "--full-auto", "-"]
+                overrides = _codex_mcp_overrides(
+                    mcp_server_url, mcp_server_name, trust_mcp_server
+                )
+            cmd = [
+                "codex",
+                *overrides,
+                "exec",
+                "--skip-git-repo-check",
+                "--full-auto",
+                "-",
+            ]
             stdin_data = prompt.encode("utf-8")
         elif backend == "gemini":
             # Gemini headless mode appends stdin to the explicit prompt.
@@ -411,12 +485,28 @@ async def _run_with_tempfile(
             # Kimi: --print --final-message-only for clean text, reads prompt via stdin
             mcp_args_kimi: list[str] = []
             if mcp_server_url:
-                mcp_args_kimi = ["--mcp-config", json.dumps({"mcpServers": {mcp_server_name: {"type": "http", "url": mcp_server_url}}})]
+                mcp_args_kimi = [
+                    "--mcp-config",
+                    json.dumps(
+                        {
+                            "mcpServers": {
+                                mcp_server_name: {"type": "http", "url": mcp_server_url}
+                            }
+                        }
+                    ),
+                ]
             cmd = ["kimi", "--print", "--final-message-only", *mcp_args_kimi]
             stdin_data = prompt.encode("utf-8")
+        elif backend == "opencode":
+            # Opencode: attach prompt as file via -f, short instruction as message
+            cmd = ["opencode", "run", "--format", "json"]
+            resolved_model = _env_text(_OPENCODE_MODEL_ENV) or DEFAULT_OPENCODE_MODEL
+            cmd.extend(["--model", resolved_model])
+            cmd.extend(["Process the attached content.", "-f", temp_path])
+            stdin_data = None
         else:
             return False, f"Unknown CLI backend: {backend}"
-        
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE if stdin_data else None,
@@ -425,23 +515,27 @@ async def _run_with_tempfile(
             cwd=str(cwd) if cwd else None,
             env=env,
         )
-        
+
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=stdin_data),
-                timeout=timeout
+                proc.communicate(input=stdin_data), timeout=timeout
             )
             output = stdout.decode("utf-8", errors="replace")
-            
+
             if len(output) > max_output_chars:
                 output = output[:max_output_chars] + "\n...[truncated]"
-            
+
             if proc.returncode != 0:
                 err = stderr.decode("utf-8", errors="replace")
                 if output.strip():
-                    return False, f"CLI error (exit {proc.returncode}): {err[:500]}\nOutput: {output[:500]}"
+                    return (
+                        False,
+                        f"CLI error (exit {proc.returncode}): {err[:500]}\nOutput: {output[:500]}",
+                    )
                 return False, f"CLI error (exit {proc.returncode}): {err[:1000]}"
 
+            if backend == "opencode":
+                return True, _normalize_opencode_output(output)
             return True, _normalize_cli_output(backend, output)
         except asyncio.TimeoutError:
             proc.kill()

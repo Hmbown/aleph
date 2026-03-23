@@ -4,28 +4,51 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI version](https://img.shields.io/pypi/v/aleph-rlm.svg)](https://pypi.org/project/aleph-rlm/)
 
-Aleph is a skill + [MCP server](https://modelcontextprotocol.io/) that turns
-your coding agent into an RLM. It keeps large repos, logs, and documents in a
-Python process instead of the model prompt, and exposes tools so the agent can
-search, peek, run code, recurse, and return small derived results.
+Aleph implements the Recursive Language Model (RLM) paradigm
+([arXiv:2512.24601](https://arxiv.org/abs/2512.24601)): instead of feeding
+massive context into a neural network prompt, Aleph stores it as a variable in
+a Python REPL and lets the model reason by writing and executing code. It works
+as an [MCP server](https://modelcontextprotocol.io/) for Claude Code, Cursor,
+Codex, and other clients, or as a standalone skill.
 
-Recommended default: install the Codex CLI, then run `aleph-rlm install`.
-Aleph still works with Claude Code, Cursor, VS Code, and other MCP clients, but
-Codex is the cleanest shared-session sub-query path today.
+Recommended default: configure an API key for sub-queries (API-first priority).
+For CLI-backed models, use CLIProxyAPI (`vendor/cliproxyapi/`) as a unified
+proxy, or install individual CLIs. Then run `aleph-rlm install`.
 
 Why Aleph:
 
-- Load context once instead of pasting it over and over.
-- Compute inside Aleph memory with `exec_python` instead of leaking raw data
-  back through the prompt.
-- Use recursive sub-queries and recipes when a single pass is not enough.
-- Save sessions and resume long investigations later.
+- **Reason through code**: the LLM writes Python that interacts with context
+  symbolically — search, filter, transform, and derive answers as programs.
+- **Recursive sub-queries**: `sub_query()` calls other models as Python
+  function calls, decomposing hard problems into smaller ones.
+- **Scale beyond the context window**: context lives in the REPL, not the
+  prompt. Load once, compute many times, return only small results.
+- **Sessions and persistence**: save and resume long investigations across
+  sessions without re-loading data.
+- **Recipes and orchestration**: automate repeated reasoning patterns with
+  validated, reusable recipes.
 
 ```text
 +-----------------+    tool calls     +--------------------------+
 |   LLM client    | ---------------> |  Aleph (Python process)  |
 | (context budget)| <--------------- |  search / peek / exec    |
 +-----------------+   small results  +--------------------------+
+
+         Inner loop (exec_python):
+
+         LLM writes code
+              |
+              v
+         REPL executes
+              |
+              v
+         output returned to LLM
+              |
+              v
+         LLM writes more code ...
+              |
+              v
+           FINAL()
 ```
 
 ## Quick Start
@@ -64,8 +87,9 @@ command/skill folder. Exact paths are in [MCP_SETUP.md](MCP_SETUP.md).
 
 ## First Workflow
 
-Aleph is best when you load data once, do the heavy work inside Aleph, and only
-pull back compact answers.
+The core of Aleph is `exec_python`: the LLM reasons by writing code that runs
+against the loaded context. Other tools (search, peek, load) set up the data;
+`exec_python` is where the real work happens.
 
 ```python
 load_file(path="/absolute/path/to/large_file.log", context_id="doc")
