@@ -4,63 +4,75 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI version](https://img.shields.io/pypi/v/aleph-rlm.svg)](https://pypi.org/project/aleph-rlm/)
 
-Aleph is a skill + [MCP server](https://modelcontextprotocol.io/) that turns
-your coding agent into an RLM. It keeps large repos, logs, and documents in a
-Python process instead of the model prompt, and exposes tools so the agent can
-search, peek, run code, recurse, and return small derived results.
+Aleph is an [MCP server](https://modelcontextprotocol.io/) and skill for
+**Recursive Language Models** (RLMs). It keeps working state — search indexes,
+code execution, evidence, recursion — in a Python process outside the prompt
+window, so the LLM reasons iteratively over repos, logs, documents, and data
+without burning context on raw content.
 
-Recommended default: install the Codex CLI, then run `aleph-rlm install`.
-Aleph still works with Claude Code, Cursor, VS Code, and other MCP clients, but
-Codex is the cleanest shared-session sub-query path today.
+```text
++-----------------+    tool calls     +-----------------------------+
+|   LLM client    | ---------------> |  Aleph (Python process)     |
+| (context budget)| <--------------- |  search / peek / exec / sub |
++-----------------+   small results  +-----------------------------+
+```
 
 Why Aleph:
 
-- Load context once instead of pasting it over and over.
-- Compute inside Aleph memory with `exec_python` instead of leaking raw data
-  back through the prompt.
-- Use recursive sub-queries and recipes when a single pass is not enough.
-- Save sessions and resume long investigations later.
-
-```text
-+-----------------+    tool calls     +--------------------------+
-|   LLM client    | ---------------> |  Aleph (Python process)  |
-| (context budget)| <--------------- |  search / peek / exec    |
-+-----------------+   small results  +--------------------------+
-```
+- **Load once, reason many times.** Data lives in Aleph memory, not the prompt.
+- **Compute server-side.** `exec_python` runs code over the full context and
+  returns only derived results.
+- **Recurse.** Sub-queries and recipes split complex work across multiple
+  reasoning passes.
+- **Persist.** Save sessions and resume long investigations later.
 
 ## Quick Start
 
-1. Install Aleph:
-
 ```bash
 pip install "aleph-rlm[mcp]"
+aleph-rlm install --profile claude   # or: codex, portable, api
+aleph-rlm doctor                     # verify everything is wired up
 ```
 
-2. Configure your MCP client:
-
-```bash
-aleph-rlm install
-```
-
-3. Verify Aleph is reachable in your assistant:
+Then restart your MCP client and confirm Aleph is available:
 
 ```text
 get_status()
-# or
 list_contexts()
 ```
 
-4. Run the skill flow on a real file:
+The optional `/aleph` (Claude Code) or `$aleph` (Codex) skill shortcut starts
+a structured RLM workflow. Install
+[`docs/prompts/aleph.md`](docs/prompts/aleph.md) into your client's
+command/skill folder — see [MCP_SETUP.md](MCP_SETUP.md) for exact paths.
+
+## Entry Points
+
+| Command | Module | What it does |
+|---------|--------|--------------|
+| `aleph` | `aleph.mcp.local_server:main` | **MCP server.** This is what MCP clients launch. Exposes 30+ tools for context management, search, code execution, reasoning, recursion, and action tools. |
+| `aleph-rlm` | `aleph.cli:main` | **Installer and CLI.** `install`, `configure`, `doctor`, `uninstall` for setting up MCP clients. Also: `run` (single query), `shell` (interactive REPL), `serve` (start MCP server manually). |
+
+## Install Profiles
+
+`aleph-rlm install` asks which sub-query profile to use. Profiles configure
+the nested backend that `sub_query` and `sub_query_batch` spawn for recursive
+reasoning.
+
+| Profile | What it pins |
+|---------|-------------|
+| `portable` | No nested backend — you choose later or rely on auto-detection |
+| `claude` | Claude CLI: `--model opus`, `--effort low`, shared session enabled |
+| `codex` | Codex MCP: `gpt-5.4`, low reasoning effort, shared session enabled |
+| `api` | OpenAI-compatible API — set `ALEPH_SUB_QUERY_API_KEY` and `ALEPH_SUB_QUERY_MODEL` |
 
 ```bash
-/aleph /absolute/path/to/file.log
-# or in Codex CLI
-$aleph /absolute/path/to/file.log
+aleph-rlm install claude-code --profile claude
+aleph-rlm configure --profile codex   # overwrite existing config
 ```
 
-The shortcut command is optional. If you want `/aleph` or `$aleph`, install
-[`docs/prompts/aleph.md`](docs/prompts/aleph.md) in your client's
-command/skill folder. Exact paths are in [MCP_SETUP.md](MCP_SETUP.md).
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all env vars, CLI
+flags, and runtime `configure(...)` options.
 
 ## First Workflow
 

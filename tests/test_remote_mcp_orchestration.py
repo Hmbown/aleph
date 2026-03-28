@@ -4,7 +4,33 @@ import sys
 
 import pytest
 
-from aleph.mcp.local_server import AlephMCPServerLocal, _RemoteServerHandle
+from aleph.mcp.local_server import ActionConfig, AlephMCPServerLocal, _RemoteServerHandle
+from aleph.mcp.remote_servers import list_registered_remote_servers
+
+
+async def _call_tool(server: AlephMCPServerLocal, tool_name: str, **kwargs):
+    _, payload = await server.server.call_tool(tool_name, kwargs)
+    return payload["result"]
+
+
+def test_list_registered_remote_servers_reports_connection_state() -> None:
+    items = list_registered_remote_servers(
+        {
+            "fake": _RemoteServerHandle(
+                command=sys.executable,
+                args=["-m", "tests.fake_remote_mcp_server"],
+            )
+        }
+    )
+
+    assert items == [
+        {
+            "id": "fake",
+            "connected": False,
+            "command": sys.executable,
+            "connected_at": None,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -46,3 +72,82 @@ async def test_remote_tool_allowlist_blocks_calls() -> None:
     ok, _ = await server._close_remote_server("fake")
     assert ok
 
+
+@pytest.mark.asyncio
+async def test_remote_admin_tools_register_list_and_close_via_mcp(tmp_path) -> None:
+    server = AlephMCPServerLocal(
+        action_config=ActionConfig(enabled=True, workspace_root=tmp_path),
+    )
+
+    add_result = await _call_tool(
+        server,
+        "add_remote_server",
+        server_id="fake",
+        command=sys.executable,
+        args=["-m", "tests.fake_remote_mcp_server"],
+        connect=False,
+        confirm=True,
+        output="object",
+    )
+    assert add_result == {"status": "success", "id": "fake"}
+
+    listed = await _call_tool(server, "list_remote_servers", output="object")
+    assert listed["count"] == 1
+    assert listed["items"][0]["id"] == "fake"
+    assert listed["items"][0]["connected"] is False
+
+    close_result = await _call_tool(
+        server,
+        "close_remote_server",
+        server_id="fake",
+        output="object",
+    )
+    assert close_result == {"status": "success", "id": "fake"}
+
+
+@pytest.mark.asyncio
+async def test_remote_admin_tools_filter_and_call_via_mcp(tmp_path) -> None:
+    server = AlephMCPServerLocal(
+        action_config=ActionConfig(enabled=True, workspace_root=tmp_path),
+    )
+
+    await _call_tool(
+        server,
+        "add_remote_server",
+        server_id="fake",
+        command=sys.executable,
+        args=["-m", "tests.fake_remote_mcp_server"],
+        allow_tools=["echo"],
+        connect=True,
+        confirm=True,
+        output="object",
+    )
+
+    tools_result = await _call_tool(
+        server,
+        "list_remote_tools",
+        server_id="fake",
+        output="object",
+    )
+    assert tools_result["server_id"] == "fake"
+    assert [item["name"] for item in tools_result["tools"]] == ["echo"]
+
+    denied = await _call_tool(
+        server,
+        "call_remote_tool",
+        server_id="fake",
+        tool="add",
+        arguments={"a": 2, "b": 3},
+    )
+    assert "denied" in denied.lower()
+
+    echoed = await _call_tool(
+        server,
+        "call_remote_tool",
+        server_id="fake",
+        tool="echo",
+        arguments={"text": "hi"},
+    )
+    assert echoed == "hi"
+
+    await _call_tool(server, "close_remote_server", server_id="fake", output="object")

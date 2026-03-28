@@ -10,7 +10,7 @@ Use this prompt with Claude Code (or any AI assistant with file access) to insta
 I need you to install and configure Aleph (an MCP server for recursive LLM reasoning over large local data) across all my AI development environments.
 
 **Target environments:**
-1. Claude Code (CLI) - via ~/.claude/claude_desktop_config.json (macOS/Linux) or %USERPROFILE%\.claude\claude_desktop_config.json (Windows)
+1. Claude Code (CLI) - via ~/.claude/settings.json (macOS/Linux) or %USERPROFILE%\.claude\settings.json (Windows)
 2. Claude Desktop - via ~/Library/Application Support/Claude/claude_desktop_config.json (macOS) or %APPDATA%\Claude\claude_desktop_config.json (Windows)
 3. Cursor - via cursor MCP config
 4. Windsurf - via windsurf MCP config
@@ -30,9 +30,18 @@ I need you to install and configure Aleph (an MCP server for recursive LLM reaso
    aleph-rlm install
    ```
 
-   Treat this as the preferred nested sub-query setup if Codex CLI is
-   installed. Aleph's validated default is to keep Codex as the nested
-   sub-query backend even when the outer assistant is Claude Code.
+   Choose an explicit install profile up front if needed:
+
+   ```bash
+   aleph-rlm install --profile claude
+   aleph-rlm install --profile codex
+   aleph-rlm install --profile portable
+   ```
+
+   Use `claude` when you want nested Claude sub-queries pinned with
+   `--model opus` and `--effort low`. Use `codex` for the strongest validated
+   shared-session path. Use `portable` if you do not want to pin a nested
+   backend yet.
 
 3. For any environments not auto-detected, manually configure:
 
@@ -132,12 +141,8 @@ I need you to install and configure Aleph (an MCP server for recursive LLM reaso
    ```
 
    CLI backends (`claude`, `codex`, `gemini`) do not require an API key. Aleph
-   now treats Codex as the default sub-query path: auto mode resolves to Codex
-   when it is installed and otherwise falls back to API. Generated configs pin
-   the nested Codex MCP defaults (`backend=codex`, `mode=mcp`, `model=gpt-5.4`,
-   `reasoning=low`, `share_session=true`) whenever Codex is available unless
-   you override them. Other CLI backends remain explicit experimental
-   overrides via `ALEPH_SUB_QUERY_BACKEND`.
+   auto mode still resolves `codex -> api`, but install-time configs now choose
+   an explicit profile instead of silently pinning Codex.
 
    If you want an all-Claude setup instead of the recommended Codex-backed
    nested path, explicitly add:
@@ -145,13 +150,17 @@ I need you to install and configure Aleph (an MCP server for recursive LLM reaso
    **macOS/Linux**
    ```bash
    export ALEPH_SUB_QUERY_BACKEND=claude
+   export ALEPH_SUB_QUERY_CLAUDE_MODEL=opus
+   export ALEPH_SUB_QUERY_CLAUDE_EFFORT=low
    export ALEPH_SUB_QUERY_SHARE_SESSION=true
    ```
 
    **Windows**
    ```powershell
    $env:ALEPH_SUB_QUERY_BACKEND = "claude"
-   $env:ALEPH_SUB_QUERY_SHARE_SESSION = "true"
+    $env:ALEPH_SUB_QUERY_CLAUDE_MODEL = "opus"
+    $env:ALEPH_SUB_QUERY_CLAUDE_EFFORT = "low"
+    $env:ALEPH_SUB_QUERY_SHARE_SESSION = "true"
    ```
 
 6. Verify installation:
@@ -165,8 +174,8 @@ I need you to install and configure Aleph (an MCP server for recursive LLM reaso
 - The `--enable-actions` flag allows file read/write and command execution
 - `--enable-actions` also enables rg-based search, smart loaders, and memory pack auto-save
 - In CLI environments (Claude Code, Codex, Gemini), `sub_query` can use the local CLI backend - no API key needed
-- Best validated nested setup: Codex for sub-queries, even if Claude Code is the outer client
-- Claude remains a supported explicit fallback for all-Claude nested operation
+- Preferred install flow: choose `portable`, `claude`, `codex`, or `api` during `aleph-rlm install`
+- Claude profile pins nested Claude sub-queries with `opus` and `low` effort
 - The installer should handle most of this automatically, but verify each environment works
 - For per-project scoping, set `--workspace-root /absolute/path/to/project` instead of `--workspace-mode git`. See MCP_SETUP.md for details.
 - Some MCP clients don't reliably pass `env` vars from config to the server process. If `sub_query` reports missing credentials, add exports to your shell profile and restart the client.

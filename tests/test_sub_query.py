@@ -10,6 +10,8 @@ import pytest
 
 from aleph.sub_query import (
     SubQueryConfig,
+    DEFAULT_CLAUDE_EFFORT,
+    DEFAULT_CLAUDE_MODEL,
     DEFAULT_CODEX_MODE,
     DEFAULT_CODEX_MODEL,
     DEFAULT_CODEX_REASONING_EFFORT,
@@ -22,6 +24,7 @@ from aleph.sub_query import (
 from aleph.sub_query.cli_backend import run_cli_sub_query, CLI_BACKENDS
 from aleph.sub_query.codex_mcp_backend import (
     build_codex_mcp_tool_call,
+    compose_sub_query_prompt,
     extract_codex_mcp_result_text,
 )
 from aleph.sub_query.api_backend import run_api_sub_query
@@ -39,6 +42,8 @@ class TestSubQueryConfig:
         assert config.api_model_env == DEFAULT_API_MODEL_ENV
         assert config.validation_regex is None
         assert config.max_retries == 0
+        assert config.claude_model == DEFAULT_CLAUDE_MODEL
+        assert config.claude_effort == DEFAULT_CLAUDE_EFFORT
         assert config.codex_mode == DEFAULT_CODEX_MODE
         assert config.codex_model == DEFAULT_CODEX_MODEL
         assert config.codex_reasoning_effort == DEFAULT_CODEX_REASONING_EFFORT
@@ -56,6 +61,37 @@ class TestSubQueryConfig:
         assert config.api_model == "gpt-4o"
         assert config.validation_regex == r"^OK:"
         assert config.max_retries == 2
+
+    def test_claude_config_from_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "ALEPH_SUB_QUERY_CLAUDE_MODEL": "opus",
+                "ALEPH_SUB_QUERY_CLAUDE_EFFORT": "low",
+            },
+            clear=True,
+        ):
+            config = SubQueryConfig()
+
+        assert config.claude_model == "opus"
+        assert config.claude_effort == "low"
+
+    def test_programmatic_claude_config_beats_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "ALEPH_SUB_QUERY_CLAUDE_MODEL": "sonnet",
+                "ALEPH_SUB_QUERY_CLAUDE_EFFORT": "medium",
+            },
+            clear=True,
+        ):
+            config = SubQueryConfig(
+                claude_model="opus",
+                claude_effort="low",
+            )
+
+        assert config.claude_model == "opus"
+        assert config.claude_effort == "low"
 
     def test_codex_mcp_config_from_env(self):
         with patch.dict(
@@ -111,21 +147,21 @@ class TestDetectBackend:
     def test_detect_backend_cli_preferred_with_aleph_key(self):
         """CLI should be preferred even when ALEPH_SUB_QUERY_API_KEY is set."""
         with patch.dict(os.environ, {"ALEPH_SUB_QUERY_API_KEY": "test-key"}, clear=True):
-            with patch("aleph.sub_query.shutil.which") as mock_which:
+            with patch("aleph.sub_query.config.shutil.which") as mock_which:
                 mock_which.side_effect = lambda x: "/usr/bin/codex" if x == "codex" else None
                 assert detect_backend() == "codex"
 
     def test_detect_backend_cli_preferred_with_openai_key(self):
         """CLI should be preferred even when OPENAI_API_KEY is set (fallback)."""
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=True):
-            with patch("aleph.sub_query.shutil.which") as mock_which:
+            with patch("aleph.sub_query.config.shutil.which") as mock_which:
                 mock_which.side_effect = lambda x: "/usr/bin/codex" if x == "codex" else None
                 assert detect_backend() == "codex"
 
     def test_detect_backend_explicit_override(self):
         """ALEPH_SUB_QUERY_BACKEND should override all other detection."""
         with patch.dict(os.environ, {"ALEPH_SUB_QUERY_BACKEND": "codex", "ALEPH_SUB_QUERY_API_KEY": "key"}, clear=True):
-            with patch("aleph.sub_query.shutil.which") as mock_which:
+            with patch("aleph.sub_query.config.shutil.which") as mock_which:
                 mock_which.return_value = "/usr/bin/something"
                 assert detect_backend() == "codex"
 
@@ -137,7 +173,7 @@ class TestDetectBackend:
     def test_detect_backend_respects_programmatic_config(self):
         """SubQueryConfig.backend should override env auto-detection."""
         with patch.dict(os.environ, {}, clear=True):
-            with patch("aleph.sub_query.shutil.which", return_value="/usr/bin/codex"):
+            with patch("aleph.sub_query.config.shutil.which", return_value="/usr/bin/codex"):
                 assert detect_backend(SubQueryConfig(backend="api")) == "api"
 
     def test_detect_backend_explicit_override_claude(self):
@@ -153,35 +189,35 @@ class TestDetectBackend:
     def test_detect_backend_does_not_auto_select_claude(self):
         """Auto mode should fall back to API instead of selecting Claude."""
         with patch.dict(os.environ, {}, clear=True):
-            with patch("aleph.sub_query.shutil.which") as mock_which:
+            with patch("aleph.sub_query.config.shutil.which") as mock_which:
                 mock_which.side_effect = lambda x: "/usr/bin/claude" if x == "claude" else None
                 assert detect_backend() == "api"
 
     def test_detect_backend_codex_when_available(self):
         """Codex CLI should be used when available."""
         with patch.dict(os.environ, {}, clear=True):
-            with patch("aleph.sub_query.shutil.which") as mock_which:
+            with patch("aleph.sub_query.config.shutil.which") as mock_which:
                 mock_which.side_effect = lambda x: "/usr/bin/codex" if x == "codex" else None
                 assert detect_backend() == "codex"
 
     def test_detect_backend_does_not_auto_select_gemini(self):
         """Auto mode should fall back to API instead of selecting Gemini."""
         with patch.dict(os.environ, {}, clear=True):
-            with patch("aleph.sub_query.shutil.which") as mock_which:
+            with patch("aleph.sub_query.config.shutil.which") as mock_which:
                 mock_which.side_effect = lambda x: "/usr/bin/gemini" if x == "gemini" else None
                 assert detect_backend() == "api"
 
     def test_detect_backend_api_fallback(self):
         """API fallback when nothing else available (will error with helpful message)."""
         with patch.dict(os.environ, {}, clear=True):
-            with patch("aleph.sub_query.shutil.which") as mock_which:
+            with patch("aleph.sub_query.config.shutil.which") as mock_which:
                 mock_which.return_value = None
                 assert detect_backend() == "api"
 
     def test_detect_backend_model_override_does_not_beat_cli(self):
         """ALEPH_SUB_QUERY_MODEL should not override CLI preference."""
         with patch.dict(os.environ, {"ALEPH_SUB_QUERY_MODEL": "gpt-5.2-codex", "OPENAI_API_KEY": "key"}, clear=True):
-            with patch("aleph.sub_query.shutil.which") as mock_which:
+            with patch("aleph.sub_query.config.shutil.which") as mock_which:
                 mock_which.side_effect = lambda x: "/usr/bin/codex" if x == "codex" else None
                 assert detect_backend() == "codex"
 
@@ -314,6 +350,54 @@ class TestCliBackend:
         assert output == "Claude response"
         cmd = mock_exec.call_args.args
         assert "--no-session-persistence" in cmd
+
+    @pytest.mark.asyncio
+    async def test_claude_cli_passes_model_and_effort(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b'{"result":"Claude response"}', b""))
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            success, output = await run_cli_sub_query(
+                prompt="test prompt",
+                backend="claude",
+                claude_model="opus",
+                claude_effort="low",
+            )
+
+        assert success is True
+        assert output == "Claude response"
+        cmd = mock_exec.call_args.args
+        assert "--model" in cmd
+        assert cmd[cmd.index("--model") + 1] == "opus"
+        assert "--effort" in cmd
+        assert cmd[cmd.index("--effort") + 1] == "low"
+
+    @pytest.mark.asyncio
+    async def test_claude_cli_uses_env_model_and_effort_defaults(self):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b'{"result":"Claude response"}', b""))
+
+        with patch.dict(
+            os.environ,
+            {
+                "ALEPH_SUB_QUERY_CLAUDE_MODEL": "sonnet",
+                "ALEPH_SUB_QUERY_CLAUDE_EFFORT": "medium",
+            },
+            clear=True,
+        ):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+                success, output = await run_cli_sub_query(
+                    prompt="test prompt",
+                    backend="claude",
+                )
+
+        assert success is True
+        assert output == "Claude response"
+        cmd = mock_exec.call_args.args
+        assert cmd[cmd.index("--model") + 1] == "sonnet"
+        assert cmd[cmd.index("--effort") + 1] == "medium"
 
     @pytest.mark.asyncio
     async def test_gemini_cli_extracts_response_from_json_output(self):
@@ -529,6 +613,16 @@ class TestCliBackend:
 
 
 class TestCodexMcpBackend:
+    def test_compose_sub_query_prompt_embeds_context_even_with_shared_session(self):
+        prompt = compose_sub_query_prompt(
+            "Summarize this patent chunk",
+            "VERY_SECRET_CONTEXT",
+        )
+
+        assert prompt == (
+            "Summarize this patent chunk\n\n---\nContext:\nVERY_SECRET_CONTEXT"
+        )
+
     def test_build_codex_tool_call_uses_reply_thread(self):
         tool_name, arguments = build_codex_mcp_tool_call(
             prompt="Continue",

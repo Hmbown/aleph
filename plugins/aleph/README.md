@@ -22,10 +22,22 @@ The bundled `.mcp.json` launches Aleph with:
 - `--enable-actions` (filesystem/shell tools)
 - `--workspace-mode any`
 - `--tool-docs concise`
-- `ALEPH_SUB_QUERY_SHARE_SESSION=true`
 
-Aleph auto-detects the sub-query backend (`claude`, `codex`, `gemini`, etc.)
-based on which CLI is available. No manual backend config is needed.
+This plugin intentionally uses the `portable` profile by default: it does not
+pin a nested sub-query backend. That keeps the plugin config minimal and avoids
+embedding client-specific nested-agent assumptions into the shared wrapper.
+
+If you want a pinned nested profile, prefer the installer:
+
+```bash
+aleph-rlm install --profile claude
+# or
+aleph-rlm install --profile codex
+```
+
+The `claude` profile pins Claude sub-queries with `--model opus` and
+`--effort low`. The `codex` profile pins Codex MCP sub-queries with low
+reasoning effort and shared-session enabled.
 
 ## Claude Code Installation
 

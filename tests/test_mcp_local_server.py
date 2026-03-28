@@ -1542,3 +1542,36 @@ def test_sub_query_config_snapshot_uses_programmatic_backend(sandbox_config):
     assert snapshot["sub_query_codex"]["mode"] == "mcp"
     assert snapshot["sub_query_codex"]["model"] == "gpt-5.4"
     assert snapshot["sub_query_codex"]["reasoning_effort"] == "low"
+
+
+def test_apply_sub_query_runtime_config_updates_timeout_and_env(sandbox_config):
+    server = AlephMCPServerLocal(sandbox_config=sandbox_config)
+
+    with patch.dict(os.environ, {}, clear=True):
+        ok, message = server._apply_sub_query_runtime_config(sub_query_timeout=45.0)
+        assert os.environ["ALEPH_SUB_QUERY_TIMEOUT"] == "45.0"
+
+    assert ok is True
+    assert message == "Configuration updated."
+    assert server.sub_query_config.cli_timeout_seconds == 45.0
+    assert server.sub_query_config.api_timeout_seconds == 45.0
+
+
+def test_apply_sub_query_runtime_config_rejects_invalid_backend(sandbox_config):
+    server = AlephMCPServerLocal(sandbox_config=sandbox_config)
+
+    ok, message = server._apply_sub_query_runtime_config(sub_query_backend="bogus")
+
+    assert ok is False
+    assert "Unsupported backend" in message
+
+
+def test_sub_query_config_snapshot_uses_env_codex_profile_when_unset(sandbox_config):
+    with patch.dict(os.environ, {"ALEPH_SUB_QUERY_CODEX_PROFILE": "subquery"}, clear=True):
+        server = AlephMCPServerLocal(
+            sandbox_config=sandbox_config,
+            sub_query_config=SubQueryConfig(backend="codex", codex_profile=None),
+        )
+        snapshot = server._get_sub_query_config_snapshot()
+
+    assert snapshot["sub_query_codex"]["profile"] == "subquery"

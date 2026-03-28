@@ -106,6 +106,21 @@ async def test_exec_python_truncates_large_ctx_return_value() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reasoning_tools_public_status_and_finalize() -> None:
+    server = AlephMCPServerLocal(sandbox_config=SandboxConfig(timeout_seconds=5.0))
+    await _call_tool(server, "load_context", context="alpha\nbeta", context_id="doc")
+
+    status = await _call_tool(server, "get_status", context_id="doc", output="object")
+    assert status["context_id"] == "doc"
+    assert status["size_lines"] == 2
+
+    final = await _call_tool(server, "finalize", context_id="doc", answer="done", confidence="high")
+    assert "## Final Answer" in final
+    assert "done" in final
+    assert "**Confidence:** high" in final
+
+
+@pytest.mark.asyncio
 async def test_load_session_accepts_context_id_format_and_reports_skipped(tmp_path: Path) -> None:
     server = AlephMCPServerLocal(
         sandbox_config=SandboxConfig(timeout_seconds=5.0),

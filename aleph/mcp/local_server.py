@@ -41,7 +41,6 @@ from __future__ import annotations
 import asyncio
 import bz2
 from collections import OrderedDict
-from contextlib import AsyncExitStack
 import difflib
 import fnmatch
 import gzip
@@ -76,21 +75,47 @@ from ..repl import helpers as repl_helpers
 from ..repl.sandbox import REPLEnvironment, SandboxConfig
 from ..types import AlephResponse, ContentFormat, ContextMetadata, ContextType, ExecutionResult
 from ..sub_query import (
-    DEFAULT_CODEX_MODE,
-    DEFAULT_CODEX_MODEL,
-    DEFAULT_CODEX_REASONING_EFFORT,
     SubQueryConfig,
     detect_backend,
+)
+from ..sub_query.config import (
+    resolve_codex_mode,
+    resolve_codex_model,
+    resolve_codex_profile,
+    resolve_codex_reasoning_effort,
 )
 from ..sub_query.cli_backend import run_cli_sub_query, CLI_BACKENDS
 from ..sub_query.codex_mcp_backend import (
     build_codex_mcp_tool_call,
+    compose_sub_query_prompt,
     extract_codex_mcp_result_text,
     suppress_mcp_notification_validation_logs,
 )
 from ..sub_query.api_backend import run_api_sub_query
+from .admin_tools import register_admin_tools
+from .query_tools import register_query_tools as _register_query_tools_module
 from .recipes import estimate_recipe as _estimate_recipe
 from .recipes import validate_recipe as _validate_recipe
+from .reasoning_tools import register_reasoning_tools as _register_reasoning_tools_module
+from .remote_servers import (
+    _RemoteServerHandle,
+    close_remote_server,
+    ensure_remote_server,
+    register_remote_server,
+    remote_call_tool,
+    remote_list_tools,
+    remote_tool_allowed,
+    reset_remote_server_handle,
+)
+from .server_bootstrap import (
+    apply_server_env_overrides,
+    build_runtime_configs,
+    build_server_argument_parser,
+)
+from .sub_query_runtime import (
+    apply_sub_query_runtime_config,
+    get_sub_query_config_snapshot,
+)
 from .workspace import roots_to_workspace_root
 from .session import (
     _Evidence,
@@ -643,23 +668,6 @@ class ActionConfig:
     max_write_bytes: int = 100_000_000    # 100 MB
     workspace_root_explicit: bool = False  # True when set via CLI arg, env var, or configure()
 
-
-@dataclass
-class _RemoteServerHandle:
-    """A managed remote MCP server connection (stdio transport)."""
-
-    command: str
-    args: list[str] = field(default_factory=list)
-    cwd: Path | None = None
-    env: dict[str, str] | None = None
-    allow_tools: list[str] | None = None
-    deny_tools: list[str] | None = None
-
-    connected_at: datetime | None = None
-    session: Any | None = None  # ClientSession (kept as Any to avoid hard dependency at import time)
-    _stack: AsyncExitStack | None = None
-
-
 class AlephMCPServerLocal:
     """MCP server for local AI reasoning.
 
@@ -871,47 +879,18 @@ class AlephMCPServerLocal:
             normalized_path,
         )
 
-    def _resolved_codex_mode(self) -> str:
-        value = (
-            self.sub_query_config.codex_mode
-            or os.environ.get("ALEPH_SUB_QUERY_CODEX_MODE", "").strip().lower()
-            or DEFAULT_CODEX_MODE
-        )
-        if value in {"mcp", "server"}:
-            return "mcp"
-        return "exec"
-
-    def _resolved_codex_model(self) -> str | None:
-        value = (
-            self.sub_query_config.codex_model
-            or os.environ.get("ALEPH_SUB_QUERY_CODEX_MODEL")
-            or DEFAULT_CODEX_MODEL
-        )
-        return value.strip() if isinstance(value, str) and value.strip() else None
-
-    def _resolved_codex_reasoning_effort(self) -> str | None:
-        value = (
-            self.sub_query_config.codex_reasoning_effort
-            or os.environ.get("ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT")
-            or DEFAULT_CODEX_REASONING_EFFORT
-        )
-        return value.strip() if isinstance(value, str) and value.strip() else None
-
-    def _resolved_codex_profile(self) -> str | None:
-        value = self.sub_query_config.codex_profile or os.environ.get("ALEPH_SUB_QUERY_CODEX_PROFILE")
-        return value.strip() if isinstance(value, str) and value.strip() else None
-
     async def _ensure_internal_codex_mcp_server(self, cwd: Path | None) -> str:
         server_id = "__aleph_internal_codex__"
         handle = self._remote_servers.get(server_id)
         if handle is None:
-            handle = _RemoteServerHandle(
+            handle = register_remote_server(
+                self._remote_servers,
+                server_id,
                 command="codex",
                 args=["mcp-server", "-c", "mcp_servers={}"],
                 cwd=cwd,
                 allow_tools=["codex", "codex-reply"],
             )
-            self._remote_servers[server_id] = handle
         elif handle.cwd != cwd:
             await self._reset_remote_server_handle(handle)
             handle.cwd = cwd
@@ -932,9 +911,7 @@ class AlephMCPServerLocal:
         mcp_server_name: str,
         thread_id: str | None = None,
     ) -> tuple[bool, str, str | None]:
-        full_prompt = prompt
-        if context_slice and not mcp_server_url:
-            full_prompt = f"{prompt}\n\n---\nContext:\n{context_slice}"
+        full_prompt = compose_sub_query_prompt(prompt, context_slice)
 
         tool_name, arguments = build_codex_mcp_tool_call(
             prompt=full_prompt,
@@ -942,9 +919,11 @@ class AlephMCPServerLocal:
             mcp_server_url=mcp_server_url,
             mcp_server_name=mcp_server_name,
             trust_mcp_server=True,
-            model=self._resolved_codex_model(),
-            reasoning_effort=self._resolved_codex_reasoning_effort(),
-            profile=self._resolved_codex_profile(),
+            model=resolve_codex_model(self.sub_query_config.codex_model),
+            reasoning_effort=resolve_codex_reasoning_effort(
+                self.sub_query_config.codex_reasoning_effort
+            ),
+            profile=resolve_codex_profile(self.sub_query_config.codex_profile),
             thread_id=thread_id,
         )
 
@@ -1067,7 +1046,9 @@ class AlephMCPServerLocal:
                             f"Tools are prefixed with `mcp__{server_name}__`.]"
                         )
                     cwd = self.action_config.workspace_root if self.action_config.enabled else None
-                    if resolved_backend == "codex" and self._resolved_codex_mode() == "mcp":
+                    if resolved_backend == "codex" and resolve_codex_mode(
+                        self.sub_query_config.codex_mode
+                    ) == "mcp":
                         success, output, codex_thread_id = await self._run_internal_codex_mcp_query(
                             prompt=run_prompt,
                             context_slice=context_slice,
@@ -1088,6 +1069,8 @@ class AlephMCPServerLocal:
                             mcp_server_url=mcp_server_url,
                             mcp_server_name=server_name,
                             trust_mcp_server=True,
+                            claude_model=self.sub_query_config.claude_model,
+                            claude_effort=self.sub_query_config.claude_effort,
                             codex_mode=self.sub_query_config.codex_mode,
                             codex_model=self.sub_query_config.codex_model,
                             codex_reasoning_effort=self.sub_query_config.codex_reasoning_effort,
@@ -1248,7 +1231,9 @@ class AlephMCPServerLocal:
             if mcp_server_url is not None or not share_session:
                 try:
                     cwd = self.action_config.workspace_root if self.action_config.enabled else None
-                    if resolved_backend == "codex" and self._resolved_codex_mode() == "mcp":
+                    if resolved_backend == "codex" and resolve_codex_mode(
+                        self.sub_query_config.codex_mode
+                    ) == "mcp":
                         success, output, _thread_id = await self._run_internal_codex_mcp_query(
                             prompt=prompt,
                             context_slice=cli_context if cli_context else None,
@@ -1268,6 +1253,8 @@ class AlephMCPServerLocal:
                             mcp_server_url=mcp_server_url,
                             mcp_server_name=server_name,
                             trust_mcp_server=True,
+                            claude_model=self.sub_query_config.claude_model,
+                            claude_effort=self.sub_query_config.claude_effort,
                             codex_mode=self.sub_query_config.codex_mode,
                             codex_model=self.sub_query_config.codex_model,
                             codex_reasoning_effort=self.sub_query_config.codex_reasoning_effort,
@@ -1776,28 +1763,10 @@ class AlephMCPServerLocal:
         }
 
     def _get_sub_query_config_snapshot(self) -> dict[str, Any]:
-        backend_env = os.environ.get("ALEPH_SUB_QUERY_BACKEND", "").strip().lower()
-        configured_backend = getattr(self.sub_query_config, "backend", "auto")
-        if configured_backend and configured_backend != "auto":
-            backend_display = configured_backend
-        else:
-            backend_display = backend_env or configured_backend or "auto"
-        return {
-            "sub_query_backend": backend_display,
-            "sub_query_backend_resolved": detect_backend(self.sub_query_config),
-            "sub_query_timeout_seconds": {
-                "cli": self.sub_query_config.cli_timeout_seconds,
-                "api": self.sub_query_config.api_timeout_seconds,
-            },
-            "sub_query_share_session": _get_env_bool("ALEPH_SUB_QUERY_SHARE_SESSION", False),
-            "sub_query_codex": {
-                "mode": self._resolved_codex_mode(),
-                "model": self._resolved_codex_model(),
-                "reasoning_effort": self._resolved_codex_reasoning_effort(),
-                "profile": self._resolved_codex_profile(),
-            },
-            "context_policy": self.context_policy,
-        }
+        return get_sub_query_config_snapshot(
+            self.sub_query_config,
+            context_policy=self.context_policy,
+        )
 
     def _apply_sub_query_runtime_config(
         self,
@@ -1806,29 +1775,13 @@ class AlephMCPServerLocal:
         sub_query_timeout: float | None = None,
         sub_query_share_session: bool | None = None,
     ) -> tuple[bool, str]:
-        allowed_backends = {"auto", "api", *CLI_BACKENDS}
-
-        if sub_query_backend is not None:
-            backend = sub_query_backend.strip().lower()
-            if backend not in allowed_backends:
-                allowed_list = ", ".join(sorted(allowed_backends))
-                return False, f"Unsupported backend '{sub_query_backend}'. Choose from: {allowed_list}."
-            os.environ["ALEPH_SUB_QUERY_BACKEND"] = backend
-            self.sub_query_config.backend = backend  # type: ignore[assignment]
-
-        if sub_query_timeout is not None:
-            if sub_query_timeout <= 0:
-                return False, "sub_query_timeout must be greater than 0."
-            self.sub_query_config.cli_timeout_seconds = sub_query_timeout
-            self.sub_query_config.api_timeout_seconds = sub_query_timeout
-            os.environ["ALEPH_SUB_QUERY_TIMEOUT"] = str(sub_query_timeout)
-
-        if sub_query_share_session is not None:
-            os.environ["ALEPH_SUB_QUERY_SHARE_SESSION"] = (
-                "true" if sub_query_share_session else "false"
-            )
-
-        return True, "Configuration updated."
+        return apply_sub_query_runtime_config(
+            self.sub_query_config,
+            cli_backends=CLI_BACKENDS,
+            sub_query_backend=sub_query_backend,
+            sub_query_timeout=sub_query_timeout,
+            sub_query_share_session=sub_query_share_session,
+        )
 
     def _inject_repl_config_helpers(self, session: _Session) -> None:
         def set_backend(backend: str) -> str:
@@ -1893,92 +1846,20 @@ class AlephMCPServerLocal:
         self._inject_repl_config_helpers(session)
 
     async def _ensure_remote_server(self, server_id: str) -> tuple[bool, str | _RemoteServerHandle]:
-        """Ensure a remote MCP server is connected and initialized."""
-        if server_id not in self._remote_servers:
-            return False, f"Error: Remote server '{server_id}' not registered."
-
-        handle = self._remote_servers[server_id]
-        if handle.session is not None:
-            return True, handle
-
-        try:
-            from mcp.client.session import ClientSession
-            from mcp.client.stdio import StdioServerParameters, stdio_client
-        except Exception as e:  # pragma: no cover
-            return False, f"Error: MCP client support is not available: {e}"
-
-        params = StdioServerParameters(
-            command=handle.command,
-            args=handle.args,
-            env=handle.env,
-            cwd=str(handle.cwd) if handle.cwd is not None else None,
-        )
-
-        stack = AsyncExitStack()
-        try:
-            read_stream, write_stream = await stack.enter_async_context(stdio_client(params))
-            session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
-            await session.initialize()
-        except Exception as e:
-            await stack.aclose()
-            return False, f"Error: Failed to connect to remote server '{server_id}': {e}"
-
-        handle._stack = stack
-        handle.session = session
-        handle.connected_at = datetime.now()
-        return True, handle
+        return await ensure_remote_server(self._remote_servers, server_id)
 
     async def _reset_remote_server_handle(self, handle: _RemoteServerHandle) -> None:
-        """Close and clear a remote server handle without removing registration."""
-        if handle._stack is not None:
-            try:
-                await handle._stack.aclose()
-            finally:
-                handle._stack = None
-                handle.session = None
-                handle.connected_at = None
-        else:
-            handle.session = None
-            handle.connected_at = None
+        await reset_remote_server_handle(handle)
 
     async def _close_remote_server(self, server_id: str) -> tuple[bool, str]:
-        """Close a remote server connection and terminate the subprocess."""
-        if server_id not in self._remote_servers:
-            return False, f"Error: Remote server '{server_id}' not registered."
-
-        handle = self._remote_servers[server_id]
-        await self._reset_remote_server_handle(handle)
-        return True, f"Closed remote server '{server_id}'."
+        return await close_remote_server(self._remote_servers, server_id)
 
     async def _remote_list_tools(self, server_id: str) -> tuple[bool, Any]:
-        ok, res = await self._ensure_remote_server(server_id)
-        if not ok:
-            return False, res
-        if not isinstance(res, _RemoteServerHandle):
-            return False, res
-        handle = res
-        session = handle.session
-        if session is None:
-            return False, f"Error: Remote server '{server_id}' is not connected."
-        try:
-            result = await session.list_tools()
-            return True, _to_jsonable(result)
-        except Exception:
-            await self._reset_remote_server_handle(handle)
-            ok, res = await self._ensure_remote_server(server_id)
-            if not ok:
-                return False, f"Error: list_tools failed and reconnect failed: {res}"
-            if not isinstance(res, _RemoteServerHandle):
-                return False, res
-            handle = res
-            session = handle.session
-            if session is None:
-                return False, f"Error: Remote server '{server_id}' is not connected."
-            try:
-                result = await session.list_tools()
-                return True, _to_jsonable(result)
-            except Exception as e2:
-                return False, f"Error: list_tools failed after reconnect: {e2}"
+        return await remote_list_tools(
+            self._remote_servers,
+            server_id,
+            to_jsonable=_to_jsonable,
+        )
 
     async def _remote_call_tool(
         self,
@@ -1987,60 +1868,18 @@ class AlephMCPServerLocal:
         arguments: dict[str, Any] | None = None,
         timeout_seconds: float | None = DEFAULT_REMOTE_TOOL_TIMEOUT_SECONDS,
     ) -> tuple[bool, Any]:
-        ok, res = await self._ensure_remote_server(server_id)
-        if not ok:
-            return False, res
-        if not isinstance(res, _RemoteServerHandle):
-            return False, res
-        handle = res
-
-        if not self._remote_tool_allowed(handle, tool):
-            return False, f"Error: Tool '{tool}' is not allowed for remote server '{server_id}'."
-
-        from datetime import timedelta
-
-        read_timeout = timedelta(
-            seconds=float(timeout_seconds or DEFAULT_REMOTE_TOOL_TIMEOUT_SECONDS)
+        return await remote_call_tool(
+            self._remote_servers,
+            server_id,
+            tool,
+            arguments,
+            timeout_seconds=timeout_seconds,
+            default_timeout_seconds=DEFAULT_REMOTE_TOOL_TIMEOUT_SECONDS,
+            to_jsonable=_to_jsonable,
         )
-        session = handle.session
-        if session is None:
-            return False, f"Error: Remote server '{server_id}' is not connected."
-        try:
-            result = await session.call_tool(
-                name=tool,
-                arguments=arguments or {},
-                read_timeout_seconds=read_timeout,
-            )
-        except Exception:
-            await self._reset_remote_server_handle(handle)
-            ok, res = await self._ensure_remote_server(server_id)
-            if not ok:
-                return False, f"Error: call_tool failed and reconnect failed: {res}"
-            if not isinstance(res, _RemoteServerHandle):
-                return False, res
-            handle = res
-            session = handle.session
-            if session is None:
-                return False, f"Error: Remote server '{server_id}' is not connected."
-            try:
-                result = await session.call_tool(
-                    name=tool,
-                    arguments=arguments or {},
-                    read_timeout_seconds=read_timeout,
-                )
-            except Exception as e2:
-                return False, f"Error: call_tool failed after reconnect: {e2}"
-
-        result_jsonable = _to_jsonable(result)
-
-        return True, result_jsonable
 
     def _remote_tool_allowed(self, handle: _RemoteServerHandle, tool_name: str) -> bool:
-        if handle.allow_tools is not None:
-            return tool_name in handle.allow_tools
-        if handle.deny_tools is not None and tool_name in handle.deny_tools:
-            return False
-        return True
+        return remote_tool_allowed(handle, tool_name)
 
     def _format_context_loaded(
         self,
@@ -3020,978 +2859,17 @@ class AlephMCPServerLocal:
         }
 
     def _register_query_tools(self) -> None:
-        _tool = self._tool_decorator
-
-        @_tool()
-        async def peek_context(
-            start: int = 0,
-            end: int | None = None,
-            unit: Literal["chars", "lines"] = "chars",
-            record_evidence: bool = False,
-            context_id: str = "default",
-        ) -> str:
-            """View a portion of the loaded context."""
-            if context_id not in self._sessions:
-                return f"Error: No context loaded with ID '{context_id}'."
-
-            session = self._sessions[context_id]
-            repl = session.repl
-            session.iterations += 1
-
-            fn = _get_repl_helper(repl, "peek") if unit == "chars" else _get_repl_helper(repl, "lines")
-            if not callable(fn):
-                return f"Error: {unit} helper is not available"
-
-            try:
-                if unit == "lines":
-                    # Backward compatibility: preserve historical 0-based slices
-                    # when callers pass start=0 under 1-based sessions.
-                    if session.line_number_base == 1 and start == 0:
-                        start_idx = 0
-                        end_idx = end
-                    else:
-                        start_idx = _to_internal_line_index(start, session.line_number_base)
-                        end_idx = _to_internal_line_index(end, session.line_number_base)
-                    res = fn(start_idx, end_idx)
-                else:
-                    res = fn(start, end)
-            except Exception as e:
-                return f"Error: {e}"
-
-            if record_evidence and res:
-                line_range = None
-                if unit == "lines":
-                    line_range = (start, end if end is not None else session.meta.size_lines)
-                session.evidence.append(
-                    _Evidence(
-                        source="peek",
-                        line_range=line_range,
-                        pattern=None,
-                        note=f"peek {unit} {start}:{end}",
-                        snippet=str(res)[:200],
-                    )
-                )
-
-            res_text, _ = self._truncate_tool_text(str(res))
-            return res_text
-
-        @_tool()
-        async def search_context(
-            pattern: str,
-            context_id: str = "default",
-            context_lines: int = 2,
-            max_results: int = 10,
-            record_evidence: bool = True,
-            evidence_mode: Literal["summary", "all"] = "summary",
-        ) -> str:
-            """Search the context using regex patterns."""
-            if context_id not in self._sessions:
-                return f"Error: No context loaded with ID '{context_id}'."
-
-            session = self._sessions[context_id]
-            repl = session.repl
-            session.iterations += 1
-
-            fn = _get_repl_helper(repl, "search")
-            if not callable(fn):
-                return "Error: search() helper is not available"
-
-            try:
-                results = fn(pattern, context_lines=context_lines, max_results=max_results)
-            except Exception as e:
-                return f"Error: {e}"
-
-            if not isinstance(results, list):
-                return f"Error: search() returned unexpected type {type(results)}"
-
-            if record_evidence and results:
-                if evidence_mode == "summary":
-                    session.evidence.append(
-                        _Evidence(
-                            source="search",
-                            line_range=None,
-                            pattern=pattern,
-                            note=f"{len(results)} match(es) (summary)",
-                            snippet=str(results[0].get("match", ""))[:200] if results else "",
-                        )
-                    )
-                else:
-                    for r in results:
-                        if isinstance(r, dict):
-                            line_no = int(r.get("line_num", 0))
-                            session.evidence.append(
-                                _Evidence(
-                                    source="search",
-                                    line_range=(line_no, line_no),
-                                    pattern=pattern,
-                                    note="match",
-                                    snippet=str(r.get("match", ""))[:200],
-                                )
-                            )
-
-            if not results:
-                return f"No matches found for `{pattern}`."
-
-            shown_results, hits_truncated = self._limit_json_items(
-                results,
-                max_chars=self.max_tool_response_chars,
-            )
-            res = [f"## Search Results for `{pattern}`\n"]
-            res.append(f"Found {len(results)} match(es) (line numbers are {session.line_number_base}-based):\n")
-            if hits_truncated:
-                res.append(
-                    f"Showing first {len(shown_results)} result(s) due to response size limit.\n"
-                )
-            for r in shown_results:
-                if isinstance(r, dict):
-                    res.append(f"**Line {r.get('line_num')}:**")
-                    res.append(f"```\n{r.get('context')}\n```")
-            text, _ = self._truncate_tool_text("\n".join(res))
-            return text
-
-        @_tool()
-        async def semantic_search(
-            query: str,
-            context_id: str = "default",
-            chunk_size: int = 1000,
-            overlap: int = 100,
-            top_k: int = 5,
-            embed_dim: int = 256,
-            record_evidence: bool = True,
-            output: Literal["markdown", "json", "object"] = "markdown",
-        ) -> str | dict[str, Any]:
-            """Semantic search over the context using lightweight embeddings."""
-            if context_id not in self._sessions:
-                return f"Error: No context loaded with ID '{context_id}'."
-
-            session = self._sessions[context_id]
-            repl = session.repl
-            session.iterations += 1
-
-            fn = _get_repl_helper(repl, "semantic_search")
-            if not callable(fn):
-                return "Error: semantic_search() helper is not available"
-
-            try:
-                results = fn(
-                    query,
-                    chunk_size=chunk_size,
-                    overlap=overlap,
-                    top_k=top_k,
-                    embed_dim=embed_dim,
-                )
-            except Exception as e:
-                return f"Error: {e}"
-
-            if not isinstance(results, list):
-                return f"Error: semantic_search() returned unexpected type {type(results)}"
-
-            if record_evidence and results:
-                session.evidence.append(
-                    _Evidence(
-                        source="search",
-                        line_range=None,
-                        pattern=None,
-                        note=f"semantic search: {query}",
-                        snippet=str(results[0].get("preview", ""))[:200] if results else "",
-                    )
-                )
-
-            shown_results, hits_truncated = self._limit_json_items(
-                results,
-                max_chars=self.max_tool_response_chars,
-            )
-            if output == "object":
-                payload: dict[str, Any] = {"results": shown_results}
-                if hits_truncated:
-                    payload["truncated"] = True
-                    payload["total_results"] = len(results)
-                return payload
-            if output == "json":
-                payload = {"results": shown_results}
-                if hits_truncated:
-                    payload["truncated"] = True
-                    payload["total_results"] = len(results)
-                text, _ = self._truncate_tool_text(json.dumps(payload, indent=2))
-                return text
-
-            if not results:
-                return f"No semantic matches found for `{query}`."
-
-            res = [f"## Semantic Results for `{query}`\n"]
-            if hits_truncated:
-                res.append(
-                    f"Showing first {len(shown_results)} result(s) due to response size limit.\n"
-                )
-            for r in shown_results:
-                if isinstance(r, dict):
-                    score = r.get("score", 0.0)
-                    text = r.get("preview", "")
-                    res.append(f"### Score: {score:.4f}")
-                    res.append(f"```\n{text}\n```")
-            text, _ = self._truncate_tool_text("\n".join(res))
-            return text
-
-        @_tool()
-        async def exec_python(
-            code: str,
-            context_id: str = "default",
-        ) -> str | dict[str, Any]:
-            """Execute Python code in the sandboxed REPL."""
-            if context_id not in self._sessions:
-                return f"Error: No context loaded with ID '{context_id}'."
-
-            session = self._sessions[context_id]
-            repl = session.repl
-            session.iterations += 1
-
-            try:
-                result = await repl.execute_async(code)
-            except Exception as e:
-                return f"Error: {e}"
-
-            return self._format_execution_result(result)
-
-        @_tool()
-        async def get_variable(
-            name: str,
-            context_id: str = "default",
-        ) -> Any:
-            """Retrieve a variable from the REPL namespace."""
-            if context_id not in self._sessions:
-                return f"Error: No context loaded with ID '{context_id}'."
-            if name == "ctx" and self.context_policy == "isolated":
-                return (
-                    f"Blocked: get_variable('{name}') is restricted under isolated policy.\n"
-                    "Alternatives:\n"
-                    "  - Use exec_python(code='result = len(ctx)') then get_variable('result')\n"
-                    "  - Use peek_context() to view bounded ranges\n"
-                    "  - Use search_context() to find specific patterns\n"
-                    "Tip: switch to trusted policy via configure(context_policy='trusted') if appropriate."
-                )
-
-            session = self._sessions[context_id]
-            return self._format_variable_value(name, session.repl.get_variable(name))
+        _register_query_tools_module(
+            self,
+            get_repl_helper=_get_repl_helper,
+            to_internal_line_index=_to_internal_line_index,
+        )
 
     def _register_reasoning_tools(self) -> None:
-        _tool = self._tool_decorator
-
-        @_tool()
-        async def think(
-            question: str,
-            context_slice: str | None = None,
-            context_id: str = "default",
-        ) -> str:
-            """Structure a reasoning sub-step.
-
-            Use this to state your plan, record an observation, or ask a sub-question
-            before taking an action. This helps structure the loop.
-
-            Args:
-                question: The reasoning step, observation, or sub-question
-                context_slice: Optional snippet of context relevant to this step
-                context_id: Context identifier
-            """
-            if context_id not in self._sessions:
-                return f"Error: No context loaded with ID '{context_id}'."
-
-            session = self._sessions[context_id]
-            session.iterations += 1
-
-            # Log to internal reasoning trace
-            log_entry = {
-                "iteration": session.iterations,
-                "question": question,
-                "context_slice": context_slice[:200] if context_slice else None,
-                "timestamp": datetime.now().isoformat(),
-            }
-            session.repl._namespace.setdefault("_reasoning_trace", []).append(log_entry)  # type: ignore
-
-            res = [
-                "## Reasoning Step",
-                "",
-                f"**Question:** {question}",
-            ]
-            if context_slice:
-                res.append("\n---\n\n*Context snippet captured in internal trace (not echoed to avoid context bloat).*")
-
-            res.append("\n---\n\n**Your task:** Reason through this step-by-step. Consider:")
-            res.append("1. What information do you have?")
-            res.append("2. What can you infer?")
-            res.append("3. What's the answer to this sub-question?")
-            res.append("\n*After reasoning, use `exec_python` to verify or `finalize` if done.*")
-
-            return "\n".join(res)
-
-        @_tool()
-        async def tasks(
-            action: Literal["list", "add", "update", "clear"] = "list",
-            task_id: str | None = None,
-            description: str | None = None,
-            status: Literal["todo", "done", "blocked"] = "todo",
-            context_id: str = "default",
-        ) -> str | dict[str, Any]:
-            """Track tasks attached to a context."""
-            if context_id not in self._sessions:
-                return f"Error: No context loaded with ID '{context_id}'."
-
-            session = self._sessions[context_id]
-            session.iterations += 1
-            tasks_list: list[dict[str, Any]] = session.repl._namespace.setdefault("_tasks", [])  # type: ignore
-
-            if action == "add" and description:
-                new_id = task_id or f"T{len(tasks_list) + 1}"
-                tasks_list.append({"id": new_id, "description": description, "status": status})
-                return f"Task {new_id} added."
-
-            if action == "update" and task_id:
-                for t in tasks_list:
-                    if t["id"] == task_id:
-                        if description:
-                            t["description"] = description
-                        t["status"] = status
-                        return f"Task {task_id} updated."
-                return f"Error: Task {task_id} not found."
-
-            if action == "clear":
-                session.repl._namespace["_tasks"] = []
-                return "All tasks cleared."
-
-            # Default: list
-            if not tasks_list:
-                return "No tasks tracked for this context."
-
-            res = ["## Task List\n"]
-            for t in tasks_list:
-                icon = "✅" if t["status"] == "done" else "⏳" if t["status"] == "todo" else "🚫"
-                res.append(f"- {icon} **{t['id']}**: {t['description']}")
-            return "\n".join(res)
-
-        @_tool()
-        async def get_status(
-            context_id: str = "default",
-            output: Literal["markdown", "json", "object"] = "markdown",
-        ) -> str | dict[str, Any]:
-            """Session state."""
-            if context_id not in self._sessions:
-                return f"Error: No context loaded with ID '{context_id}'."
-
-            session = self._sessions[context_id]
-            tasks_list: list[dict[str, Any]] = session.repl._namespace.get("_tasks", [])  # type: ignore
-            status = {
-                "context_id": context_id,
-                "iterations": session.iterations,
-                "evidence_count": len(session.evidence),
-                "tasks_count": len(tasks_list),
-                "variables": [k for k in session.repl._namespace.keys() if not k.startswith("_")],
-                "size_chars": session.meta.size_chars,
-                "size_lines": session.meta.size_lines,
-                "workspace_root": str(self.action_config.workspace_root),
-                "workspace_root_source": self._workspace_root_source,
-                "context_policy": self.context_policy,
-                "auto_memory_pack": self.context_policy != "isolated",
-            }
-
-            if output == "object":
-                return status
-            if output == "json":
-                return json.dumps(status, indent=2)
-
-            res = [f"## Session Status: {context_id}\n"]
-            res.append(f"- **Iterations**: {session.iterations}")
-            res.append(f"- **Evidence Items**: {len(session.evidence)}")
-            res.append(f"- **Tracked Tasks**: {len(session.repl._namespace.get('_tasks', []))}")  # type: ignore
-            res.append(f"- **User Variables**: {', '.join(status['variables']) or 'None'}")  # type: ignore
-            res.append(f"- **Context Size**: {session.meta.size_chars:,} chars ({session.meta.size_lines:,} lines)")
-            res.append(f"- **Workspace Root**: {self.action_config.workspace_root} ({self._workspace_root_source})")
-            res.append(f"- **Context Policy**: {self.context_policy}")
-            return "\n".join(res)
-
-        @_tool()
-        async def get_evidence(
-            limit: int = 20,
-            offset: int = 0,
-            source: Literal["any", "search", "peek", "exec", "manual", "action"] = "any",
-            context_id: str = "default",
-            output: Literal["markdown", "json", "object"] = "markdown",
-        ) -> str | dict[str, Any]:
-            """Retrieve collected evidence/citations for a session."""
-            if context_id not in self._sessions:
-                return f"Error: No context loaded with ID '{context_id}'."
-
-            session = self._sessions[context_id]
-            filtered = session.evidence
-            if source != "any":
-                filtered = [e for e in filtered if e.source == source]
-
-            count = len(filtered)
-            window = filtered[offset : offset + limit]
-
-            items = []
-            for ev in window:
-                items.append({
-                    "source": ev.source,
-                    "line_range": ev.line_range,
-                    "pattern": ev.pattern,
-                    "note": ev.note,
-                    "snippet": ev.snippet,
-                })
-
-            if output == "object":
-                return {"total": count, "items": items}
-            if output == "json":
-                return json.dumps({"total": count, "items": items}, indent=2)
-
-            if not items:
-                return "No evidence found matching criteria."
-
-            res = [f"## Evidence Log (Total: {count})\n"]
-            for i, item in enumerate(items, offset + 1):
-                source_info = f"[{item['source']}]"
-                lr = item["line_range"]
-                if isinstance(lr, (list, tuple)) and len(lr) >= 2:
-                    source_info += f" lines {lr[0]}-{lr[1]}"
-                if item["pattern"]:
-                    source_info += f" pattern: `{item['pattern']}`"
-                if item["note"]:
-                    source_info += f" note: {item['note']}"
-                res.append(f"{i}. {source_info}: \"{item['snippet'][:100]}...\"")  # type: ignore
-            return "\n".join(res)
-
-        @_tool()
-        async def finalize(
-            answer: str,
-            confidence: Literal["high", "medium", "low"] = "medium",
-            reasoning_summary: str | None = None,
-            context_id: str = "default",
-        ) -> str:
-            """Mark the task complete with your final answer."""
-            parts = ["## Final Answer", "", answer]
-            if reasoning_summary:
-                parts.extend(["", "---", "", f"**Reasoning:** {reasoning_summary}"])
-
-            if context_id in self._sessions:
-                session = self._sessions[context_id]
-                parts.extend(["", f"*Completed after {session.iterations} iterations.*"])
-
-            parts.append(f"\n**Confidence:** {confidence}")
-
-            if context_id in self._sessions:
-                session = self._sessions[context_id]
-                if session.evidence:
-                    parts.extend(["", "---", "", "### Evidence Citations"])
-                    parts.append(f"*Line numbers are {'1-based' if session.line_number_base == 1 else '0-based'}.*")
-                    for i, ev in enumerate(session.evidence[-10:], 1):
-                        source_info = f"[{ev.source}]"
-                        if ev.line_range:
-                            source_info += f" lines {ev.line_range[0]}-{ev.line_range[1]}"
-                        if ev.pattern:
-                            source_info += f" pattern: `{ev.pattern}`"
-                        if ev.note:
-                            source_info += f" note: {ev.note}"
-                        parts.append(f"{i}. {source_info}: \"{ev.snippet[:80]}...\"" if len(ev.snippet) > 80 else f"{i}. {source_info}: \"{ev.snippet}\"")
-
-            self._auto_save_memory_pack()
-            return "\n".join(parts)
-
-        @_tool()
-        async def evaluate_progress(
-            current_understanding: str,
-            remaining_questions: list[str] | str | None = None,
-            confidence_score: float = 0.5,
-            context_id: str = "default",
-        ) -> str:
-            """Self-evaluate your progress."""
-            if context_id not in self._sessions:
-                return f"Error: No context loaded with ID '{context_id}'."
-
-            session = self._sessions[context_id]
-            session.iterations += 1
-
-            res = ["## Progress Evaluation", "", f"**Current Understanding:** {current_understanding}", f"\n**Confidence Score:** {confidence_score:.2f}"]
-            if remaining_questions:
-                res.append("\n**Remaining Questions:**")
-                if isinstance(remaining_questions, str):
-                    res.append(f"- {remaining_questions}")
-                else:
-                    for q in remaining_questions:
-                        res.append(f"- {q}")
-
-            if confidence_score > 0.9:
-                res.append("\n*Confidence is high. Consider finalizing if the goal is met.*")
-            elif confidence_score < 0.3:
-                res.append("\n*Confidence is low. Try a different search pattern or tool.*")
-
-            return "\n".join(res)
-
-        @_tool()
-        async def summarize_so_far(
-            context_id: str = "default",
-            include_evidence: bool = True,
-            include_variables: bool = True,
-            clear_history: bool = False,
-        ) -> str:
-            """Compress reasoning history to manage context window."""
-            if context_id not in self._sessions:
-                return f"Error: No context loaded with ID '{context_id}'."
-
-            session = self._sessions[context_id]
-            session.iterations += 1
-
-            summary = f"Session '{context_id}' has run for {session.iterations} iterations."
-            summary += f" Context size: {session.meta.size_chars:,} chars."
-
-            if include_evidence and session.evidence:
-                summary += f"\nEvidence collected: {len(session.evidence)} items."
-            if include_variables:
-                vars = [k for k in session.repl._namespace.keys() if not k.startswith("_")]
-                if vars:
-                    summary += f"\nVariables defined: {', '.join(vars)}."
-
-            return f"## Summary So Far\n\n{summary}\n\n*Use this summary to keep your focus sharp.*"
-
-        @_tool()
-        async def validate_recipe(
-            recipe: dict[str, Any],
-            output: Literal["markdown", "json", "object"] = "markdown",
-        ) -> str | dict[str, Any]:
-            """Validate recipe structure and return normalized payload/errors."""
-            normalized, errors = _validate_recipe(recipe)
-            payload: dict[str, Any] = {
-                "valid": not errors,
-                "errors": errors,
-            }
-            if normalized is not None:
-                payload["recipe"] = normalized
-                payload["estimate"] = _estimate_recipe(normalized)
-
-            if output == "object":
-                return payload
-            if output == "json":
-                return json.dumps(payload, indent=2)
-            if errors:
-                lines = ["## Recipe Validation", "", "**Status:** invalid", "", "**Errors:**"]
-                lines.extend(f"- {err}" for err in errors)
-                return "\n".join(lines)
-            return "## Recipe Validation\n\n**Status:** valid"
-
-        @_tool()
-        async def estimate_recipe(
-            recipe: dict[str, Any],
-            context_id: str | None = None,
-            output: Literal["markdown", "json", "object"] = "markdown",
-        ) -> str | dict[str, Any]:
-            """Static estimate for recipe execution cost and shape."""
-            normalized, errors = _validate_recipe(recipe)
-            if errors or normalized is None:
-                return _format_error(
-                    "Invalid recipe: " + "; ".join(errors),
-                    output=output,
-                )
-
-            estimate = _estimate_recipe(normalized)
-            resolved_context_id = context_id or normalized["context_id"]
-            payload: dict[str, Any] = {
-                "context_id": resolved_context_id,
-                "estimate": estimate,
-                "budget": normalized["budget"],
-            }
-            if resolved_context_id in self._sessions:
-                session = self._sessions[resolved_context_id]
-                payload["context_size"] = {
-                    "chars": session.meta.size_chars,
-                    "lines": session.meta.size_lines,
-                }
-
-            if output == "object":
-                return payload
-            if output == "json":
-                return json.dumps(payload, indent=2)
-            lines = [
-                "## Recipe Estimate",
-                "",
-                f"- Context: `{resolved_context_id}`",
-                f"- Steps: {estimate['step_count']}",
-                f"- Projected sub-queries: {estimate['projected_sub_queries']}",
-                f"- Projected max search hits: {estimate['projected_max_search_hits']}",
-            ]
-            warnings = estimate.get("warnings", [])
-            if warnings:
-                lines.append("")
-                lines.append("**Warnings:**")
-                lines.extend(f"- {w}" for w in warnings)
-            return "\n".join(lines)
-
-        @_tool()
-        async def run_recipe(
-            recipe: dict[str, Any],
-            context_id: str | None = None,
-            dry_run: bool = False,
-            output: Literal["markdown", "json", "object"] = "markdown",
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> str | dict[str, Any]:
-            """Execute a declarative recipe pipeline."""
-            _progress_cb = ctx.report_progress if ctx is not None else None
-            ok, payload = await self._execute_recipe(
-                recipe=recipe,
-                context_id_override=context_id,
-                dry_run=dry_run,
-                progress_callback=_progress_cb,
-            )
-            full_payload: dict[str, Any] = {"success": ok, **payload}
-            if output == "object":
-                return full_payload
-            if output == "json":
-                return json.dumps(full_payload, indent=2)
-            if not ok:
-                message = payload.get("error")
-                if not message and "errors" in payload:
-                    message = "; ".join(str(e) for e in payload.get("errors", []))
-                return _format_error(str(message or "Recipe execution failed"), output=output)
-
-            trace = payload.get("trace", [])
-            lines = [
-                "## Recipe Run",
-                "",
-                f"- Context: `{payload.get('context_id')}`",
-                f"- Steps executed: {len(trace)}",
-                f"- Sub-queries used: {payload.get('sub_queries_used', 0)}",
-                "",
-                "**Final Value Preview:**",
-                "```",
-                self._recipe_preview(payload.get("value")),
-                "```",
-            ]
-            return "\n".join(lines)
-
-        @_tool()
-        async def compile_recipe(
-            code: str,
-            context_id: str = "default",
-            output: Literal["markdown", "json", "object"] = "markdown",
-        ) -> str | dict[str, Any]:
-            """Compile Recipe DSL code into a validated recipe payload."""
-            ok, payload = await self._compile_recipe_code(code=code, context_id=context_id)
-            full_payload: dict[str, Any] = {"success": ok, **payload}
-            if output == "object":
-                return full_payload
-            if output == "json":
-                return json.dumps(full_payload, indent=2)
-            if not ok:
-                return _format_error(str(payload.get("error", "Recipe compile failed")), output=output)
-
-            recipe_payload = payload.get("recipe", {})
-            estimate = payload.get("estimate", {})
-            lines = [
-                "## Recipe Compile",
-                "",
-                f"- Context: `{context_id}`",
-                f"- Steps: {estimate.get('step_count', 0)}",
-                f"- Projected sub-queries: {estimate.get('projected_sub_queries', 0)}",
-                "",
-                "**Recipe JSON:**",
-                "```json",
-                json.dumps(recipe_payload, indent=2),
-                "```",
-            ]
-            return "\n".join(lines)
-
-        @_tool()
-        async def run_recipe_code(
-            code: str,
-            context_id: str = "default",
-            dry_run: bool = False,
-            output: Literal["markdown", "json", "object"] = "markdown",
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> str | dict[str, Any]:
-            """Compile Recipe DSL code and execute it."""
-            ok_compile, compile_payload = await self._compile_recipe_code(
-                code=code,
-                context_id=context_id,
-            )
-            if not ok_compile:
-                if output == "object":
-                    return {"success": False, **compile_payload}
-                if output == "json":
-                    return json.dumps({"success": False, **compile_payload}, indent=2)
-                return _format_error(
-                    str(compile_payload.get("error", "Recipe compile failed")),
-                    output=output,
-                )
-
-            _progress_cb = ctx.report_progress if ctx is not None else None
-            compiled_recipe = cast(dict[str, Any], compile_payload["recipe"])
-            ok_run, run_payload = await self._execute_recipe(
-                recipe=compiled_recipe,
-                context_id_override=context_id,
-                dry_run=dry_run,
-                progress_callback=_progress_cb,
-            )
-            full_payload = {
-                "success": ok_run,
-                "compiled": compile_payload,
-                "run": run_payload,
-            }
-            if output == "object":
-                return full_payload
-            if output == "json":
-                return json.dumps(full_payload, indent=2)
-            if not ok_run:
-                return _format_error(
-                    str(run_payload.get("error", "Recipe execution failed")),
-                    output=output,
-                )
-
-            trace = run_payload.get("trace", [])
-            lines = [
-                "## Recipe Code Run",
-                "",
-                f"- Context: `{run_payload.get('context_id')}`",
-                f"- Steps executed: {len(trace)}",
-                f"- Sub-queries used: {run_payload.get('sub_queries_used', 0)}",
-                "",
-                "**Final Value Preview:**",
-                "```",
-                self._recipe_preview(run_payload.get("value")),
-                "```",
-            ]
-            return "\n".join(lines)
+        _register_reasoning_tools_module(self, format_error=_format_error)
 
     def _register_mcp_tools(self) -> None:
-        _tool = self._tool_decorator
-
-        @_tool()
-        async def configure(
-            sub_query_backend: Literal["api", "claude", "codex", "gemini", "kimi", "auto"] | None = None,
-            sub_query_share_session: bool | None = None,
-            sub_query_timeout: float | None = None,
-            max_cmd_seconds: float | None = None,
-            sandbox_timeout: float | None = None,
-            max_recipe_concurrency: int | None = None,
-            tool_docs_mode: Literal["concise", "full"] | None = None,
-            context_policy: Literal["trusted", "isolated"] | None = None,
-            workspace_root: str | None = None,
-            output_feedback: Literal["full", "metadata"] | None = None,
-        ) -> str:
-            """Update runtime configuration.
-
-            Args:
-                sub_query_backend: Backend for sub-queries (kimi, claude, codex, gemini, api, auto).
-                sub_query_share_session: Share live MCP session with CLI sub-agents.
-                sub_query_timeout: Timeout in seconds for sub-query CLI/API calls.
-                max_cmd_seconds: Timeout for shell commands (run_command).
-                sandbox_timeout: Timeout in seconds for exec_python sandbox execution.
-                max_recipe_concurrency: Max parallel map_sub_query tasks in recipe execution.
-                tool_docs_mode: Tool documentation verbosity (concise or full).
-                context_policy: Context handling policy (trusted or isolated).
-                workspace_root: Override workspace root for action tools.
-                output_feedback: RLM output feedback mode (full or metadata).
-            """
-            ok, msg = self._apply_sub_query_runtime_config(
-                sub_query_backend=sub_query_backend,
-                sub_query_timeout=sub_query_timeout,
-                sub_query_share_session=sub_query_share_session,
-            )
-            if not ok:
-                return msg
-            if max_cmd_seconds is not None:
-                self.action_config.max_cmd_seconds = max_cmd_seconds
-            if sandbox_timeout is not None:
-                if sandbox_timeout <= 0:
-                    return "sandbox_timeout must be greater than 0."
-                for session in self._sessions.values():
-                    session.repl.config.timeout_seconds = sandbox_timeout
-                self.sandbox_config.timeout_seconds = sandbox_timeout
-            if max_recipe_concurrency is not None:
-                if max_recipe_concurrency <= 0:
-                    return "max_recipe_concurrency must be greater than 0."
-                self.max_recipe_concurrency = max_recipe_concurrency
-                os.environ["ALEPH_MAX_RECIPE_CONCURRENCY"] = str(max_recipe_concurrency)
-            if tool_docs_mode:
-                self.tool_docs_mode = tool_docs_mode
-            if context_policy is not None:
-                old_policy = self.context_policy
-                self.context_policy = context_policy
-                self.action_config.context_policy = context_policy
-                os.environ["ALEPH_CONTEXT_POLICY"] = context_policy
-                if old_policy != context_policy:
-                    if context_policy == "isolated":
-                        return (
-                            f"Context policy changed: {old_policy} -> isolated.\n"
-                            "Effect: auto memory-pack load/save disabled, "
-                            "get_variable('ctx') blocked, session save/load requires confirm=true.\n"
-                            "Use exec_python + get_variable for derived results, or switch back "
-                            "with configure(context_policy='trusted')."
-                        )
-                    else:
-                        return (
-                            f"Context policy changed: {old_policy} -> trusted.\n"
-                            "Full access restored: auto memory-packs, get_variable('ctx'), "
-                            "session save/load without confirm."
-                        )
-            if workspace_root is not None:
-                p = Path(workspace_root).expanduser().resolve()
-                self.action_config.workspace_root = p
-                self.action_config.workspace_root_explicit = True
-                self._workspace_root_source = "explicit"
-            if output_feedback is not None:
-                self.output_feedback = output_feedback
-                os.environ["ALEPH_OUTPUT_FEEDBACK"] = output_feedback
-
-            return "Configuration updated. Re-run `get_status` to see current values."
-
-        @_tool()
-        async def add_remote_server(
-            server_id: str,
-            command: str,
-            args: list[str] | None = None,
-            env: dict[str, str] | None = None,
-            cwd: str | None = None,
-            allow_tools: list[str] | None = None,
-            deny_tools: list[str] | None = None,
-            connect: bool = True,
-            confirm: bool = False,
-            output: Literal["markdown", "json", "object"] = "markdown",
-        ) -> str | dict[str, Any]:
-            """Register a remote MCP server (stdio transport)."""
-            err = self._require_actions(confirm)
-            if err:
-                return _format_error(err, output=output)
-
-            handle = _RemoteServerHandle(
-                command=command,
-                args=args or [],
-                env=env,
-                cwd=Path(cwd) if cwd else None,
-                allow_tools=allow_tools,
-                deny_tools=deny_tools,
-            )
-            self._remote_servers[server_id] = handle
-
-            if connect:
-                success, error_msg = await self._ensure_remote_server(server_id)
-                if not success:
-                    return _format_error(str(error_msg), output=output)
-
-            msg = f"Remote server '{server_id}' registered."
-            if output == "object":
-                return {"status": "success", "id": server_id}
-            if output == "json":
-                return json.dumps({"status": "success", "id": server_id})
-            return msg
-
-        @_tool()
-        async def list_remote_servers(
-            output: Literal["json", "markdown", "object"] = "json",
-        ) -> str | dict[str, Any]:
-            """List all registered remote MCP servers."""
-            items = []
-            for sid, handle in self._remote_servers.items():
-                items.append({
-                    "id": sid,
-                    "connected": handle.session is not None,
-                    "command": handle.command,
-                    "connected_at": handle.connected_at.isoformat() if handle.connected_at else None,
-                })
-
-            if output == "object":
-                return {"count": len(items), "items": items}
-            if output == "json":
-                return json.dumps({"count": len(items), "items": items}, indent=2)
-
-            res = [f"Found {len(items)} remote server(s):\n"]
-            for item in items:
-                status = "connected" if item["connected"] else "not connected"
-                res.append(f"- **{item['id']}** ({status}): `{item['command']}`")
-            return "\n".join(res)
-
-        @_tool()
-        async def list_remote_tools(
-            server_id: str,
-            confirm: bool = False,
-            output: Literal["json", "markdown", "object"] = "json",
-        ) -> str | dict[str, Any]:
-            """List tools available on a remote MCP server."""
-            success, handle_or_err = await self._ensure_remote_server(server_id)
-            if not success:
-                return _format_error(str(handle_or_err), output=output)
-
-            handle = cast(_RemoteServerHandle, handle_or_err)
-            assert handle.session is not None
-            tools = await handle.session.list_tools()
-
-            items = []
-            for t in tools.tools:
-                if self._remote_tool_allowed(handle, t.name):
-                    items.append({"name": t.name, "description": t.description})
-
-            if output == "object":
-                return {"server_id": server_id, "tools": items}
-            if output == "json":
-                return json.dumps({"server_id": server_id, "tools": items}, indent=2)
-
-            res = [f"Tools on '{server_id}':\n"]
-            for item in items:
-                res.append(f"- **{item['name']}**: {item['description']}")
-            return "\n".join(res)
-
-        @_tool()
-        async def call_remote_tool(
-            server_id: str,
-            tool: str,
-            arguments: dict[str, Any] | None = None,
-            recipe_id: str | None = None,
-            timeout_seconds: float = 30,
-            confirm: bool = False,
-            output: Literal["json", "markdown", "object"] = "markdown",
-        ) -> str | dict[str, Any]:
-            """Call a tool on a remote MCP server."""
-            success, handle_or_err = await self._ensure_remote_server(server_id)
-            if not success:
-                return _format_error(str(handle_or_err), output=output)
-
-            handle = cast(_RemoteServerHandle, handle_or_err)
-            if not self._remote_tool_allowed(handle, tool):
-                return _format_error(f"Tool '{tool}' is denied on server '{server_id}'", output=output)
-
-            assert handle.session is not None
-            try:
-                result = await handle.session.call_tool(tool, arguments or {})
-            except Exception as e:
-                return _format_error(f"Remote call failed: {e}", output=output)
-
-            if output == "object":
-                return {"result": result.content}
-            if output == "json":
-                return json.dumps({"result": [c.model_dump() for c in result.content]}, indent=2)
-
-            res = []
-            for c in result.content:
-                if getattr(c, "text", None):
-                    res.append(c.text)
-                else:
-                    res.append(str(c))
-            return "\n".join(res)
-
-        @_tool()
-        async def close_remote_server(
-            server_id: str,
-            confirm: bool = False,
-            output: Literal["json", "markdown", "object"] = "json",
-        ) -> str | dict[str, Any]:
-            """Close a remote MCP server connection."""
-            if server_id not in self._remote_servers:
-                return _format_error(f"Remote server '{server_id}' not registered.", output=output)
-
-            handle = self._remote_servers[server_id]
-            await self._reset_remote_server_handle(handle)
-
-            msg = f"Remote server '{server_id}' disconnected."
-            if output == "object":
-                return {"status": "success", "id": server_id}
-            if output == "json":
-                return json.dumps({"status": "success", "id": server_id})
-            return msg
+        register_admin_tools(self, format_error=_format_error)
 
     def _register_tools(self) -> None:
         """Register all MCP tools."""
@@ -4010,207 +2888,31 @@ class AlephMCPServerLocal:
 
 def main() -> None:
     """CLI entry point: `aleph` or `python -m aleph.mcp.local_server`"""
-    import argparse
 
     if len(sys.argv) > 1 and sys.argv[1] in {"run", "shell", "serve"}:
         from ..alef_cli import main as alef_main
 
         raise SystemExit(alef_main(sys.argv[1:]))
 
-    def _parse_bool_flag(value: str) -> bool:
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "y", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "n", "off"}:
-            return False
-        raise argparse.ArgumentTypeError("Expected a boolean value (true/false)")
-
-    class _SafeArgumentParser(argparse.ArgumentParser):
-        def _print_message(self, message: str, file: io.TextIOBase | None = None) -> None:
-            if message:
-                file = file or sys.stderr
-                try:
-                    file.write(message)
-                except (AttributeError, OSError, ValueError):
-                    pass
-
-    parser = _SafeArgumentParser(
-        description="Run Aleph as an MCP server for local AI reasoning",
+    parser = build_server_argument_parser(
+        default_workspace_mode=DEFAULT_WORKSPACE_MODE,
+        default_tool_docs_mode=DEFAULT_TOOL_DOCS_MODE,
     )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=180.0,
-        help="Code execution timeout in seconds (default: 180)",
-    )
-    parser.add_argument(
-        "--max-output",
-        type=int,
-        default=50000,
-        help="Maximum output characters (default: 50000)",
-    )
-    parser.add_argument(
-        "--enable-actions",
-        action="store_true",
-        help="Enable action tools (run_command/read_file/write_file/load_file/run_tests/rg_search)",
-    )
-    parser.add_argument(
-        "--workspace-root",
-        type=str,
-        default=None,
-        help="Workspace root for action tools (default: ALEPH_WORKSPACE_ROOT or auto-detect git root from invocation cwd)",
-    )
-    parser.add_argument(
-        "--workspace-mode",
-        type=str,
-        choices=["fixed", "git", "any"],
-        default=DEFAULT_WORKSPACE_MODE,
-        help="Path scope for action tools: fixed (workspace root only), git (any git repo), any (no path restriction)",
-    )
-    parser.add_argument(
-        "--require-confirmation",
-        action="store_true",
-        help="Require confirm=true for action tools",
-    )
-    parser.add_argument(
-        "--max-file-size",
-        type=int,
-        default=1_000_000_000,
-        help="Max file size in bytes for load_file/read_file (default: 1GB). Increase based on your RAM—the LLM only sees query results.",
-    )
-    parser.add_argument(
-        "--max-write-bytes",
-        type=int,
-        default=100_000_000,
-        help="Max file size in bytes for write_file/save_session (default: 100MB).",
-    )
-    env_tool_docs = os.environ.get("ALEPH_TOOL_DOCS")
-    default_tool_docs = env_tool_docs if env_tool_docs in {"concise", "full"} else DEFAULT_TOOL_DOCS_MODE
-    parser.add_argument(
-        "--tool-docs",
-        type=str,
-        choices=["concise", "full"],
-        default=default_tool_docs,
-        help="Tool description verbosity for MCP clients: concise (default) or full",
-    )
-    parser.add_argument(
-        "--sub-query-backend",
-        type=str,
-        choices=["codex", "claude", "gemini", "kimi", "api", "auto"],
-        default=None,
-        help=(
-            "Override sub-query backend "
-            "(codex|claude|gemini|kimi|api|auto). "
-            "Auto mode only selects codex or api; other CLI backends are explicit experimental overrides."
-        ),
-    )
-    parser.add_argument(
-        "--sub-query-timeout",
-        type=float,
-        default=None,
-        help="Timeout in seconds for sub-queries (sets ALEPH_SUB_QUERY_TIMEOUT).",
-    )
-    parser.add_argument(
-        "--sub-query-share-session",
-        type=_parse_bool_flag,
-        default=None,
-        help="Share MCP session with CLI sub-agents (true/false).",
-    )
-    parser.add_argument(
-        "--context-policy",
-        type=str,
-        choices=["trusted", "isolated"],
-        default=None,
-        help="Context policy mode: trusted (default) or isolated.",
-    )
-
-    # Swarm mode options
-    parser.add_argument(
-        "--swarm-mode",
-        "-S",
-        action="store_true",
-        help="Enable swarm coordination features for multi-agent workflows.",
-    )
-    parser.add_argument(
-        "--swarm-name",
-        type=str,
-        default=None,
-        help="Swarm identifier for agent coordination (sets ALEPH_SWARM_NAME).",
-    )
-    parser.add_argument(
-        "--enable-session-sharing",
-        action="store_true",
-        help="Enable sub-agent session sharing in swarm mode (sets ALEPH_SWARM_SESSION_SHARING=true).",
-    )
-    parser.add_argument(
-        "--swarm-max-agents",
-        type=int,
-        default=None,
-        help="Maximum concurrent agents in swarm (default: 10).",
-    )
-    parser.add_argument(
-        "--swarm-context-prefix",
-        type=str,
-        default=None,
-        help="Context ID prefix for swarm sessions (default: 'swarm').",
-    )
-    parser.add_argument(
-        "--unrestricted",
-        "-U",
-        action="store_true",
-        help="Disable sandbox restrictions (allow all imports, builtins, and AST constructs). Use with caution.",
-    )
-
     args = parser.parse_args()
-
-    if args.sub_query_backend is not None:
-        os.environ["ALEPH_SUB_QUERY_BACKEND"] = args.sub_query_backend
-    if args.sub_query_timeout is not None:
-        os.environ["ALEPH_SUB_QUERY_TIMEOUT"] = str(args.sub_query_timeout)
-    if args.sub_query_share_session is not None:
-        os.environ["ALEPH_SUB_QUERY_SHARE_SESSION"] = (
-            "true" if args.sub_query_share_session else "false"
-        )
-    if args.context_policy is not None:
-        os.environ["ALEPH_CONTEXT_POLICY"] = args.context_policy
-
-    # Swarm mode environment variables
-    if args.swarm_mode:
-        os.environ["ALEPH_SWARM_MODE"] = "true"
-    if args.swarm_name is not None:
-        os.environ["ALEPH_SWARM_NAME"] = args.swarm_name
-    if args.enable_session_sharing:
-        os.environ["ALEPH_SWARM_SESSION_SHARING"] = "true"
-    if args.swarm_max_agents is not None:
-        os.environ["ALEPH_SWARM_MAX_AGENTS"] = str(args.swarm_max_agents)
-    if args.swarm_context_prefix is not None:
-        os.environ["ALEPH_SWARM_CONTEXT_PREFIX"] = args.swarm_context_prefix
-
-    config = SandboxConfig(
-        timeout_seconds=args.timeout,
-        max_output_chars=args.max_output,
-        unrestricted=args.unrestricted,
-    )
-
-    _ws_explicit = bool(args.workspace_root) or bool(os.environ.get("ALEPH_WORKSPACE_ROOT", "").strip())
-    action_cfg = ActionConfig(
-        enabled=bool(args.enable_actions),
-        workspace_root=Path(args.workspace_root).resolve() if args.workspace_root else _detect_workspace_root(),
-        workspace_mode=cast(WorkspaceMode, args.workspace_mode),
-        context_policy=_normalize_context_policy(
-            os.environ.get("ALEPH_CONTEXT_POLICY"),
-            DEFAULT_CONTEXT_POLICY,
-        ),
-        require_confirmation=bool(args.require_confirmation),
-        max_read_bytes=args.max_file_size,
-        max_write_bytes=args.max_write_bytes,
-        workspace_root_explicit=_ws_explicit,
+    apply_server_env_overrides(args)
+    config, action_cfg, tool_docs_mode = build_runtime_configs(
+        args,
+        detect_workspace_root=_detect_workspace_root,
+        normalize_context_policy=_normalize_context_policy,
+        default_context_policy=DEFAULT_CONTEXT_POLICY,
+        sandbox_config_factory=SandboxConfig,
+        action_config_factory=ActionConfig,
     )
 
     server = AlephMCPServerLocal(
         sandbox_config=config,
         action_config=action_cfg,
-        tool_docs_mode=cast(ToolDocsMode, args.tool_docs),
+        tool_docs_mode=cast(ToolDocsMode, tool_docs_mode),
     )
     asyncio.run(server.run())
 

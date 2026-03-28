@@ -8,10 +8,7 @@
         "any",
         "--tool-docs",
         "concise"
-      ],
-      "env": {
-        "ALEPH_SUB_QUERY_SHARE_SESSION": "true"
-      }
+      ]
     }
   }
 }

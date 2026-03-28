@@ -28,26 +28,20 @@ This enables:
 
 ## Recommended Nested Setup
 
-For the simplest validated setup:
-
-1. Install the Codex CLI
-2. Run `aleph-rlm install`
-3. Restart your MCP client
-
-That is the recommended path even if your top-level client is Claude Code.
-Aleph can keep Claude as the outer client and still use Codex for nested
-`sub_query` work, which is currently the cleanest and most reliable shared-
-session backend.
-
-If you want an all-Claude setup instead, keep Aleph installed normally and add:
+The installer now asks for a sub-query profile up front:
 
 ```bash
-export ALEPH_SUB_QUERY_BACKEND=claude
-export ALEPH_SUB_QUERY_SHARE_SESSION=true
+aleph-rlm install
+aleph-rlm install --profile claude
+aleph-rlm install --profile codex
+aleph-rlm install --profile portable
 ```
 
-Claude works as an explicit fallback, but Codex is the better default for
-nested MCP/shared-session recursion.
+Recommended profiles:
+
+1. `claude` for Claude-first installs: backend `claude`, model `opus`, effort `low`
+2. `codex` for the strongest validated shared-session path
+3. `portable` when you do not want to pin the nested backend yet
 
 ---
 
@@ -62,16 +56,17 @@ sharing:
   "mcpServers": {
     "aleph": {
       "command": "aleph",
-      "args": ["--enable-actions", "--workspace-mode", "any", "--tool-docs", "concise"],
-      "env": {
-        "ALEPH_SUB_QUERY_SHARE_SESSION": "true",
-        "ALEPH_SUB_QUERY_BACKEND": "codex",
-        "ALEPH_SUB_QUERY_CODEX_MODE": "mcp",
-        "ALEPH_SUB_QUERY_CODEX_MODEL": "gpt-5.4",
-        "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT": "low",
-        "ALEPH_SUB_QUERY_HTTP_PORT": "8765",
-        "ALEPH_SUB_QUERY_MCP_SERVER_NAME": "aleph_shared"
-      }
+      "args": [
+        "--enable-actions",
+        "--workspace-mode", "any",
+        "--tool-docs", "concise",
+        "--sub-query-backend", "codex",
+        "--sub-query-share-session", "true",
+        "--sub-query-timeout", "300",
+        "--sub-query-codex-mode", "mcp",
+        "--sub-query-codex-model", "gpt-5.4",
+        "--sub-query-codex-reasoning-effort", "low"
+      ]
     }
   }
 }
@@ -95,9 +90,6 @@ Notes:
 - Tools are exposed under the server name you choose (default: `aleph_shared`).
 - `aleph_shared` avoids conflicts with an existing `aleph` stdio entry in Codex
   config.
-- Runtime default remains `ALEPH_SUB_QUERY_SHARE_SESSION=false`, but generated
-  Codex configs pin it to `true` because that is the validated best default for
-  nested Codex MCP use.
 
 For even higher limits:
 
@@ -161,7 +153,7 @@ Config file:
 }
 ```
 
-### Claude Desktop
+### Claude Code (CLI)
 
 Config file:
 
@@ -172,29 +164,31 @@ Config file:
 
 ```bash
 aleph-rlm install claude-code
+# or with a sub-query profile
+aleph-rlm install claude-code --profile claude
 ```
 
-Then restart Claude Desktop.
+Then restart Claude Code (`/mcp` to verify).
 
 **Manual:**
 
+Add to the `mcpServers` key in `~/.claude/settings.json`:
+
 ```json
 {
-  "mcpServers": {
-    "aleph": {
-      "command": "aleph",
-      "args": [
-        "--workspace-root", "/path/to/your-project",
-        "--enable-actions",
-        "--tool-docs", "concise"
-      ]
-    }
+  "aleph": {
+    "command": "aleph",
+    "args": [
+      "--enable-actions",
+      "--workspace-mode", "any",
+      "--tool-docs", "concise"
+    ]
   }
 }
 ```
 
 <details>
-<summary><strong>Installing the Claude Desktop skill</strong></summary>
+<summary><strong>Installing the Claude Code skill</strong></summary>
 
 **Option 1:** Download [`docs/prompts/aleph.md`](docs/prompts/aleph.md) and
 save to:
@@ -221,6 +215,28 @@ Copy-Item "$alephPath\..\docs\prompts\aleph.md" "$env:USERPROFILE\.claude\comman
 This enables the `/aleph` command for structured reasoning workflows.
 
 </details>
+
+### Claude Desktop
+
+Config file:
+
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "aleph": {
+      "command": "aleph",
+      "args": [
+        "--enable-actions",
+        "--workspace-mode", "any",
+        "--tool-docs", "concise"
+      ]
+    }
+  }
+}
+```
 
 ### Codex CLI
 
@@ -442,6 +458,8 @@ export ALEPH_SUB_QUERY_MODEL=llama3.2
 |-----------------------------------|----------------------------------------------------------------|
 | `ALEPH_SUB_QUERY_BACKEND`        | Force backend: `api`, `claude`, `codex`, `gemini`, `kimi`, `auto` |
 | `ALEPH_SUB_QUERY_SHARE_SESSION`  | Share the live Aleph MCP session with nested CLI sub-agents    |
+| `ALEPH_SUB_QUERY_CLAUDE_MODEL`   | Claude CLI model alias/name (default: `opus`)                  |
+| `ALEPH_SUB_QUERY_CLAUDE_EFFORT`  | Claude CLI effort (default: `low`)                             |
 | `ALEPH_SUB_QUERY_CODEX_MODE`     | Codex mode: `mcp` (default) or `exec`                          |
 | `ALEPH_SUB_QUERY_CODEX_MODEL`    | Codex MCP model override (default: `gpt-5.4`)                  |
 | `ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT` | Codex MCP reasoning effort (default: `low`)          |
@@ -453,9 +471,8 @@ Use `ALEPH_SUB_QUERY_BACKEND` to pin a backend or bypass auto-detection;
 otherwise leave it unset for the default `auto` selection order.
 
 Runtime `configure(sub_query_backend=...)` overrides auto-detection for the
-active server session. The install/configure wizard now treats Codex as the
-default sub-query path and pins the Codex MCP defaults when the CLI is
-available.
+active server session. The install/configure wizard now makes the nested
+backend an explicit profile choice instead of silently pinning Codex.
 
 > **Note:** Some MCP clients don't reliably pass `env` vars from their config to
 > the server process. If `sub_query` reports "API key not found" despite your

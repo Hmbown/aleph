@@ -40,7 +40,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .sub_query import DEFAULT_CODEX_MODE, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT
+from .install_config import (
+    INSTALL_PROFILES,
+    MCPServerConfig,
+    build_mcp_config as _build_mcp_config,
+    default_mcp_config as _default_mcp_config,
+    default_install_profile_choice as _default_install_profile_choice_impl,
+    format_toml_mcp_config as _format_toml_mcp_config,
+    install_profile_options as _install_profile_options,
+    normalize_install_profile as _normalize_install_profile,
+)
 
 __all__ = ["main"]
 
@@ -245,114 +254,11 @@ CLIENTS: dict[str, ClientConfig] = {
     ),
 }
 
-@dataclass
-class MCPServerConfig:
-    command: str
-    args: list[str]
-    env: dict[str, str]
-
-    def to_json(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "command": self.command,
-            "args": self.args,
-        }
-        if self.env:
-            payload["env"] = self.env
-        return payload
-
-
-def _default_mcp_config() -> MCPServerConfig:
-    return MCPServerConfig(
-        command="aleph",
-        args=["--enable-actions", "--workspace-mode", "any", "--tool-docs", "concise"],
-        env={},
-    )
-
-
 def _apply_client_mcp_defaults(client: ClientConfig, config: MCPServerConfig) -> MCPServerConfig:
-    env = dict(config.env)
-    should_pin_codex = client.name == "codex" or shutil.which("codex") is not None
-    if should_pin_codex:
-        env.setdefault("ALEPH_SUB_QUERY_BACKEND", "codex")
-        env.setdefault("ALEPH_SUB_QUERY_CODEX_MODE", DEFAULT_CODEX_MODE)
-        env.setdefault("ALEPH_SUB_QUERY_CODEX_MODEL", DEFAULT_CODEX_MODEL)
-        env.setdefault(
-            "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT",
-            DEFAULT_CODEX_REASONING_EFFORT,
-        )
-        env.setdefault("ALEPH_SUB_QUERY_SHARE_SESSION", "true")
     return MCPServerConfig(
         command=config.command,
         args=list(config.args),
-        env=env,
-    )
-
-
-def _format_toml_array(values: list[str]) -> str:
-    quoted = [json.dumps(v) for v in values]
-    return "[" + ", ".join(quoted) + "]"
-
-
-def _format_toml_env(env: dict[str, str]) -> str:
-    if not env:
-        return ""
-    lines = ["[mcp_servers.aleph.env]"]
-    for key in sorted(env.keys()):
-        lines.append(f"{key} = {json.dumps(env[key])}")
-    return "\n".join(lines) + "\n"
-
-
-def _format_toml_mcp_config(config: MCPServerConfig) -> str:
-    block = (
-        "[mcp_servers.aleph]\n"
-        f"command = {json.dumps(config.command)}\n"
-        f"args = {_format_toml_array(config.args)}\n"
-    )
-    env_block = _format_toml_env(config.env)
-    return block + env_block
-
-
-def _build_mcp_config(
-    *,
-    enable_actions: bool,
-    workspace_mode: str,
-    workspace_root: Path | None,
-    require_confirmation: bool,
-    tool_docs: str,
-    unrestricted: bool,
-    sub_query_backend: str | None,
-    sub_query_share_session: bool | None,
-    sub_query_timeout: float | None,
-    env_override: dict[str, str] | None = None,
-    command: str | None = None,
-    args_prefix: list[str] | None = None,
-) -> MCPServerConfig:
-    args: list[str] = list(args_prefix or [])
-    if enable_actions:
-        args.append("--enable-actions")
-    if workspace_root:
-        args.extend(["--workspace-root", str(workspace_root)])
-    args.extend(["--workspace-mode", workspace_mode])
-    if require_confirmation:
-        args.append("--require-confirmation")
-    args.extend(["--tool-docs", tool_docs])
-    if unrestricted:
-        args.append("--unrestricted")
-    if env_override is not None:
-        env = env_override
-    else:
-        env = {}
-        if sub_query_backend and sub_query_backend != "auto":
-            env["ALEPH_SUB_QUERY_BACKEND"] = sub_query_backend
-        if sub_query_share_session is not None:
-            env["ALEPH_SUB_QUERY_SHARE_SESSION"] = "true" if sub_query_share_session else "false"
-        if sub_query_timeout is not None:
-            env["ALEPH_SUB_QUERY_TIMEOUT"] = str(sub_query_timeout)
-
-    return MCPServerConfig(
-        command=command or "aleph",
-        args=args,
-        env=env,
+        env=dict(config.env),
     )
 
 
@@ -407,15 +313,31 @@ def _prompt_text(prompt: str, default: str | None = None) -> str:
             return default
 
 
-def _default_sub_query_backend_choice(backend_options: list[str]) -> int:
-    """Prefer codex for generated configs when it is available."""
-    if "codex" in backend_options and shutil.which("codex"):
-        return backend_options.index("codex")
-    return 0
+def _default_install_profile_choice(profile_options: list[str]) -> int:
+    return _default_install_profile_choice_impl(
+        profile_options,
+        claude_available=_find_claude_cli() is not None,
+        codex_available=shutil.which("codex") is not None,
+    )
 
 
-def _collect_install_config() -> MCPServerConfig:
+def _prompt_install_profile(default_profile: str | None = None) -> str:
+    profile_options = list(INSTALL_PROFILES)
+    if default_profile is None:
+        default_index = _default_install_profile_choice(profile_options)
+    else:
+        default_index = profile_options.index(_normalize_install_profile(default_profile))
+    return _prompt_choice(
+        "Sub-query profile for this install:",
+        _install_profile_options(),
+        default_index=default_index,
+    )
+
+
+def _collect_install_config(profile: str = "portable") -> MCPServerConfig:
+    selected_profile = _normalize_install_profile(profile)
     print_header("Aleph MCP Server Configuration")
+    print_info(f"Sub-query profile: {selected_profile}")
 
     use_docker = False
     if shutil.which("docker"):
@@ -454,40 +376,6 @@ def _collect_install_config() -> MCPServerConfig:
 
     unrestricted = _prompt_bool("Disable sandbox restrictions (unrestricted)?", default=False)
 
-    available_backends = []
-    for backend in ("codex", "gemini", "kimi", "claude"):
-        if shutil.which(backend):
-            available_backends.append(backend)
-    backend_labels = ["auto (codex if installed, else API)"]
-    backend_options = ["auto"]
-    for backend in ("codex", "gemini", "kimi", "claude", "api"):
-        label = backend
-        if backend in available_backends:
-            label += " (detected)"
-        if backend in {"gemini", "kimi", "claude"}:
-            label += " (experimental)"
-        backend_labels.append(label)
-        backend_options.append(backend)
-    sub_query_backend = _prompt_choice(
-        "Sub-query backend preference:",
-        list(zip(backend_options, backend_labels)),
-        default_index=_default_sub_query_backend_choice(backend_options),
-    )
-
-    sub_query_share_session = _prompt_bool(
-        "Share MCP session with sub-agents? (enables MCP access in sub-queries)",
-        default=False,
-    )
-
-    sub_query_timeout_input = _prompt_text("Sub-query timeout in seconds (blank to skip)", default="")
-    sub_query_timeout = None
-    if sub_query_timeout_input:
-        try:
-            sub_query_timeout = float(sub_query_timeout_input)
-        except ValueError:
-            print_warning("Invalid timeout; skipping.")
-            sub_query_timeout = None
-
     env_override: dict[str, str] | None = None
     args_prefix: list[str] | None = None
     command = None
@@ -496,18 +384,6 @@ def _collect_install_config() -> MCPServerConfig:
         if workspace_root is None:
             workspace_root = Path.cwd().resolve()
         command = "docker"
-        env_pairs: dict[str, str] = {}
-        if sub_query_backend and sub_query_backend != "auto":
-            env_pairs["ALEPH_SUB_QUERY_BACKEND"] = sub_query_backend
-        if sub_query_share_session is not None:
-            env_pairs["ALEPH_SUB_QUERY_SHARE_SESSION"] = (
-                "true" if sub_query_share_session else "false"
-            )
-        if sub_query_timeout is not None:
-            env_pairs["ALEPH_SUB_QUERY_TIMEOUT"] = str(sub_query_timeout)
-        env_flags: list[str] = []
-        for key, value in env_pairs.items():
-            env_flags.extend(["-e", f"{key}={value}"])
         env_override = {}
         args_prefix = [
             "run",
@@ -517,7 +393,6 @@ def _collect_install_config() -> MCPServerConfig:
             f"{workspace_root}:{workspace_root}",
             "-w",
             str(workspace_root),
-            *env_flags,
             image,
             "aleph",
         ]
@@ -529,9 +404,7 @@ def _collect_install_config() -> MCPServerConfig:
         require_confirmation=require_confirmation,
         tool_docs=tool_docs,
         unrestricted=unrestricted,
-        sub_query_backend=sub_query_backend,
-        sub_query_share_session=sub_query_share_session,
-        sub_query_timeout=sub_query_timeout,
+        sub_query_profile=selected_profile,
         env_override=env_override,
         command=command,
         args_prefix=args_prefix,
@@ -880,7 +753,10 @@ def install_to_config_file(
         return True
 
     # Add Aleph config
-    payload = (mcp_config or _default_mcp_config()).to_json()
+    payload = _apply_client_mcp_defaults(
+        client,
+        mcp_config or _default_mcp_config(),
+    ).to_json()
     config["mcpServers"]["aleph"] = payload
 
     if dry_run:
@@ -1191,7 +1067,7 @@ def doctor() -> bool:
 # Interactive mode
 # =============================================================================
 
-def interactive_install(dry_run: bool = False) -> None:
+def interactive_install(dry_run: bool = False, profile: str | None = None) -> None:
     """Interactive installation mode."""
     print_header("Aleph MCP Server Installer")
 
@@ -1237,8 +1113,16 @@ def interactive_install(dry_run: bool = False) -> None:
         print_info("No clients to configure.")
         return
 
-    use_custom = _prompt_bool("Customize server configuration for this install?", default=True)
-    mcp_config = _collect_install_config() if use_custom else _default_mcp_config()
+    selected_profile = _normalize_install_profile(profile) if profile else _prompt_install_profile()
+    use_custom = _prompt_bool(
+        "Customize server settings beyond this profile?",
+        default=False,
+    )
+    mcp_config = (
+        _collect_install_config(selected_profile)
+        if use_custom
+        else _default_mcp_config(selected_profile)
+    )
 
     print()
     for client in to_configure:
@@ -1246,12 +1130,20 @@ def interactive_install(dry_run: bool = False) -> None:
         print()
 
 
-def install_all(dry_run: bool = False) -> None:
+def install_all(dry_run: bool = False, profile: str | None = None) -> None:
     """Install Aleph to all detected clients."""
     print_header("Installing Aleph to All Detected Clients")
 
-    use_custom = _prompt_bool("Customize server configuration for this install?", default=True)
-    mcp_config = _collect_install_config() if use_custom else _default_mcp_config()
+    selected_profile = _normalize_install_profile(profile) if profile else _prompt_install_profile()
+    use_custom = _prompt_bool(
+        "Customize server settings beyond this profile?",
+        default=False,
+    )
+    mcp_config = (
+        _collect_install_config(selected_profile)
+        if use_custom
+        else _default_mcp_config(selected_profile)
+    )
 
     for name, client in CLIENTS.items():
         if not is_client_installed(client):
@@ -1266,7 +1158,7 @@ def install_all(dry_run: bool = False) -> None:
         print()
 
 
-def configure_clients(dry_run: bool = False) -> None:
+def configure_clients(dry_run: bool = False, profile: str | None = None) -> None:
     """Interactive configuration wizard (overwrites selected clients)."""
     print_header("Aleph MCP Server Configurator")
 
@@ -1304,7 +1196,8 @@ def configure_clients(dry_run: bool = False) -> None:
         print_info("No clients selected.")
         return
 
-    mcp_config = _collect_install_config()
+    selected_profile = _normalize_install_profile(profile) if profile else _prompt_install_profile()
+    mcp_config = _collect_install_config(selected_profile)
     print()
     for client in to_configure:
         install_client(client, dry_run, mcp_config=mcp_config, force=True)
@@ -1343,11 +1236,13 @@ Clients:
 
 Options:
     --dry-run          Preview changes without writing
+    --profile NAME     Install profile: portable, claude, codex, api
     --help, -h         Show this help message
 
 Examples:
     aleph-rlm run "Summarize this file"
     aleph-rlm install                     # Interactive mode
+    aleph-rlm install --profile claude    # Default nested backend = Claude
     aleph-rlm install claude-desktop      # Configure Claude Desktop
     aleph-rlm install codex               # Configure Codex CLI
     aleph-rlm install --all --dry-run     # Preview all installations
@@ -1355,6 +1250,28 @@ Examples:
     aleph-rlm uninstall cursor            # Remove from Cursor
     aleph-rlm doctor                      # Check installation status
 """)
+
+
+def _extract_option(args: list[str], name: str) -> tuple[list[str], str | None]:
+    remaining: list[str] = []
+    value: str | None = None
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == name:
+            if idx + 1 >= len(args):
+                print_error(f"Missing value for {name}")
+                raise SystemExit(1)
+            value = args[idx + 1]
+            idx += 2
+            continue
+        if arg.startswith(f"{name}="):
+            value = arg.split("=", 1)[1]
+            idx += 1
+            continue
+        remaining.append(arg)
+        idx += 1
+    return remaining, value
 
 
 def main() -> None:
@@ -1368,6 +1285,14 @@ def main() -> None:
     dry_run = "--dry-run" in args
     if dry_run:
         args = [a for a in args if a != "--dry-run"]
+
+    args, profile = _extract_option(args, "--profile")
+    if profile is not None:
+        try:
+            profile = _normalize_install_profile(profile)
+        except ValueError as e:
+            print_error(str(e))
+            raise SystemExit(1) from None
 
     command = args[0] if args else ""
 
@@ -1390,12 +1315,16 @@ def main() -> None:
     elif command == "install":
         if len(args) == 1:
             # Interactive mode
-            interactive_install(dry_run)
+            interactive_install(dry_run, profile=profile)
         elif args[1] == "--all":
-            install_all(dry_run)
+            install_all(dry_run, profile=profile)
         elif args[1] in CLIENTS:
             client = CLIENTS[args[1]]
-            success = install_client(client, dry_run)
+            success = install_client(
+                client,
+                dry_run,
+                mcp_config=_default_mcp_config(profile or "portable"),
+            )
             sys.exit(0 if success else 1)
         else:
             print_error(f"Unknown client: {args[1]}")
@@ -1403,7 +1332,7 @@ def main() -> None:
             sys.exit(1)
 
     elif command == "configure":
-        configure_clients(dry_run)
+        configure_clients(dry_run, profile=profile)
 
     elif command == "uninstall":
         if len(args) < 2:

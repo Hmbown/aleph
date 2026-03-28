@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -13,6 +14,11 @@ from aleph.types import ContentFormat
 
 def _make_server() -> AlephMCPServerLocal:
     return AlephMCPServerLocal(sandbox_config=SandboxConfig(timeout_seconds=5.0, max_output_chars=5000))
+
+
+async def _call_tool(server: AlephMCPServerLocal, tool_name: str, **kwargs: Any) -> Any:
+    _, payload = await server.server.call_tool(tool_name, kwargs)
+    return payload["result"]
 
 
 async def _load_context(server: AlephMCPServerLocal, text: str, context_id: str = "default") -> None:
@@ -34,6 +40,41 @@ def test_recipe_tools_registered() -> None:
     assert server.server._tool_manager.get_tool("run_recipe") is not None
     assert server.server._tool_manager.get_tool("compile_recipe") is not None
     assert server.server._tool_manager.get_tool("run_recipe_code") is not None
+
+
+@pytest.mark.asyncio
+async def test_validate_recipe_tool_object_payload() -> None:
+    server = _make_server()
+
+    result = await _call_tool(
+        server,
+        "validate_recipe",
+        recipe={"steps": [{"op": "search", "pattern": "error"}]},
+        output="object",
+    )
+
+    assert result["valid"] is True
+    assert result["recipe"]["steps"][0]["op"] == "search"
+    assert result["estimate"]["step_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_recipe_tool_dry_run_object_payload() -> None:
+    server = _make_server()
+    await _load_context(server, "alpha\nerror here\nwarn there")
+
+    result = await _call_tool(
+        server,
+        "run_recipe",
+        recipe={"steps": [{"op": "search", "pattern": "error"}, {"op": "take", "count": 1}]},
+        dry_run=True,
+        output="object",
+    )
+
+    assert result["success"] is True
+    assert result["mode"] == "dry_run"
+    assert result["context_id"] == "default"
+    assert result["estimate"]["step_count"] == 2
 
 
 def test_validate_recipe_defaults() -> None:

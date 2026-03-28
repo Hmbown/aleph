@@ -16,6 +16,8 @@ programmatic configuration.
 | `ALEPH_SUB_QUERY_BACKEND`            | Force sub-query backend                          | `auto`                        |
 | `ALEPH_SUB_QUERY_TIMEOUT`            | Sub-query timeout in seconds                     | CLI 300 / API 120             |
 | `ALEPH_SUB_QUERY_SHARE_SESSION`      | Share MCP session with CLI sub-agents            | `false`                       |
+| `ALEPH_SUB_QUERY_CLAUDE_MODEL`       | Claude CLI model alias/name                      | `opus`                        |
+| `ALEPH_SUB_QUERY_CLAUDE_EFFORT`      | Claude CLI effort                                | `low`                         |
 | `ALEPH_SUB_QUERY_CODEX_MODE`         | Codex backend mode (`exec` or `mcp`)             | `mcp`                         |
 | `ALEPH_SUB_QUERY_CODEX_MODEL`        | Codex MCP model override                         | `gpt-5.4`                     |
 | `ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT` | Codex MCP reasoning effort                    | `low`                         |
@@ -127,6 +129,8 @@ as explicit experimental overrides.
 | `ALEPH_SUB_QUERY_BACKEND`            | Backend override (`auto`, `api`, `codex`, `gemini`, `kimi`, `claude`) | `auto`                        |
 | `ALEPH_SUB_QUERY_TIMEOUT`            | Timeout in seconds for CLI + API sub-queries                  | CLI 300 / API 120             |
 | `ALEPH_SUB_QUERY_SHARE_SESSION`      | Share MCP session with CLI sub-agents                         | `false`                       |
+| `ALEPH_SUB_QUERY_CLAUDE_MODEL`       | Claude CLI model alias/name                                     | `opus`                        |
+| `ALEPH_SUB_QUERY_CLAUDE_EFFORT`      | Claude CLI effort                                               | `low`                         |
 | `ALEPH_SUB_QUERY_CODEX_MODE`         | Route codex through `codex exec` or `codex mcp-server`        | `mcp`                         |
 | `ALEPH_SUB_QUERY_CODEX_MODEL`        | Codex MCP model override                                       | `gpt-5.4`                     |
 | `ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT` | Codex MCP reasoning effort                                | `low`                         |
@@ -170,26 +174,24 @@ The injection mechanism varies by CLI:
 Codex is the simplest and best-supported path because it accepts the live MCP
 server natively and avoids temp-file isolation hacks.
 
-### Recommended Setups
+### Install Profiles
 
-Best default:
+The installer now asks for a sub-query profile up front instead of silently
+pinning Codex.
 
 ```bash
 aleph-rlm install
+aleph-rlm install --profile claude
+aleph-rlm install --profile codex
+aleph-rlm install --profile portable
 ```
 
-If Codex CLI is installed, Aleph pins the Codex MCP defaults automatically.
-This is the recommended path even when your top-level client is Claude Code.
+Profiles:
 
-All-Claude alternative:
-
-```bash
-export ALEPH_SUB_QUERY_BACKEND=claude
-export ALEPH_SUB_QUERY_SHARE_SESSION=true
-```
-
-If you want Aleph to stay entirely on Claude for nested sub-queries, use the
-explicit Claude override above or choose `claude` in `aleph-rlm configure`.
+- `portable`: do not pin a nested backend
+- `claude`: backend=`claude`, share-session=`true`, timeout=`300`, model=`opus`, effort=`low`
+- `codex`: backend=`codex`, share-session=`true`, timeout=`300`, mode=`mcp`, model=`gpt-5.4`, reasoning=`low`
+- `api`: backend=`api`, timeout=`300`
 
 ### Selection Precedence
 
@@ -199,10 +201,9 @@ Aleph resolves the sub-query backend in this order:
 2. `ALEPH_SUB_QUERY_BACKEND` when set to a concrete backend
 3. Auto-detection: `codex` -> `api`
 
-`aleph-rlm install` and `aleph-rlm configure` treat Codex as the default
-sub-query path. When the CLI is installed, generated configs pin the Codex MCP
-defaults unless you override them. Other CLI backends remain explicit
-experimental overrides.
+`aleph-rlm install` and `aleph-rlm configure` now make the nested backend an
+explicit profile choice. Auto mode inside Aleph itself still resolves
+`codex -> api`, but generated install configs no longer silently pin Codex.
 
 ### Force a Specific Backend
 
@@ -223,6 +224,8 @@ These flags set environment variables before the MCP server starts:
 aleph --sub-query-backend claude
 aleph --sub-query-timeout 90
 aleph --sub-query-share-session true
+aleph --sub-query-claude-model opus --sub-query-claude-effort low
+aleph --sub-query-codex-model gpt-5.4 --sub-query-codex-reasoning-effort low
 
 # Combined
 aleph --sub-query-backend codex --sub-query-timeout 120 --sub-query-share-session false
@@ -324,7 +327,7 @@ export ALEPH_SUB_QUERY_MODEL=your-model-name
 
 | Backend   | Install                                              | Spawns                                         |
 |-----------|------------------------------------------------------|------------------------------------------------|
-| `claude`  | `npm install -g @anthropic-ai/claude-code`           | `claude -p "prompt" --dangerously-skip-permissions --no-session-persistence --output-format json` |
+| `claude`  | `npm install -g @anthropic-ai/claude-code`           | `claude -p --model opus --effort low "prompt" --dangerously-skip-permissions --no-session-persistence --output-format json` |
 | `codex`   | OpenAI Codex CLI                                     | `codex exec --full-auto "prompt"` or `codex mcp-server` |
 | `gemini`  | `npm install -g @google/gemini-cli`                  | `gemini -y --sandbox=false --extensions "" -o json -p "prompt"` |
 
@@ -345,6 +348,8 @@ For an all-Claude setup:
 
 ```bash
 export ALEPH_SUB_QUERY_BACKEND=claude
+export ALEPH_SUB_QUERY_CLAUDE_MODEL=opus
+export ALEPH_SUB_QUERY_CLAUDE_EFFORT=low
 export ALEPH_SUB_QUERY_SHARE_SESSION=true
 ```
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "compose_sub_query_prompt",
     "build_codex_mcp_tool_call",
     "extract_codex_mcp_result_text",
     "run_codex_mcp_sub_query",
@@ -36,6 +37,20 @@ def _to_plain_dict(value: Any) -> dict[str, Any] | None:
         if isinstance(dumped, dict):
             return dumped
     return None
+
+
+def compose_sub_query_prompt(prompt: str, context_slice: str | None = None) -> str:
+    """Anchor the sub-agent with the caller-provided slice when available.
+
+    Shared-session MCP access is additive, not a replacement for the slice the
+    parent already selected. Keeping the slice in the prompt gives the sub-agent
+    a fast starting point and avoids unnecessary re-exploration of the same
+    context through tools.
+    """
+
+    if not context_slice:
+        return prompt
+    return f"{prompt}\n\n---\nContext:\n{context_slice}"
 
 
 def extract_codex_mcp_result_text(result: Any) -> tuple[str | None, str | None]:
@@ -160,9 +175,7 @@ async def run_codex_mcp_sub_query(
     if context_slice and max_context_chars > 0 and len(context_slice) > max_context_chars:
         context_slice = context_slice[:max_context_chars]
 
-    full_prompt = prompt
-    if context_slice and not mcp_server_url:
-        full_prompt = f"{prompt}\n\n---\nContext:\n{context_slice}"
+    full_prompt = compose_sub_query_prompt(prompt, context_slice)
 
     tool_name, arguments = build_codex_mcp_tool_call(
         prompt=full_prompt,

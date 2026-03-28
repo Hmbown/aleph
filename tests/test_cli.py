@@ -11,13 +11,20 @@ from unittest.mock import patch
 from aleph.cli import (
     _apply_client_mcp_defaults,
     _collect_install_config,
-    _default_sub_query_backend_choice,
+    _default_install_profile_choice,
+    _default_mcp_config,
     _find_claude_cli,
     is_client_installed,
     CLIENTS,
     MCPServerConfig,
 )
-from aleph.sub_query import DEFAULT_CODEX_MODE, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT
+from aleph.sub_query import (
+    DEFAULT_CLAUDE_EFFORT,
+    DEFAULT_CLAUDE_MODEL,
+    DEFAULT_CODEX_MODE,
+    DEFAULT_CODEX_MODEL,
+    DEFAULT_CODEX_REASONING_EFFORT,
+)
 
 
 class TestFindClaudeCli:
@@ -123,28 +130,32 @@ class TestIsClientInstalled:
             assert is_client_installed(client) is True
 
 
-class TestDefaultSubQueryBackendChoice:
-    def test_prefers_codex_when_available(self) -> None:
-        with patch("shutil.which", side_effect=lambda name: "/usr/bin/codex" if name == "codex" else None):
-            assert _default_sub_query_backend_choice(["auto", "codex", "gemini", "claude", "api"]) == 1
+class TestDefaultInstallProfileChoice:
+    def test_prefers_claude_when_available(self) -> None:
+        with patch("aleph.cli._find_claude_cli", return_value="claude"):
+            assert _default_install_profile_choice(["portable", "claude", "codex", "api"]) == 1
 
-    def test_falls_back_to_auto_when_codex_missing(self) -> None:
-        with patch("shutil.which", return_value=None):
-            assert _default_sub_query_backend_choice(["auto", "codex", "gemini", "claude", "api"]) == 0
+    def test_falls_back_to_codex_when_claude_missing(self) -> None:
+        with patch("aleph.cli._find_claude_cli", return_value=None):
+            with patch("shutil.which", side_effect=lambda name: "/usr/bin/codex" if name == "codex" else None):
+                assert _default_install_profile_choice(["portable", "claude", "codex", "api"]) == 2
+
+    def test_falls_back_to_portable_when_no_cli_available(self) -> None:
+        with patch("aleph.cli._find_claude_cli", return_value=None):
+            with patch("shutil.which", return_value=None):
+                assert _default_install_profile_choice(["portable", "claude", "codex", "api"]) == 0
 
 
 class TestCollectInstallConfig:
-    def test_offers_kimi_backend_when_available(self) -> None:
-        captured: dict[str, list[str]] = {}
-
+    def test_builds_claude_profile_args(self) -> None:
         def fake_prompt_bool(prompt: str, default: bool = False) -> bool:
+            if prompt.startswith("Run Aleph inside Docker"):
+                return False
             if prompt.startswith("Enable action tools"):
                 return True
             if prompt.startswith("Require confirm=true"):
                 return False
             if prompt.startswith("Disable sandbox restrictions"):
-                return False
-            if prompt.startswith("Share MCP session"):
                 return False
             raise AssertionError(f"Unexpected bool prompt: {prompt}")
 
@@ -153,18 +164,22 @@ class TestCollectInstallConfig:
                 return "git"
             if prompt.startswith("Tool docs verbosity"):
                 return "concise"
-            if prompt.startswith("Sub-query backend preference"):
-                captured["backend_options"] = [value for value, _label in options]
-                return "auto"
             raise AssertionError(f"Unexpected choice prompt: {prompt}")
 
-        with patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}" if name == "kimi" else None):
+        with patch("shutil.which", return_value=None):
             with patch("aleph.cli._prompt_bool", side_effect=fake_prompt_bool):
                 with patch("aleph.cli._prompt_choice", side_effect=fake_prompt_choice):
-                    with patch("aleph.cli._prompt_text", return_value=""):
-                        _collect_install_config()
+                    config = _collect_install_config("claude")
 
-        assert captured["backend_options"] == ["auto", "codex", "gemini", "kimi", "claude", "api"]
+        assert config.command == "aleph"
+        assert "--sub-query-backend" in config.args
+        assert config.args[config.args.index("--sub-query-backend") + 1] == "claude"
+        assert "--sub-query-claude-model" in config.args
+        assert config.args[config.args.index("--sub-query-claude-model") + 1] == DEFAULT_CLAUDE_MODEL
+        assert "--sub-query-claude-effort" in config.args
+        assert config.args[config.args.index("--sub-query-claude-effort") + 1] == DEFAULT_CLAUDE_EFFORT
+        assert "--sub-query-share-session" in config.args
+        assert config.args[config.args.index("--sub-query-share-session") + 1] == "true"
 
 
 class TestLocalServerCli:
@@ -182,70 +197,36 @@ class TestLocalServerCli:
         assert "kimi" in result.stdout
 
 
-class TestCodexClientDefaults:
-    def test_codex_client_defaults_pin_codex_mcp_env(self) -> None:
-        with patch("shutil.which", return_value="/usr/bin/codex"):
-            config = _apply_client_mcp_defaults(
-                CLIENTS["codex"],
-                MCPServerConfig(
-                    command="aleph",
-                    args=["--enable-actions"],
-                    env={},
-                ),
-            )
+class TestInstallProfiles:
+    def test_portable_profile_leaves_sub_query_unpinned(self) -> None:
+        config = _default_mcp_config("portable")
+        assert "--sub-query-backend" not in config.args
+        assert config.env == {}
 
-        assert config.env["ALEPH_SUB_QUERY_BACKEND"] == "codex"
-        assert config.env["ALEPH_SUB_QUERY_CODEX_MODE"] == DEFAULT_CODEX_MODE
-        assert config.env["ALEPH_SUB_QUERY_CODEX_MODEL"] == DEFAULT_CODEX_MODEL
+    def test_claude_profile_pins_claude_defaults(self) -> None:
+        config = _default_mcp_config("claude")
+        assert config.args[config.args.index("--sub-query-backend") + 1] == "claude"
+        assert config.args[config.args.index("--sub-query-claude-model") + 1] == DEFAULT_CLAUDE_MODEL
+        assert config.args[config.args.index("--sub-query-claude-effort") + 1] == DEFAULT_CLAUDE_EFFORT
+        assert config.args[config.args.index("--sub-query-share-session") + 1] == "true"
+
+    def test_codex_profile_pins_codex_defaults(self) -> None:
+        config = _default_mcp_config("codex")
+        assert config.args[config.args.index("--sub-query-backend") + 1] == "codex"
+        assert config.args[config.args.index("--sub-query-codex-mode") + 1] == DEFAULT_CODEX_MODE
+        assert config.args[config.args.index("--sub-query-codex-model") + 1] == DEFAULT_CODEX_MODEL
         assert (
-            config.env["ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT"]
+            config.args[config.args.index("--sub-query-codex-reasoning-effort") + 1]
             == DEFAULT_CODEX_REASONING_EFFORT
         )
-        assert config.env["ALEPH_SUB_QUERY_SHARE_SESSION"] == "true"
 
-    def test_codex_client_defaults_preserve_explicit_env(self) -> None:
-        with patch("shutil.which", return_value="/usr/bin/codex"):
-            config = _apply_client_mcp_defaults(
-                CLIENTS["codex"],
-                MCPServerConfig(
-                    command="aleph",
-                    args=["--enable-actions"],
-                    env={
-                        "ALEPH_SUB_QUERY_BACKEND": "api",
-                        "ALEPH_SUB_QUERY_SHARE_SESSION": "false",
-                        "ALEPH_SUB_QUERY_CODEX_MODEL": "custom-model",
-                    },
-                ),
-            )
-
-        assert config.env["ALEPH_SUB_QUERY_BACKEND"] == "api"
-        assert config.env["ALEPH_SUB_QUERY_SHARE_SESSION"] == "false"
-        assert config.env["ALEPH_SUB_QUERY_CODEX_MODEL"] == "custom-model"
-        assert config.env["ALEPH_SUB_QUERY_CODEX_MODE"] == DEFAULT_CODEX_MODE
-
-    def test_other_clients_pin_codex_when_codex_cli_is_available(self) -> None:
-        with patch("shutil.which", return_value="/usr/bin/codex"):
-            config = _apply_client_mcp_defaults(
-                CLIENTS["claude-code"],
-                MCPServerConfig(
-                    command="aleph",
-                    args=["--enable-actions"],
-                    env={},
-                ),
-            )
-
-        assert config.env["ALEPH_SUB_QUERY_BACKEND"] == "codex"
-        assert config.env["ALEPH_SUB_QUERY_SHARE_SESSION"] == "true"
-
-    def test_other_clients_do_not_pin_codex_when_cli_is_missing(self) -> None:
-        with patch("shutil.which", return_value=None):
-            config = _apply_client_mcp_defaults(
-                CLIENTS["claude-code"],
-                MCPServerConfig(
-                    command="aleph",
-                    args=["--enable-actions"],
-                    env={},
-                ),
-            )
-
-        assert "ALEPH_SUB_QUERY_BACKEND" not in config.env
+    def test_client_defaults_no_longer_mutate_profile(self) -> None:
+        original = MCPServerConfig(
+            command="aleph",
+            args=["--enable-actions", "--sub-query-backend", "claude"],
+            env={"KEEP": "1"},
+        )
+        config = _apply_client_mcp_defaults(CLIENTS["codex"], original)
+        assert config.command == original.command
+        assert config.args == original.args
+        assert config.env == original.env

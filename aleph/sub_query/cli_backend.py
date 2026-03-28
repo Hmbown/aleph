@@ -13,7 +13,14 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
-from . import DEFAULT_CODEX_MODE, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT
+from .config import (
+    resolve_claude_effort,
+    resolve_claude_model,
+    resolve_codex_model,
+    resolve_codex_mode,
+    resolve_codex_profile,
+    resolve_codex_reasoning_effort,
+)
 from .codex_mcp_backend import run_codex_mcp_sub_query
 
 __all__ = ["run_cli_sub_query", "CLI_BACKENDS"]
@@ -23,10 +30,6 @@ CLI_BACKENDS = ("claude", "codex", "gemini", "kimi")
 DEFAULT_MAX_CONTEXT_CHARS = 20_000
 
 _KEEP_MCP_CONFIG_ENV = "ALEPH_SUB_QUERY_KEEP_MCP_CONFIG"
-_CODEX_MODE_ENV = "ALEPH_SUB_QUERY_CODEX_MODE"
-_CODEX_MODEL_ENV = "ALEPH_SUB_QUERY_CODEX_MODEL"
-_CODEX_REASONING_ENV = "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT"
-_CODEX_PROFILE_ENV = "ALEPH_SUB_QUERY_CODEX_PROFILE"
 _GEMINI_SANDBOX_ENV = "ALEPH_SUB_QUERY_GEMINI_SANDBOX"
 
 
@@ -42,21 +45,6 @@ def _track_cleanup(path: Path, cleanup_paths: list[Path]) -> None:
         print(f"[aleph] Keeping MCP config: {path}", file=sys.stderr)
     else:
         cleanup_paths.append(path)
-
-
-def _env_text(name: str) -> str | None:
-    value = os.environ.get(name)
-    if value is None:
-        return None
-    value = value.strip()
-    return value or None
-
-
-def _codex_mode() -> str:
-    value = (_env_text(_CODEX_MODE_ENV) or DEFAULT_CODEX_MODE).lower()
-    if value in {"mcp", "server"}:
-        return "mcp"
-    return "exec"
 
 
 def _gemini_sandbox_enabled() -> bool:
@@ -119,6 +107,8 @@ async def run_cli_sub_query(
     mcp_server_url: str | None = None,
     mcp_server_name: str = "aleph_shared",
     trust_mcp_server: bool = True,
+    claude_model: str | None = None,
+    claude_effort: str | None = None,
     codex_mode: str | None = None,
     codex_model: str | None = None,
     codex_reasoning_effort: str | None = None,
@@ -140,7 +130,7 @@ async def run_cli_sub_query(
     if context_slice and max_context_chars > 0 and len(context_slice) > max_context_chars:
         context_slice = context_slice[:max_context_chars]
 
-    resolved_codex_mode = (codex_mode or _codex_mode()).lower()
+    resolved_codex_mode = resolve_codex_mode(codex_mode)
     if backend == "codex" and resolved_codex_mode in {"mcp", "server"}:
         success, output, _thread_id = await run_codex_mcp_sub_query(
             prompt=prompt,
@@ -152,15 +142,14 @@ async def run_cli_sub_query(
             mcp_server_url=mcp_server_url,
             mcp_server_name=mcp_server_name,
             trust_mcp_server=trust_mcp_server,
-            model=codex_model or _env_text(_CODEX_MODEL_ENV) or DEFAULT_CODEX_MODEL,
-            reasoning_effort=(
-                codex_reasoning_effort
-                or _env_text(_CODEX_REASONING_ENV)
-                or DEFAULT_CODEX_REASONING_EFFORT
-            ),
-            profile=codex_profile or _env_text(_CODEX_PROFILE_ENV),
+            model=resolve_codex_model(codex_model),
+            reasoning_effort=resolve_codex_reasoning_effort(codex_reasoning_effort),
+            profile=resolve_codex_profile(codex_profile),
         )
         return success, output
+
+    resolved_claude_model = resolve_claude_model(claude_model)
+    resolved_claude_effort = resolve_claude_effort(claude_effort)
 
     # Build the full prompt. When MCP session sharing is enabled, keep context
     # inside the shared tools boundary instead of embedding raw slices in prompt.
@@ -182,6 +171,8 @@ async def run_cli_sub_query(
                 mcp_server_url=mcp_server_url,
                 mcp_server_name=mcp_server_name,
                 trust_mcp_server=trust_mcp_server,
+                claude_model=resolved_claude_model,
+                claude_effort=resolved_claude_effort,
             )
         else:
             return await _run_with_arg(
@@ -193,6 +184,8 @@ async def run_cli_sub_query(
                 mcp_server_url=mcp_server_url,
                 mcp_server_name=mcp_server_name,
                 trust_mcp_server=trust_mcp_server,
+                claude_model=resolved_claude_model,
+                claude_effort=resolved_claude_effort,
             )
     except FileNotFoundError:
         return False, f"CLI backend '{backend}' not found. Install it or use API fallback."
@@ -274,6 +267,8 @@ async def _run_with_arg(
     mcp_server_url: str | None,
     mcp_server_name: str,
     trust_mcp_server: bool,
+    claude_model: str | None = None,
+    claude_effort: str | None = None,
 ) -> tuple[bool, str]:
     """Run CLI with prompt as argument."""
     env: dict[str, str] | None = None
@@ -286,9 +281,15 @@ async def _run_with_arg(
             config_path = _claude_mcp_config(mcp_server_url, mcp_server_name)
             _track_cleanup(config_path, cleanup_paths)
             mcp_args = ["--mcp-config", str(config_path), "--strict-mcp-config"]
+        model_args: list[str] = []
+        if claude_model:
+            model_args.extend(["--model", claude_model])
+        if claude_effort:
+            model_args.extend(["--effort", claude_effort])
         cmd = [
             "claude",
             "-p",
+            *model_args,
             *mcp_args,
             prompt,
             "--dangerously-skip-permissions",
@@ -364,6 +365,8 @@ async def _run_with_tempfile(
     mcp_server_url: str | None,
     mcp_server_name: str,
     trust_mcp_server: bool,
+    claude_model: str | None = None,
+    claude_effort: str | None = None,
 ) -> tuple[bool, str]:
     """Run CLI with prompt from temp file (for long prompts)."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
@@ -381,9 +384,15 @@ async def _run_with_tempfile(
                 config_path = _claude_mcp_config(mcp_server_url, mcp_server_name)
                 _track_cleanup(config_path, cleanup_paths)
                 mcp_args = ["--mcp-config", str(config_path), "--strict-mcp-config"]
+            model_args: list[str] = []
+            if claude_model:
+                model_args.extend(["--model", claude_model])
+            if claude_effort:
+                model_args.extend(["--effort", claude_effort])
             cmd = [
                 "claude",
                 "-p",
+                *model_args,
                 *mcp_args,
                 "--dangerously-skip-permissions",
                 "--no-session-persistence",

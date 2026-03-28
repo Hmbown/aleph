@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.1
+
+- Refactored: MCP server modularized — tool registrations extracted into
+  `admin_tools.py`, `query_tools.py`, `reasoning_tools.py`, `recipe_tools.py`.
+  Server bootstrap, remote server lifecycle, and sub-query runtime config
+  extracted into separate modules. No behavioral changes.
+- Refactored: Installer/profile logic extracted into `aleph/install_config.py`;
+  sub-query config/policy extracted into `aleph/sub_query/config.py`.
+- Fixed: `format_error` type annotation in `reasoning_tools.py` now matches
+  the `Callable` signature used in other tool modules.
+- Fixed: MCP_SETUP.md mislabeled Claude Code section as "Claude Desktop" with
+  wrong config path. Added separate Claude Desktop section.
+- Fixed: `install-aleph.md` referenced wrong Claude Code config path.
+- Docs: README rewritten to lead with Aleph as an RLM system. Added entry
+  point table (`aleph` vs `aleph-rlm`), install profile reference, and
+  tighter quick-start flow.
+
 ## 0.9.0
 
 - Added: `llamacpp` provider for local LLM inference via llama.cpp. Run the
