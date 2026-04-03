@@ -56,3 +56,6 @@ docs/architecture/
 # Local research/side projects
 ARC-AGI-3-Agents/
 rsi/
+
+# Local SQLite databases
+*.db
