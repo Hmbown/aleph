@@ -24,6 +24,7 @@ import time
 from datetime import datetime
 from typing import Awaitable, Callable, cast
 
+from .compat import OUTPUT_FEEDBACK_MODES as CANONICAL_OUTPUT_FEEDBACK_MODES, normalize_output_feedback
 from .types import (
     ActionType,
     AlephResponse,
@@ -59,7 +60,7 @@ class Aleph:
     # Supported output feedback modes for the RLM loop.
     #   "full"     – raw stdout/stderr/return_value (default, practical utility)
     #   "metadata" – structured summary only (RLM paper alignment)
-    OUTPUT_FEEDBACK_MODES = ("full", "metadata")
+    OUTPUT_FEEDBACK_MODES = CANONICAL_OUTPUT_FEEDBACK_MODES
 
     def __init__(
         self,
@@ -101,11 +102,7 @@ class Aleph:
         self.enable_caching = enable_caching
         self.log_trajectory = log_trajectory
         self.context_var_name = context_var_name
-        if output_feedback not in self.OUTPUT_FEEDBACK_MODES:
-            raise ValueError(
-                f"output_feedback must be one of {self.OUTPUT_FEEDBACK_MODES}, got {output_feedback!r}"
-            )
-        self.output_feedback = output_feedback
+        self.output_feedback = normalize_output_feedback(output_feedback)
 
         self._cache: MemoryCache[str] | None = MemoryCache() if enable_caching else None
 

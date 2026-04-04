@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
+from ..compat import normalize_output_feedback
 from .remote_servers import _RemoteServerHandle, list_registered_remote_servers, register_remote_server
 
 if TYPE_CHECKING:
@@ -31,7 +32,7 @@ def register_admin_tools(
         tool_docs_mode: Literal["concise", "full"] | None = None,
         context_policy: Literal["trusted", "isolated"] | None = None,
         workspace_root: str | None = None,
-        output_feedback: Literal["full", "metadata"] | None = None,
+        output_feedback: str | None = None,
     ) -> str:
         """Update runtime configuration."""
         ok, msg = owner._apply_sub_query_runtime_config(
@@ -81,8 +82,12 @@ def register_admin_tools(
             owner.action_config.workspace_root_explicit = True
             owner._workspace_root_source = "explicit"
         if output_feedback is not None:
-            owner.output_feedback = output_feedback
-            os.environ["ALEPH_OUTPUT_FEEDBACK"] = output_feedback
+            try:
+                normalized_feedback = normalize_output_feedback(output_feedback)
+            except ValueError as e:
+                return str(e)
+            owner.output_feedback = normalized_feedback
+            os.environ["ALEPH_OUTPUT_FEEDBACK"] = normalized_feedback
 
         return "Configuration updated. Re-run `get_status` to see current values."
 

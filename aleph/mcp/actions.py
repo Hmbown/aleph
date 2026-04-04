@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal
 
+from ..compat import normalize_content_format
 from ..types import ContentFormat, ContextMetadata
 from .formatting import _format_context_loaded, _format_error, _format_payload
 from .session import _Evidence, _Session
@@ -483,7 +484,8 @@ async def load_file(
     except ValueError as e:
         return f"Error: {e}"
     try:
-        fmt = detected_fmt if format == "auto" else ContentFormat(format)
+        normalized_format = normalize_content_format(format, allow_auto=True)
+        fmt = detected_fmt if normalized_format == "auto" else normalized_format
     except Exception as e:
         return f"Error: {e}"
     meta = deps.create_session(text, context_id, fmt, base)

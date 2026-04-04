@@ -2,6 +2,9 @@
 
 ## 0.9.1
 
+- Fixed: MCP compatibility aliases for older prompts/skills. `configure(output_feedback="minimal")`
+  now maps to `metadata`, and `load_context` / `load_file` accept
+  `format="markdown"` as a text-context alias.
 - Refactored: MCP server modularized — tool registrations extracted into
   `admin_tools.py`, `query_tools.py`, `reasoning_tools.py`, `recipe_tools.py`.
   Server bootstrap, remote server lifecycle, and sub-query runtime config

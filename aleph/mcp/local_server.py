@@ -67,6 +67,7 @@ if TYPE_CHECKING:
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 
+from ..compat import normalize_content_format, normalize_output_feedback
 from ..config import AlephConfig
 from ..core import Aleph
 from ..prompts.system import DEFAULT_SYSTEM_PROMPT
@@ -690,7 +691,9 @@ class AlephMCPServerLocal:
             self.action_config.context_policy,
         )
         self.action_config.context_policy = self.context_policy
-        self.output_feedback: str = os.environ.get("ALEPH_OUTPUT_FEEDBACK", "full")
+        self.output_feedback = normalize_output_feedback(
+            os.environ.get("ALEPH_OUTPUT_FEEDBACK", "full")
+        )
         self.sub_query_config = sub_query_config or SubQueryConfig()
         self.tool_docs_mode = tool_docs_mode
         self.max_tool_response_chars = _get_env_int(
@@ -2208,7 +2211,8 @@ class AlephMCPServerLocal:
             except ValueError as e:
                 return f"Error: {e}"
 
-            fmt = _detect_format(text) if format == "auto" else ContentFormat(format)
+            normalized_format = normalize_content_format(format, allow_auto=True)
+            fmt = _detect_format(text) if normalized_format == "auto" else normalized_format
             meta = self._create_session(text, context_id, fmt, base)
             return self._format_context_loaded(context_id, meta, base)
 
@@ -2652,7 +2656,8 @@ class AlephMCPServerLocal:
             except ValueError as e:
                 return f"Error: {e}"
             try:
-                fmt = detected_fmt if format == "auto" else ContentFormat(format)
+                normalized_format = normalize_content_format(format, allow_auto=True)
+                fmt = detected_fmt if normalized_format == "auto" else normalized_format
             except Exception as e:
                 return f"Error: {e}"
             meta = self._create_session(text, context_id, fmt, base)
