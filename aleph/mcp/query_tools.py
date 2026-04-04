@@ -250,9 +250,74 @@ def register_query_tools(
         return owner._format_execution_result(result)
 
     @_tool()
+    async def exec_javascript(
+        code: str,
+        context_id: str = "default",
+    ) -> str | dict[str, Any]:
+        """Execute JavaScript code in the persistent Node.js REPL."""
+        if context_id not in owner._sessions:
+            return f"Error: No context loaded with ID '{context_id}'."
+
+        session = owner._sessions[context_id]
+        session.iterations += 1
+
+        try:
+            repl = owner._get_or_create_node_repl(context_id)
+            result = await repl.execute_async(code, language="javascript")
+            citations = owner._sync_session_from_node_repl(context_id)
+        except Exception as exc:
+            return f"Error: {exc}"
+
+        for citation in citations:
+            session.evidence.append(
+                _Evidence(
+                    source="exec",
+                    line_range=tuple(citation["line_range"]) if citation.get("line_range") else None,
+                    pattern=None,
+                    note=citation.get("note"),
+                    snippet=str(citation.get("snippet", ""))[:200],
+                )
+            )
+
+        return owner._format_execution_result(result)
+
+    @_tool()
+    async def exec_typescript(
+        code: str,
+        context_id: str = "default",
+    ) -> str | dict[str, Any]:
+        """Execute TypeScript code in the persistent Node.js REPL."""
+        if context_id not in owner._sessions:
+            return f"Error: No context loaded with ID '{context_id}'."
+
+        session = owner._sessions[context_id]
+        session.iterations += 1
+
+        try:
+            repl = owner._get_or_create_node_repl(context_id)
+            result = await repl.execute_async(code, language="typescript")
+            citations = owner._sync_session_from_node_repl(context_id)
+        except Exception as exc:
+            return f"Error: {exc}"
+
+        for citation in citations:
+            session.evidence.append(
+                _Evidence(
+                    source="exec",
+                    line_range=tuple(citation["line_range"]) if citation.get("line_range") else None,
+                    pattern=None,
+                    note=citation.get("note"),
+                    snippet=str(citation.get("snippet", ""))[:200],
+                )
+            )
+
+        return owner._format_execution_result(result)
+
+    @_tool()
     async def get_variable(
         name: str,
         context_id: str = "default",
+        language: Literal["python", "javascript", "typescript"] = "python",
     ) -> Any:
         """Retrieve a variable from the REPL namespace."""
         if context_id not in owner._sessions:
@@ -262,10 +327,18 @@ def register_query_tools(
                 f"Blocked: get_variable('{name}') is restricted under isolated policy.\n"
                 "Alternatives:\n"
                 "  - Use exec_python(code='result = len(ctx)') then get_variable('result')\n"
+                "  - Use exec_javascript(code='const result = ctx.length') then get_variable('result', language='javascript')\n"
                 "  - Use peek_context() to view bounded ranges\n"
                 "  - Use search_context() to find specific patterns\n"
                 "Tip: switch to trusted policy via configure(context_policy='trusted') if appropriate."
             )
 
         session = owner._sessions[context_id]
-        return owner._format_variable_value(name, session.repl.get_variable(name))
+        if language == "python":
+            value = session.repl.get_variable(name)
+        else:
+            try:
+                value = owner._get_or_create_node_repl(context_id).get_variable(name)
+            except Exception as exc:
+                return f"Error: {exc}"
+        return owner._format_variable_value(name, value)

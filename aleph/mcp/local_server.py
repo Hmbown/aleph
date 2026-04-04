@@ -8,6 +8,8 @@ Tools:
 - search_context: Regex search with context
 - semantic_search: Meaning-based search over the context
 - exec_python: Execute Python code in sandbox
+- exec_javascript: Execute JavaScript code in persistent Node.js runtime
+- exec_typescript: Execute TypeScript code in persistent Node.js runtime
 - get_variable: Retrieve variables from REPL
 - think: Structure a reasoning sub-step (returns prompt for YOU to reason about)
 - tasks: Lightweight task tracking per context
@@ -29,8 +31,10 @@ Tools:
 - run_tests: Run tests (action tool)
 - rg_search: Fast repo search via ripgrep (action tool)
 
-RLM recursion is available inside `exec_python` via REPL helpers
-(`sub_query`, `sub_query_batch`, `sub_query_map`, `sub_aleph`).
+RLM recursion is available inside `exec_python`, `exec_javascript`, and
+`exec_typescript` via REPL helpers (`sub_query`, `sub_query_batch`,
+`sub_query_map`, `sub_aleph`). The JS/TS variants are async and intended to be
+used with top-level `await`.
 
 Usage:
     aleph
@@ -73,6 +77,7 @@ from ..core import Aleph
 from ..prompts.system import DEFAULT_SYSTEM_PROMPT
 from ..providers.registry import get_provider
 from ..repl import helpers as repl_helpers
+from ..repl.node_runtime import NodeREPLEnvironment
 from ..repl.sandbox import REPLEnvironment, SandboxConfig
 from ..types import AlephResponse, ContentFormat, ContextMetadata, ContextType, ExecutionResult
 from ..sub_query import (
@@ -706,6 +711,7 @@ class AlephMCPServerLocal:
         )
         self.max_recipe_concurrency = max(1, configured_recipe_concurrency)
         self._sessions: dict[str, _Session] = {}
+        self._node_repls: dict[str, NodeREPLEnvironment] = {}
         self._remote_servers: dict[str, _RemoteServerHandle] = {}
         self._auto_pack_loaded = False
         self._streamable_http_task: asyncio.Task | None = None
@@ -1908,6 +1914,7 @@ class AlephMCPServerLocal:
         fmt: ContentFormat,
         line_number_base: LineNumberBase,
     ) -> ContextMetadata:
+        self._close_node_repl(context_id)
         meta = _analyze_text_context(context, fmt)
         repl = REPLEnvironment(
             context=context,
@@ -1947,6 +1954,104 @@ class AlephMCPServerLocal:
         self._sessions[context_id] = session
         self._configure_session(session, context_id, loop=asyncio.get_running_loop())
         return session
+
+    def _close_node_repl(self, context_id: str) -> None:
+        node_repl = self._node_repls.pop(context_id, None)
+        if node_repl is not None:
+            node_repl.close()
+
+    def _configure_node_repl(
+        self,
+        node_repl: NodeREPLEnvironment,
+        session: _Session,
+    ) -> None:
+        def _get_helper(name: str) -> Callable[..., Any]:
+            fn = session.repl.get_helper(name)
+            if not callable(fn):
+                raise RuntimeError(f"{name} is not available in this REPL session")
+            return cast(Callable[..., Any], fn)
+
+        def _get_callable(name: str) -> Callable[..., Any]:
+            fn = session.repl.get_variable(name)
+            if not callable(fn):
+                raise RuntimeError(f"{name} is not available in this REPL session")
+            return cast(Callable[..., Any], fn)
+
+        node_repl.register_callback(
+            "sub_query",
+            lambda prompt, context_slice=None: _get_callable("sub_query")(prompt, context_slice),
+        )
+        node_repl.register_callback(
+            "sub_query_map",
+            lambda prompts, context_slices=None, limit=None, parallel=True: _get_helper("sub_query_map")(
+                prompts,
+                context_slices=context_slices,
+                limit=limit,
+                parallel=parallel,
+            ),
+        )
+        node_repl.register_callback(
+            "sub_query_batch",
+            lambda prompt, context_slices, limit=None: _get_helper("sub_query_batch")(
+                prompt,
+                context_slices,
+                limit=limit,
+            ),
+        )
+        node_repl.register_callback(
+            "sub_query_strict",
+            lambda prompt, context_slice=None, validate_regex=None, max_retries=0, retry_prompt=None: _get_helper(
+                "sub_query_strict"
+            )(
+                prompt,
+                context_slice=context_slice,
+                validate_regex=validate_regex,
+                max_retries=max_retries,
+                retry_prompt=retry_prompt,
+            ),
+        )
+        node_repl.register_callback(
+            "sub_aleph",
+            lambda query, context=None: _get_callable("sub_aleph")(query, context),
+        )
+        node_repl.register_callback("set_backend", lambda backend: _get_callable("set_backend")(backend))
+        node_repl.register_callback("get_config", lambda: _get_callable("get_config")())
+
+    def _get_or_create_node_repl(self, context_id: str) -> NodeREPLEnvironment:
+        if context_id not in self._sessions:
+            raise KeyError(context_id)
+
+        session = self._sessions[context_id]
+        node_repl = self._node_repls.get(context_id)
+        current_ctx = session.repl.get_variable("ctx")
+        current_loop = asyncio.get_running_loop()
+
+        if node_repl is None:
+            node_repl = NodeREPLEnvironment(
+                context=current_ctx,
+                context_var_name="ctx",
+                config=self.sandbox_config,
+                loop=current_loop,
+            )
+            self._node_repls[context_id] = node_repl
+        else:
+            node_repl.set_loop(current_loop)
+
+        node_repl.sync_context(current_ctx, session.line_number_base)
+        self._configure_node_repl(node_repl, session)
+        return node_repl
+
+    def _sync_session_from_node_repl(self, context_id: str) -> list[dict[str, Any]]:
+        node_repl = self._node_repls.get(context_id)
+        if node_repl is None or context_id not in self._sessions:
+            return []
+
+        session = self._sessions[context_id]
+        ctx_value = node_repl.get_variable("ctx")
+        ctx_text = _coerce_context_to_text(ctx_value)
+        session.repl.set_variable("ctx", ctx_text)
+        session.meta = _analyze_text_context(ctx_text, session.meta.format)
+        return node_repl.drain_citations()
 
     def _first_doc_line(self, fn: Any) -> str:
         doc = inspect.getdoc(fn) or ""
@@ -2362,6 +2467,7 @@ class AlephMCPServerLocal:
                     skipped.append({"id": "<missing>", "error": "missing session identifier"})
                     continue
                 try:
+                    self._close_node_repl(sid)
                     session = _session_from_payload(sp, sid, self.sandbox_config, asyncio.get_running_loop())
                     self._configure_session(session, sid, loop=asyncio.get_running_loop())
                     self._sessions[sid] = session

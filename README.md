@@ -21,7 +21,8 @@ Why Aleph:
 
 - **Load once, reason many times.** Data lives in Aleph memory, not the prompt.
 - **Compute server-side.** `exec_python` runs code over the full context and
-  returns only derived results.
+  returns only derived results. For JS/TS repos, `exec_javascript` and
+  `exec_typescript` provide a persistent Node.js runtime over the same `ctx`.
 - **Recurse.** Sub-queries and recipes split complex work across multiple
   reasoning passes.
 - **Persist.** Save sessions and resume long investigations later.
@@ -164,15 +165,48 @@ variables.
 |---|---|---|
 | Load context | `load_context`, `load_file`, `list_contexts`, `diff_contexts` | Put data into Aleph memory and inspect what is loaded |
 | Navigate | `search_context`, `semantic_search`, `peek_context`, `chunk_context`, `rg_search` | Find the relevant slice before asking for an answer |
-| Compute | `exec_python`, `get_variable` | Run code over the full context and retrieve only the derived result |
+| Compute | `exec_python`, `exec_javascript`, `exec_typescript`, `get_variable` | Run Python or JS/TS over the full context and retrieve only the derived result |
 | Reason | `think`, `evaluate_progress`, `get_evidence`, `finalize` | Structure progress and close out with evidence |
 | Orchestrate | `configure`, `validate_recipe`, `estimate_recipe`, `run_recipe`, `run_recipe_code` | Switch backends and automate repeated reasoning patterns |
 | Persist | `save_session`, `load_session` | Keep long investigations outside the prompt window |
 
-Inside `exec_python`, Aleph also exposes helpers such as `search(...)`,
-`chunk(...)`, `lines(...)`, `sub_query(...)`, `sub_query_batch(...)`, and
-`sub_aleph(...)`. Recursive helpers live inside the REPL, not as top-level MCP
-tools.
+## Python vs JS/TS REPL
+
+Aleph's **primary control layer is still Python**. `exec_python` remains the
+default REPL for general-purpose analysis, recipes, and orchestration.
+
+- `exec_python`
+  Full Aleph helper surface, including recipe DSL helpers, synchronous
+  `sub_query(...)` / `sub_aleph(...)`, and the widest compatibility with
+  existing prompts and workflows.
+- `exec_javascript` / `exec_typescript`
+  Persistent Node.js runtime per context for JS/TS-heavy repos. Shares the same
+  `ctx`, supports top-level `await`, and can recurse with async
+  `await sub_query(...)`, `await sub_query_batch(...)`,
+  `await sub_query_map(...)`, `await sub_query_strict(...)`, and
+  `await sub_aleph(...)`.
+
+The JS/TS runtime also ships with a broader local helper set than the first
+handoff slice: search/peek/lines/chunk, extraction helpers (`extract_emails`,
+`extract_todos`, `extract_routes`, etc.), text utilities (`number_lines`,
+`grep_v`, `sort_lines`, `normalize_whitespace`, etc.), and `semantic_search`.
+
+What still differs from Python:
+
+- Python is still the default and best-supported Aleph REPL.
+- JS/TS recursion helpers are async and require `await`.
+- JS/TS does not yet expose the full Python standalone/helper surface or recipe
+  DSL parity.
+
+Example JS/TS workflow:
+
+```python
+exec_javascript(code=`
+const todos = extract_todos().map((item) => item.value).join("\\n");
+const summary = await sub_query("Summarize the TODO backlog", todos);
+summary
+`, context_id="repo")
+```
 
 ## Safety Model
 

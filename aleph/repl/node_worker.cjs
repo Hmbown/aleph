@@ -1,0 +1,1183 @@
+"use strict";
+
+const crypto = require("node:crypto");
+const readline = require("node:readline");
+const util = require("node:util");
+const vm = require("node:vm");
+const { stripTypeScriptTypes } = require("node:module");
+
+const contextVarName = process.argv[2] || "ctx";
+
+const blockedNames = Object.freeze([
+  "process",
+  "require",
+  "module",
+  "exports",
+  "eval",
+  "Function",
+]);
+
+let lineNumberBase = 1;
+let stdoutBuffer = [];
+let stderrBuffer = [];
+let evidenceBuffer = [];
+let nextCallbackId = 0;
+
+const pendingCallbacks = new Map();
+
+function inspectValue(value) {
+  return typeof value === "string"
+    ? value
+    : util.inspect(value, {
+        depth: 4,
+        breakLength: 120,
+        maxArrayLength: 100,
+      });
+}
+
+function send(payload) {
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
+}
+
+function settleCallbackResponse(request) {
+  const callbackId = Number(request.callback_id);
+  const pending = pendingCallbacks.get(callbackId);
+  if (!pending) {
+    return;
+  }
+  pendingCallbacks.delete(callbackId);
+  if (request.ok) {
+    pending.resolve(request.value);
+    return;
+  }
+  pending.reject(new Error(String(request.error || "Host callback failed")));
+}
+
+function callHost(name, args = [], kwargs = {}) {
+  return new Promise((resolve, reject) => {
+    const callbackId = ++nextCallbackId;
+    pendingCallbacks.set(callbackId, { resolve, reject });
+    send({
+      op: "callback_request",
+      callback_id: callbackId,
+      name,
+      args,
+      kwargs,
+    });
+  });
+}
+
+function toText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  if (Array.isArray(value) || (typeof value === "object" && value)) {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+function splitLines(text) {
+  return toText(text).split(/\r?\n/);
+}
+
+function normalizeFlags(flags = "", { ensureGlobal = false } = {}) {
+  const normalized = typeof flags === "string" ? flags : "";
+  return ensureGlobal && !normalized.includes("g") ? `${normalized}g` : normalized;
+}
+
+function regexFrom(pattern, flags = "", options = {}) {
+  return new RegExp(String(pattern), normalizeFlags(flags, options));
+}
+
+function extractWithPattern(value, pattern, flags = "", maxResults = 100) {
+  const text = toText(value);
+  const lines = splitLines(text);
+  const results = [];
+  const rx = regexFrom(pattern, flags, { ensureGlobal: true });
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    rx.lastIndex = 0;
+    for (const match of line.matchAll(rx)) {
+      results.push({
+        value: match[0],
+        line_num: lineIndex,
+        start: match.index ?? 0,
+        end: (match.index ?? 0) + match[0].length,
+      });
+      if (results.length >= maxResults) {
+        return results;
+      }
+    }
+  }
+
+  return results;
+}
+
+function peekImpl(value, start = 0, end = null) {
+  const text = toText(value);
+  return text.slice(start, end === null ? undefined : end);
+}
+
+function linesImpl(value, start = 0, end = null) {
+  const parts = splitLines(value);
+  return parts.slice(start, end === null ? undefined : end).join("\n");
+}
+
+function chunkImpl(value, chunkSize, overlap = 0) {
+  if (!(chunkSize > 0)) {
+    throw new Error("chunk_size must be > 0");
+  }
+  if (overlap < 0) {
+    throw new Error("overlap must be >= 0");
+  }
+  if (overlap >= chunkSize) {
+    throw new Error("overlap must be < chunk_size");
+  }
+
+  const text = toText(value);
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    const j = Math.min(text.length, i + chunkSize);
+    out.push(text.slice(i, j));
+    if (j === text.length) break;
+    i = j - overlap;
+  }
+  return out;
+}
+
+function searchImpl(value, pattern, contextLines = 2, flags = "", maxResults = 20) {
+  const rx = regexFrom(pattern, flags);
+  const parts = splitLines(value);
+  const results = [];
+
+  for (let i = 0; i < parts.length; i += 1) {
+    rx.lastIndex = 0;
+    if (!rx.test(parts[i])) continue;
+    const start = Math.max(0, i - contextLines);
+    const end = Math.min(parts.length, i + contextLines + 1);
+    results.push({
+      match: parts[i],
+      line_num: i + lineNumberBase,
+      context: parts.slice(start, end).join("\n"),
+    });
+    if (results.length >= maxResults) break;
+  }
+  return results;
+}
+
+function findAllImpl(value, pattern, flags = "", maxResults = 100) {
+  const rx = regexFrom(pattern, flags, { ensureGlobal: true });
+  const matches = [];
+  const text = toText(value);
+  for (const match of text.matchAll(rx)) {
+    matches.push(match[0]);
+    if (matches.length >= maxResults) break;
+  }
+  return matches;
+}
+
+function countMatchesImpl(value, pattern, flags = "") {
+  return findAllImpl(value, pattern, flags, Number.MAX_SAFE_INTEGER).length;
+}
+
+function firstMatchImpl(value, pattern, flags = "") {
+  const rx = regexFrom(pattern, flags);
+  const match = rx.exec(toText(value));
+  return match ? match[0] : null;
+}
+
+function grepImpl(value, pattern, flags = "") {
+  const rx = regexFrom(pattern, flags);
+  return splitLines(value).filter((line) => {
+    rx.lastIndex = 0;
+    return rx.test(line);
+  });
+}
+
+function grepVImpl(value, pattern, flags = "") {
+  const rx = regexFrom(pattern, flags);
+  return splitLines(value).filter((line) => {
+    rx.lastIndex = 0;
+    return !rx.test(line);
+  });
+}
+
+function grepCImpl(value, pattern, flags = "") {
+  return grepImpl(value, pattern, flags).length;
+}
+
+function containsImpl(value, pattern, flags = "") {
+  const rx = regexFrom(pattern, flags);
+  return rx.test(toText(value));
+}
+
+function containsAnyImpl(value, patterns, flags = "") {
+  return Array.from(patterns).some((pattern) => containsImpl(value, pattern, flags));
+}
+
+function containsAllImpl(value, patterns, flags = "") {
+  return Array.from(patterns).every((pattern) => containsImpl(value, pattern, flags));
+}
+
+function truncateImpl(value, maxChars = 200, suffix = "...") {
+  const text = toText(value);
+  return text.length <= maxChars ? text : `${text.slice(0, Math.max(0, maxChars - suffix.length))}${suffix}`;
+}
+
+function wordCountImpl(value) {
+  const text = toText(value).trim();
+  if (!text) return 0;
+  return text.split(/\s+/).length;
+}
+
+function charCountImpl(value, includeWhitespace = true) {
+  const text = toText(value);
+  if (includeWhitespace) {
+    return text.length;
+  }
+  return text.replace(/[ \n\t]/g, "").length;
+}
+
+function lineCountImpl(value) {
+  return splitLines(value).length;
+}
+
+function sentenceCountImpl(value) {
+  return toText(value)
+    .split(/[.!?]+/)
+    .filter((part) => part.trim()).length;
+}
+
+function paragraphCountImpl(value) {
+  return toText(value)
+    .split(/\n\s*\n/)
+    .filter((part) => part.trim()).length;
+}
+
+function uniqueWordsImpl(value, caseInsensitive = true) {
+  const text = caseInsensitive ? toText(value).toLowerCase() : toText(value);
+  const words = text.match(/\b\w+\b/g) || [];
+  return Array.from(new Set(words));
+}
+
+function wordFrequencyImpl(value, topN = 20, caseInsensitive = true) {
+  const text = caseInsensitive ? toText(value).toLowerCase() : toText(value);
+  const words = text.match(/\b\w+\b/g) || [];
+  const counts = new Map();
+  for (const word of words) {
+    counts.set(word, (counts.get(word) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN);
+}
+
+function ngramsImpl(value, n = 2, topK = 20) {
+  if (n <= 0) {
+    throw new Error("n must be > 0");
+  }
+  const words = (toText(value).toLowerCase().match(/\b\w+\b/g) || []);
+  const counts = new Map();
+  for (let i = 0; i <= words.length - n; i += 1) {
+    const gram = words.slice(i, i + n);
+    const key = gram.join("\u0000");
+    counts.set(key, { gram, count: (counts.get(key)?.count || 0) + 1 });
+  }
+  return Array.from(counts.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, topK)
+    .map((item) => [item.gram, item.count]);
+}
+
+function headImpl(value, n = 10) {
+  return linesImpl(value, 0, n);
+}
+
+function tailImpl(value, n = 10) {
+  const parts = splitLines(value);
+  return parts.slice(Math.max(0, parts.length - n)).join("\n");
+}
+
+function uniqImpl(value) {
+  const result = [];
+  let previous = Symbol("start");
+  for (const line of splitLines(value)) {
+    if (line !== previous) {
+      result.push(line);
+      previous = line;
+    }
+  }
+  return result;
+}
+
+function sortLinesImpl(value, reverse = false, numeric = false) {
+  const lines = splitLines(value);
+  if (numeric) {
+    return [...lines].sort((a, b) => {
+      const left = Number((a.match(/-?\d+\.?\d*/) || ["0"])[0]);
+      const right = Number((b.match(/-?\d+\.?\d*/) || ["0"])[0]);
+      return reverse ? right - left : left - right;
+    });
+  }
+  return [...lines].sort((a, b) => (reverse ? b.localeCompare(a) : a.localeCompare(b)));
+}
+
+function numberLinesImpl(value, start = 1) {
+  const lines = splitLines(value);
+  const width = String(start + lines.length).length;
+  return lines
+    .map((line, index) => `${String(start + index).padStart(width, " ")}: ${line}`)
+    .join("\n");
+}
+
+function stripLinesImpl(value) {
+  return splitLines(value).map((line) => line.trim());
+}
+
+function blankLinesImpl(value) {
+  const results = [];
+  for (const [index, line] of splitLines(value).entries()) {
+    if (!line.trim()) {
+      results.push(index);
+    }
+  }
+  return results;
+}
+
+function nonBlankLinesImpl(value) {
+  return splitLines(value).filter((line) => line.trim());
+}
+
+function columnsImpl(value, col, delim = "\\s+") {
+  const results = [];
+  for (const line of splitLines(value)) {
+    const parts = line.split(regexFrom(delim, "g"));
+    if (col < parts.length) {
+      results.push(parts[col]);
+    }
+  }
+  return results;
+}
+
+function replaceAllImpl(value, pattern, replacement, flags = "") {
+  return toText(value).replace(regexFrom(pattern, flags, { ensureGlobal: true }), replacement);
+}
+
+function splitByImpl(value, pattern, flags = "") {
+  return toText(value).split(regexFrom(pattern, flags));
+}
+
+function betweenImpl(value, startPattern, endPattern, includeMarkers = false) {
+  const pattern = includeMarkers
+    ? `(${startPattern}.*?${endPattern})`
+    : `${startPattern}(.*?)${endPattern}`;
+  return Array.from(toText(value).matchAll(regexFrom(pattern, "gs"))).map((match) => match[1] ?? match[0]);
+}
+
+function beforeImpl(value, pattern, flags = "") {
+  const text = toText(value);
+  const match = regexFrom(pattern, flags).exec(text);
+  return match ? text.slice(0, match.index ?? 0) : text;
+}
+
+function afterImpl(value, pattern, flags = "") {
+  const text = toText(value);
+  const match = regexFrom(pattern, flags).exec(text);
+  return match ? text.slice((match.index ?? 0) + match[0].length) : "";
+}
+
+function wrapTextImpl(value, width = 80) {
+  if (width <= 0) {
+    throw new Error("width must be > 0");
+  }
+  const text = toText(value).trim();
+  if (!text) {
+    return "";
+  }
+  const words = text.split(/\s+/);
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    if (!current) {
+      current = word;
+      continue;
+    }
+    if (current.length + 1 + word.length > width) {
+      lines.push(current);
+      current = word;
+      continue;
+    }
+    current += ` ${word}`;
+  }
+  if (current) {
+    lines.push(current);
+  }
+  return lines.join("\n");
+}
+
+function indentTextImpl(value, prefix = "  ") {
+  return splitLines(value).map((line) => `${prefix}${line}`).join("\n");
+}
+
+function dedentTextImpl(value) {
+  const lines = splitLines(value);
+  let minIndent = Infinity;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const indent = (line.match(/^\s*/) || [""])[0].length;
+    minIndent = Math.min(minIndent, indent);
+  }
+  if (!Number.isFinite(minIndent)) {
+    return toText(value);
+  }
+  return lines.map((line) => line.slice(Math.min(minIndent, line.length))).join("\n");
+}
+
+function normalizeWhitespaceImpl(value) {
+  return splitLines(value)
+    .map((line) => line.trim().replace(/\s+/g, " "))
+    .join("\n");
+}
+
+function removePunctuationImpl(value) {
+  return toText(value).replace(/[^\w\s]/g, "");
+}
+
+function toLowerImpl(value) {
+  return toText(value).toLowerCase();
+}
+
+function toUpperImpl(value) {
+  return toText(value).toUpperCase();
+}
+
+function toTitleImpl(value) {
+  return toText(value).replace(/\w\S*/g, (word) => word[0].toUpperCase() + word.slice(1).toLowerCase());
+}
+
+function dedupeImpl(items) {
+  const seen = new Set();
+  const out = [];
+  for (const item of Array.from(items)) {
+    const key = item && typeof item === "object" ? JSON.stringify(item) : String(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+function toJsonImpl(value, indent = 2) {
+  return JSON.stringify(value, null, indent);
+}
+
+function fromJsonImpl(text) {
+  return JSON.parse(String(text));
+}
+
+function toIntImpl(text, defaultValue = 0) {
+  const parsed = Number.parseInt(String(text).replace(/,/g, "").trim(), 10);
+  return Number.isNaN(parsed) ? defaultValue : parsed;
+}
+
+function toFloatImpl(text, defaultValue = 0.0) {
+  const parsed = Number.parseFloat(String(text).replace(/,/g, "").trim());
+  return Number.isNaN(parsed) ? defaultValue : parsed;
+}
+
+function toSnakeCaseImpl(text) {
+  return String(text)
+    .replace(/(.)([A-Z][a-z]+)/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[-\s]+/g, "_")
+    .toLowerCase();
+}
+
+function toCamelCaseImpl(text) {
+  const parts = String(text).split(/[-_\s]+/).filter(Boolean);
+  if (parts.length === 0) return "";
+  return parts[0].toLowerCase() + parts.slice(1).map((part) => part[0].toUpperCase() + part.slice(1).toLowerCase()).join("");
+}
+
+function toPascalCaseImpl(text) {
+  return String(text)
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1).toLowerCase())
+    .join("");
+}
+
+function toKebabCaseImpl(text) {
+  return toSnakeCaseImpl(text).replace(/_/g, "-");
+}
+
+function slugifyImpl(text) {
+  return String(text)
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/[-\s]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function embedTextImpl(text, dim = 256) {
+  if (!(dim > 0)) {
+    throw new Error("dim must be > 0");
+  }
+  const vec = Array.from({ length: dim }, () => 0);
+  const tokens = String(text).toLowerCase().match(/[A-Za-z0-9_]+/g) || [];
+  for (const token of tokens) {
+    if (token.length < 2) continue;
+    const digest = crypto.createHash("blake2b512").update(token, "utf8").digest();
+    const idx = digest.readUInt32LE(0) % dim;
+    vec[idx] += 1;
+  }
+  const norm = Math.sqrt(vec.reduce((acc, value) => acc + value * value, 0));
+  return norm > 0 ? vec.map((value) => value / norm) : vec;
+}
+
+function cosineSimilarityImpl(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return 0;
+  let total = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    total += a[i] * b[i];
+  }
+  return total;
+}
+
+function semanticSearchImpl(value, query, chunkSize = 1000, overlap = 100, topK = 5, embedDim = 256) {
+  if (!query) {
+    return [];
+  }
+  const chunks = chunkImpl(value, chunkSize, overlap);
+  if (chunks.length === 0) {
+    return [];
+  }
+  const queryVector = embedTextImpl(String(query), embedDim);
+  const results = [];
+  let position = 0;
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunkText = chunks[index];
+    const chunkVector = embedTextImpl(chunkText, embedDim);
+    results.push({
+      index,
+      score: cosineSimilarityImpl(queryVector, chunkVector),
+      start_char: position,
+      end_char: position + chunkText.length,
+      preview: chunkText.length > 200 ? `${chunkText.slice(0, 200)}...` : chunkText,
+    });
+    position += index < chunks.length - 1 ? chunkText.length - overlap : chunkText.length;
+  }
+  return results.sort((a, b) => b.score - a.score).slice(0, Math.max(0, topK));
+}
+
+function extractNumbersImpl(value, includeNegative = true, includeDecimals = true) {
+  let pattern;
+  if (includeDecimals && includeNegative) {
+    pattern = "-?\\d+\\.?\\d*";
+  } else if (includeDecimals) {
+    pattern = "\\d+\\.?\\d*";
+  } else if (includeNegative) {
+    pattern = "-?\\d+";
+  } else {
+    pattern = "\\d+";
+  }
+  return extractWithPattern(value, pattern);
+}
+
+function extractMoneyImpl(value, currencies = "[$€£¥₹]") {
+  return extractWithPattern(value, `${currencies}\\s*[\\d,]+\\.?\\d*|\\d+\\.?\\d*\\s*${currencies}`);
+}
+
+function extractPercentagesImpl(value) {
+  return extractWithPattern(value, "-?\\d+\\.?\\d*\\s*%");
+}
+
+function extractDatesImpl(value) {
+  const patterns = [
+    "\\d{4}-\\d{2}-\\d{2}",
+    "\\d{1,2}/\\d{1,2}/\\d{2,4}",
+    "\\d{1,2}-\\d{1,2}-\\d{2,4}",
+    "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\.?\\s+\\d{1,2},?\\s+\\d{4}",
+    "\\d{1,2}\\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\.?\\s+\\d{4}",
+  ];
+  return extractWithPattern(value, patterns.map((pattern) => `(${pattern})`).join("|"), "i");
+}
+
+function extractTimesImpl(value) {
+  return extractWithPattern(value, "\\d{1,2}:\\d{2}(?::\\d{2})?(?:\\s*[AaPp][Mm])?");
+}
+
+function extractTimestampsImpl(value) {
+  const patterns = [
+    "\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:?\\d{2})?",
+    "\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2}",
+    "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2}",
+  ];
+  return extractWithPattern(value, patterns.map((pattern) => `(${pattern})`).join("|"), "i");
+}
+
+function extractEmailsImpl(value) {
+  return extractWithPattern(value, "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}");
+}
+
+function extractUrlsImpl(value) {
+  return extractWithPattern(value, "https?://[^\\s<>\"']+|ftp://[^\\s<>\"']+|www\\.[^\\s<>\"']+");
+}
+
+function extractIpsImpl(value, includeIpv6 = false) {
+  const ipv4 = "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b";
+  const ipv6 = "(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,7}:|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}";
+  return extractWithPattern(value, includeIpv6 ? `${ipv4}|${ipv6}` : ipv4);
+}
+
+function extractPhonesImpl(value) {
+  return extractWithPattern(value, "(?:\\+\\d{1,3}[-.\\s]?)?\\(?\\d{3}\\)?[-.\\s]?\\d{3}[-.\\s]?\\d{4}");
+}
+
+function extractHexImpl(value) {
+  return extractWithPattern(value, "0x[0-9a-fA-F]+|#[0-9a-fA-F]{3,8}\\b");
+}
+
+function extractUuidsImpl(value) {
+  return extractWithPattern(value, "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+}
+
+function extractPathsImpl(value) {
+  const patterns = [
+    "/(?:[^/\\s]+/)*[^/\\s]+",
+    "[A-Za-z]:\\\\(?:[^\\\\:\\s]+\\\\)*[^\\\\:\\s]+",
+    "\\.{1,2}/(?:[^/\\s]+/)*[^/\\s]*",
+  ];
+  return extractWithPattern(value, patterns.map((pattern) => `(${pattern})`).join("|"));
+}
+
+function extractEnvVarsImpl(value) {
+  return extractWithPattern(value, "\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}|\\$[A-Za-z_][A-Za-z0-9_]*|%[A-Za-z_][A-Za-z0-9_]*%");
+}
+
+function extractVersionsImpl(value) {
+  return extractWithPattern(value, "v?\\d+\\.\\d+(?:\\.\\d+)?(?:-[a-zA-Z0-9.]+)?(?:\\+[a-zA-Z0-9.]+)?");
+}
+
+function extractHashesImpl(value) {
+  const patterns = [
+    "\\b[a-fA-F0-9]{32}\\b",
+    "\\b[a-fA-F0-9]{40}\\b",
+    "\\b[a-fA-F0-9]{64}\\b",
+  ];
+  return extractWithPattern(value, patterns.join("|"));
+}
+
+function extractFunctionsImpl(value, lang = "python") {
+  const patterns = {
+    python: "(?:async\\s+)?def\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
+    javascript:
+      "(?:async\\s+)?function\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(|(?:const|let|var)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*=\\s*(?:async\\s+)?\\([^)]*\\)\\s*=>",
+    go: "func\\s+(?:\\([^)]+\\)\\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
+    rust: "(?:pub\\s+)?(?:async\\s+)?fn\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+    java: "(?:public|private|protected)?\\s*(?:static\\s+)?(?:\\w+\\s+)+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
+  };
+  return extractWithPattern(value, patterns[String(lang).toLowerCase()] || patterns.python);
+}
+
+function extractClassesImpl(value, lang = "python") {
+  const patterns = {
+    python: "class\\s+([A-Za-z_][A-Za-z0-9_]*)",
+    javascript: "class\\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+    java: "(?:public\\s+)?(?:abstract\\s+)?(?:final\\s+)?class\\s+([A-Za-z_][A-Za-z0-9_]*)",
+    go: "type\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+struct",
+    rust: "(?:pub\\s+)?struct\\s+([A-Za-z_][A-Za-z0-9_]*)",
+  };
+  return extractWithPattern(value, patterns[String(lang).toLowerCase()] || patterns.python);
+}
+
+function extractImportsImpl(value, lang = "python") {
+  const patterns = {
+    python: "(?:from\\s+[\\w.]+\\s+)?import\\s+[\\w., ]+",
+    javascript: "import\\s+.*?from\\s+['\"][^'\"]+['\"]|require\\s*\\(['\"][^'\"]+['\"]\\)",
+    go: "import\\s+(?:\\(\\s*(?:\"[^\"]+\"\\s*)+\\)|\"[^\"]+\")",
+    java: "import\\s+[\\w.]+;",
+    rust: "use\\s+[\\w:]+;",
+  };
+  return extractWithPattern(value, patterns[String(lang).toLowerCase()] || patterns.python);
+}
+
+function extractCommentsImpl(value, lang = "python") {
+  const patterns = {
+    python: "#.*$|'''[\\s\\S]*?'''|\"\"\"[\\s\\S]*?\"\"\"",
+    javascript: "//.*$|/\\*[\\s\\S]*?\\*/",
+    go: "//.*$|/\\*[\\s\\S]*?\\*/",
+    java: "//.*$|/\\*[\\s\\S]*?\\*/",
+    rust: "//.*$|/\\*[\\s\\S]*?\\*/",
+    c: "//.*$|/\\*[\\s\\S]*?\\*/",
+    html: "<!--[\\s\\S]*?-->",
+    css: "/\\*[\\s\\S]*?\\*/",
+  };
+  return extractWithPattern(value, patterns[String(lang).toLowerCase()] || patterns.python, "m");
+}
+
+function extractRoutesImpl(value, lang = "auto") {
+  const patterns = {
+    python: "@(?:app|router)\\.(?:get|post|put|delete|patch|options|head)\\(\\s*[\"'][^\"']+",
+    django: "\\b(?:path|re_path)\\(\\s*r?[\"'][^\"']+",
+    javascript: "\\b(?:app|router)\\.(?:get|post|put|delete|patch|options|head|use)\\(\\s*[\"'][^\"']+",
+    ruby: "\\b(?:get|post|put|delete|patch|match)\\s+[\"'][^\"']+",
+  };
+  const key = String(lang).toLowerCase().trim();
+  const pattern = patterns[key] || Object.values(patterns).map((item) => `(${item})`).join("|");
+  return extractWithPattern(value, pattern, "im");
+}
+
+function extractStringsImpl(value) {
+  return extractWithPattern(value, "\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|`(?:[^`\\\\]|\\\\.)*`");
+}
+
+function extractTodosImpl(value) {
+  return extractWithPattern(value, "(?:TODO|FIXME|HACK|XXX|BUG|NOTE)[\\s:]+.*", "i");
+}
+
+function extractLogLevelsImpl(value) {
+  return extractWithPattern(value, "\\b(?:FATAL|ERROR|WARN(?:ING)?|INFO|DEBUG|TRACE)\\b", "i");
+}
+
+function extractExceptionsImpl(value) {
+  const patterns = [
+    "(?:Exception|Error|Traceback).*",
+    "at\\s+[\\w.$]+\\([\\w.:]+\\)",
+    "File \".*\", line \\d+",
+  ];
+  return extractWithPattern(value, patterns.join("|"));
+}
+
+function extractJsonObjectsImpl(value) {
+  return extractWithPattern(value, "\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}");
+}
+
+function citeImpl(snippet, lineRange = null, note = null) {
+  const citation = {
+    snippet: String(snippet).slice(0, 500),
+    line_range: Array.isArray(lineRange) ? lineRange.slice(0, 2) : lineRange,
+    note: note == null ? null : String(note),
+  };
+  evidenceBuffer.push(citation);
+  return citation;
+}
+
+function serialize(value, seen = new WeakSet()) {
+  if (value === undefined) return { kind: "undefined", value: null };
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return { kind: "json", value };
+  }
+  if (typeof value === "bigint") {
+    return { kind: "repr", value: value.toString() };
+  }
+  if (typeof value === "function") {
+    return { kind: "repr", value: `[Function ${value.name || "anonymous"}]` };
+  }
+  if (value instanceof Date) {
+    return { kind: "json", value: value.toISOString() };
+  }
+  if (value instanceof RegExp) {
+    return { kind: "repr", value: String(value) };
+  }
+  if (typeof value === "object") {
+    if (seen.has(value)) {
+      return { kind: "repr", value: "[Circular]" };
+    }
+    seen.add(value);
+    if (Array.isArray(value)) {
+      return { kind: "json", value: value.map((item) => serialize(item, seen).value) };
+    }
+    const proto = Object.getPrototypeOf(value);
+    const tag = Object.prototype.toString.call(value);
+    if (proto === Object.prototype || proto === null || tag === "[object Object]") {
+      const out = {};
+      for (const [key, item] of Object.entries(value)) {
+        out[key] = serialize(item, seen).value;
+      }
+      return { kind: "json", value: out };
+    }
+  }
+  return { kind: "repr", value: inspectValue(value) };
+}
+
+function detectUpdatedVariables(code, previousCtx, nextCtx) {
+  const updated = new Set();
+  const patterns = [
+    /(?:^|[;\n])\s*(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/gm,
+    /(?:^|[;\n])\s*([A-Za-z_$][\w$]*)\s*(?:\+\+|--|[+\-*/%]?=)(?!=|>)/gm,
+    /globalThis\.([A-Za-z_$][\w$]*)\s*(?:\+\+|--|[+\-*/%]?=)(?!=|>)/gm,
+  ];
+
+  for (const rx of patterns) {
+    for (const match of code.matchAll(rx)) {
+      const name = match[1];
+      if (name && !blockedNames.includes(name)) updated.add(name);
+    }
+  }
+  if (previousCtx !== nextCtx) {
+    updated.add(contextVarName);
+  }
+  return Array.from(updated);
+}
+
+function normalizeCode(code, language) {
+  if (language === "typescript") {
+    if (typeof stripTypeScriptTypes !== "function") {
+      throw new Error("TypeScript execution requires Node support for stripTypeScriptTypes");
+    }
+    return stripTypeScriptTypes(code);
+  }
+  return code;
+}
+
+function isTopLevelAwaitSyntaxError(error) {
+  if (!(error instanceof SyntaxError)) {
+    return false;
+  }
+  const message = String(error.message || "");
+  return /await is only valid|Unexpected reserved word/i.test(message);
+}
+
+function rewriteTopLevelDeclarationsForAsync(code) {
+  return String(code)
+    .replace(/(^|[;\n]\s*)(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/g, "$1globalThis.$2 =")
+    .replace(/(^|[;\n]\s*)async\s+function\s+([A-Za-z_$][\w$]*)\s*\(/g, "$1globalThis.$2 = async function $2(")
+    .replace(/(^|[;\n]\s*)function\s+([A-Za-z_$][\w$]*)\s*\(/g, "$1globalThis.$2 = function $2(")
+    .replace(/(^|[;\n]\s*)class\s+([A-Za-z_$][\w$]*)\b/g, "$1globalThis.$2 = class $2");
+}
+
+function findLastExpression(code) {
+  const candidates = [0];
+  for (let i = 0; i < code.length; i += 1) {
+    if (code[i] === ";" || code[i] === "\n") {
+      candidates.push(i + 1);
+    }
+  }
+
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const start = candidates[index];
+    const prefix = code.slice(0, start);
+    const rawCandidate = code.slice(start).trim();
+    const candidate = rawCandidate.replace(/;+\s*$/, "").trim();
+    if (!candidate) {
+      continue;
+    }
+    try {
+      new vm.Script(`(async () => { return (${candidate}); })()`, { displayErrors: true });
+      return { prefix, expression: candidate };
+    } catch {
+      // Keep looking for a parseable expression boundary.
+    }
+  }
+
+  return { prefix: code, expression: null };
+}
+
+function buildAsyncWrappedCode(code) {
+  const transformed = rewriteTopLevelDeclarationsForAsync(code);
+  const { prefix, expression } = findLastExpression(transformed);
+  let body = prefix.trimEnd();
+  if (expression) {
+    body = body ? `${body}\nreturn (${expression});` : `return (${expression});`;
+  }
+  return `(async () => { with (globalThis) {\n${body}\n} })()`;
+}
+
+function runCodeInContext(code, timeoutMs) {
+  const script = new vm.Script(code, { displayErrors: true });
+  return script.runInContext(context, {
+    timeout: timeoutMs,
+    displayErrors: true,
+  });
+}
+
+async function executeCode(code, timeoutMs) {
+  try {
+    return runCodeInContext(code, timeoutMs);
+  } catch (error) {
+    if (!isTopLevelAwaitSyntaxError(error) || !/\bawait\b/.test(code)) {
+      throw error;
+    }
+    return runCodeInContext(buildAsyncWrappedCode(code), timeoutMs);
+  }
+}
+
+const sandbox = {
+  [contextVarName]: "",
+  line_number_base: lineNumberBase,
+};
+
+sandbox.globalThis = sandbox;
+sandbox.console = {
+  log: (...args) => stdoutBuffer.push(args.map(inspectValue).join(" ")),
+  info: (...args) => stdoutBuffer.push(args.map(inspectValue).join(" ")),
+  warn: (...args) => stderrBuffer.push(args.map(inspectValue).join(" ")),
+  error: (...args) => stderrBuffer.push(args.map(inspectValue).join(" ")),
+};
+
+const contextHelpers = {
+  peek: (value, start = 0, end = null) => peekImpl(value, start, end),
+  lines: (value, start = 0, end = null) => linesImpl(value, start, end),
+  search: (value, pattern, contextLines = 2, flags = "", maxResults = 20) =>
+    searchImpl(value, pattern, contextLines, flags, maxResults),
+  chunk: (value, chunkSize, overlap = 0) => chunkImpl(value, chunkSize, overlap),
+  extract_numbers: (value, includeNegative = true, includeDecimals = true) =>
+    extractNumbersImpl(value, includeNegative, includeDecimals),
+  extract_money: (value, currencies = "[$€£¥₹]") => extractMoneyImpl(value, currencies),
+  extract_percentages: (value) => extractPercentagesImpl(value),
+  extract_dates: (value) => extractDatesImpl(value),
+  extract_times: (value) => extractTimesImpl(value),
+  extract_timestamps: (value) => extractTimestampsImpl(value),
+  extract_emails: (value) => extractEmailsImpl(value),
+  extract_urls: (value) => extractUrlsImpl(value),
+  extract_ips: (value, includeIpv6 = false) => extractIpsImpl(value, includeIpv6),
+  extract_phones: (value) => extractPhonesImpl(value),
+  extract_hex: (value) => extractHexImpl(value),
+  extract_uuids: (value) => extractUuidsImpl(value),
+  extract_paths: (value) => extractPathsImpl(value),
+  extract_env_vars: (value) => extractEnvVarsImpl(value),
+  extract_versions: (value) => extractVersionsImpl(value),
+  extract_hashes: (value) => extractHashesImpl(value),
+  extract_functions: (value, lang = "python") => extractFunctionsImpl(value, lang),
+  extract_classes: (value, lang = "python") => extractClassesImpl(value, lang),
+  extract_imports: (value, lang = "python") => extractImportsImpl(value, lang),
+  extract_comments: (value, lang = "python") => extractCommentsImpl(value, lang),
+  extract_routes: (value, lang = "auto") => extractRoutesImpl(value, lang),
+  extract_strings: (value) => extractStringsImpl(value),
+  extract_todos: (value) => extractTodosImpl(value),
+  extract_log_levels: (value) => extractLogLevelsImpl(value),
+  extract_exceptions: (value) => extractExceptionsImpl(value),
+  extract_json_objects: (value) => extractJsonObjectsImpl(value),
+  word_count: (value) => wordCountImpl(value),
+  char_count: (value, includeWhitespace = true) => charCountImpl(value, includeWhitespace),
+  line_count: (value) => lineCountImpl(value),
+  sentence_count: (value) => sentenceCountImpl(value),
+  paragraph_count: (value) => paragraphCountImpl(value),
+  unique_words: (value, caseInsensitive = true) => uniqueWordsImpl(value, caseInsensitive),
+  word_frequency: (value, topN = 20, caseInsensitive = true) => wordFrequencyImpl(value, topN, caseInsensitive),
+  ngrams: (value, n = 2, topK = 20) => ngramsImpl(value, n, topK),
+  head: (value, n = 10) => headImpl(value, n),
+  tail: (value, n = 10) => tailImpl(value, n),
+  grep: (value, pattern, flags = "") => grepImpl(value, pattern, flags),
+  grep_v: (value, pattern, flags = "") => grepVImpl(value, pattern, flags),
+  grep_c: (value, pattern, flags = "") => grepCImpl(value, pattern, flags),
+  uniq: (value) => uniqImpl(value),
+  sort_lines: (value, reverse = false, numeric = false) => sortLinesImpl(value, reverse, numeric),
+  number_lines: (value, start = 1) => numberLinesImpl(value, start),
+  strip_lines: (value) => stripLinesImpl(value),
+  blank_lines: (value) => blankLinesImpl(value),
+  non_blank_lines: (value) => nonBlankLinesImpl(value),
+  columns: (value, col, delim = "\\s+") => columnsImpl(value, col, delim),
+  replace_all: (value, pattern, replacement, flags = "") => replaceAllImpl(value, pattern, replacement, flags),
+  split_by: (value, pattern, flags = "") => splitByImpl(value, pattern, flags),
+  between: (value, startPattern, endPattern, includeMarkers = false) =>
+    betweenImpl(value, startPattern, endPattern, includeMarkers),
+  before: (value, pattern, flags = "") => beforeImpl(value, pattern, flags),
+  after: (value, pattern, flags = "") => afterImpl(value, pattern, flags),
+  truncate: (value, maxChars = 200, suffix = "...") => truncateImpl(value, maxChars, suffix),
+  wrap_text: (value, width = 80) => wrapTextImpl(value, width),
+  indent_text: (value, prefix = "  ") => indentTextImpl(value, prefix),
+  dedent_text: (value) => dedentTextImpl(value),
+  normalize_whitespace: (value) => normalizeWhitespaceImpl(value),
+  remove_punctuation: (value) => removePunctuationImpl(value),
+  contains: (value, pattern, flags = "") => containsImpl(value, pattern, flags),
+  contains_any: (value, patterns, flags = "") => containsAnyImpl(value, patterns, flags),
+  contains_all: (value, patterns, flags = "") => containsAllImpl(value, patterns, flags),
+  count_matches: (value, pattern, flags = "") => countMatchesImpl(value, pattern, flags),
+  find_all: (value, pattern, flags = "", maxResults = 100) => findAllImpl(value, pattern, flags, maxResults),
+  first_match: (value, pattern, flags = "") => firstMatchImpl(value, pattern, flags),
+  semantic_search: (value, query, chunkSize = 1000, overlap = 100, topK = 5, embedDim = 256) =>
+    semanticSearchImpl(value, query, chunkSize, overlap, topK, embedDim),
+  to_lower: (value) => toLowerImpl(value),
+  to_upper: (value) => toUpperImpl(value),
+  to_title: (value) => toTitleImpl(value),
+};
+
+for (const [name, fn] of Object.entries(contextHelpers)) {
+  sandbox[name] = (...args) => fn(sandbox[contextVarName], ...args);
+}
+
+sandbox.ctx_append = (text) => {
+  sandbox[contextVarName] = toText(sandbox[contextVarName]) + String(text);
+  return sandbox[contextVarName];
+};
+sandbox.ctx_set = (text) => {
+  sandbox[contextVarName] = String(text);
+  return sandbox[contextVarName];
+};
+sandbox.cite = citeImpl;
+sandbox.blocked_names = () => Array.from(blockedNames);
+sandbox.dedupe = (items) => dedupeImpl(items);
+sandbox.to_json = (value, indent = 2) => toJsonImpl(value, indent);
+sandbox.from_json = (text) => fromJsonImpl(text);
+sandbox.to_int = (text, defaultValue = 0) => toIntImpl(text, defaultValue);
+sandbox.to_float = (text, defaultValue = 0.0) => toFloatImpl(text, defaultValue);
+sandbox.to_snake_case = (text) => toSnakeCaseImpl(text);
+sandbox.to_camel_case = (text) => toCamelCaseImpl(text);
+sandbox.to_pascal_case = (text) => toPascalCaseImpl(text);
+sandbox.to_kebab_case = (text) => toKebabCaseImpl(text);
+sandbox.slugify = (text) => slugifyImpl(text);
+sandbox.sub_query = (prompt, contextSlice = null) => callHost("sub_query", [prompt, contextSlice]);
+sandbox.sub_query_map = (prompts, contextSlices = null, limit = null, parallel = true) =>
+  callHost("sub_query_map", [prompts], { context_slices: contextSlices, limit, parallel });
+sandbox.sub_query_batch = (prompt, contextSlices, limit = null) =>
+  callHost("sub_query_batch", [prompt, contextSlices], { limit });
+sandbox.sub_query_strict = (
+  prompt,
+  contextSlice = null,
+  validateRegex = null,
+  maxRetries = 0,
+  retryPrompt = null
+) =>
+  callHost("sub_query_strict", [prompt], {
+    context_slice: contextSlice,
+    validate_regex: validateRegex,
+    max_retries: maxRetries,
+    retry_prompt: retryPrompt,
+  });
+sandbox.sub_aleph = (query, contextValue = null) => callHost("sub_aleph", [query, contextValue]);
+sandbox.get_config = () => callHost("get_config");
+sandbox.set_backend = (backend) => callHost("set_backend", [backend]);
+sandbox.require = undefined;
+sandbox.process = undefined;
+sandbox.module = undefined;
+sandbox.exports = undefined;
+sandbox.eval = undefined;
+sandbox.Function = undefined;
+
+const context = vm.createContext(sandbox, {
+  codeGeneration: {
+    strings: false,
+    wasm: false,
+  },
+});
+
+async function handleRequest(request) {
+  const id = request.id;
+  try {
+    if (request.op === "sync_context") {
+      sandbox[contextVarName] = String(request.context || "");
+      lineNumberBase = Number(request.line_number_base || 1);
+      sandbox.line_number_base = lineNumberBase;
+      send({ id, ok: true });
+      return;
+    }
+
+    if (request.op === "set_variable") {
+      const name = String(request.name || "");
+      if (!/^[A-Za-z_$][\w$]*$/.test(name)) {
+        throw new Error(`Invalid variable name: ${name}`);
+      }
+      sandbox[name] = request.value;
+      send({ id, ok: true });
+      return;
+    }
+
+    if (request.op === "get_variable") {
+      const name = String(request.name || "");
+      if (!/^[A-Za-z_$][\w$]*$/.test(name)) {
+        throw new Error(`Invalid variable name: ${name}`);
+      }
+      try {
+        const value = new vm.Script(name).runInContext(context, { timeout: 1000 });
+        send({ id, ok: true, found: true, value: serialize(value) });
+      } catch (error) {
+        if (error && error.name === "ReferenceError") {
+          send({ id, ok: true, found: false });
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+
+    if (request.op === "exec") {
+      stdoutBuffer = [];
+      stderrBuffer = [];
+      evidenceBuffer = [];
+
+      const beforeCtx = toText(sandbox[contextVarName]);
+      const code = normalizeCode(String(request.code || ""), String(request.language || "javascript"));
+      const timeoutMs = Number(request.timeout_ms || 180000);
+      const start = Date.now();
+
+      let result = await executeCode(code, timeoutMs);
+      if (result && typeof result.then === "function") {
+        result = await Promise.race([
+          result,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`Code execution exceeded ${timeoutMs}ms timeout`)), timeoutMs)
+          ),
+        ]);
+      }
+
+      const afterCtx = toText(sandbox[contextVarName]);
+      send({
+        id,
+        ok: true,
+        stdout: stdoutBuffer.join("\n"),
+        stderr: stderrBuffer.join("\n"),
+        return_value: serialize(result),
+        variables_updated: detectUpdatedVariables(code, beforeCtx, afterCtx),
+        context: serialize(afterCtx),
+        citations: evidenceBuffer,
+        execution_time_ms: Date.now() - start,
+      });
+      return;
+    }
+
+    if (request.op === "close") {
+      send({ id, ok: true });
+      process.exit(0);
+    }
+
+    throw new Error(`Unsupported operation: ${request.op}`);
+  } catch (error) {
+    send({
+      id,
+      ok: false,
+      stdout: stdoutBuffer.join("\n"),
+      stderr: stderrBuffer.join("\n"),
+      error: error && error.stack ? String(error.stack) : String(error),
+      context: serialize(toText(sandbox[contextVarName])),
+      citations: evidenceBuffer,
+      execution_time_ms: 0,
+    });
+  }
+}
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  crlfDelay: Infinity,
+});
+
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let request;
+  try {
+    request = JSON.parse(line);
+  } catch (error) {
+    send({ ok: false, error: `Invalid JSON request: ${error}` });
+    return;
+  }
+
+  if (request.op === "callback_response") {
+    settleCallbackResponse(request);
+    return;
+  }
+
+  void handleRequest(request);
+});

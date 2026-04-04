@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Added: Persistent Node.js execution alongside the Python REPL via
+  `exec_javascript` and `exec_typescript`.
+- Added: Shared-context JS/TS runtime per Aleph context with `ctx` sync back
+  into the Python session and `get_variable(..., language="javascript")`.
+- Added: Dependency-free TypeScript execution using Node's built-in
+  `stripTypeScriptTypes`, plus regression coverage for the new tool path.
+- Added: JS-side recursive helpers via async `sub_query(...)`,
+  `sub_query_batch(...)`, `sub_query_map(...)`, `sub_query_strict(...)`, and
+  `sub_aleph(...)` inside the Node.js runtime.
+- Added: Top-level `await` support in the Node.js REPL path and a larger
+  built-in JS/TS helper surface for extraction, text transforms, and semantic
+  search.
+
 ## 0.9.1
 
 - Fixed: MCP compatibility aliases for older prompts/skills. `configure(output_feedback="minimal")`
