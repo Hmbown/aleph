@@ -54,6 +54,10 @@ class TestForbiddenImports:
         # Should not raise
         _validate_ast("import re", set(DEFAULT_ALLOWED_IMPORTS))
 
+    def test_allowed_cmath(self) -> None:
+        # Should not raise
+        _validate_ast("import cmath", set(DEFAULT_ALLOWED_IMPORTS))
+
     def test_allowed_collections(self) -> None:
         # Should not raise
         _validate_ast("from collections import Counter", set(DEFAULT_ALLOWED_IMPORTS))
@@ -224,6 +228,10 @@ class TestSandboxExecution:
     def test_helper_import_introspection(self, repl: REPLEnvironment) -> None:
         result = repl.execute("is_import_allowed('json')")
         assert result.return_value is True
+        result = repl.execute("is_import_allowed('cmath')")
+        assert result.return_value is True
+        result = repl.execute("import cmath\ncomplex_unit = cmath.sqrt(-1)\ncomplex_unit.imag")
+        assert result.return_value == 1.0
 
     def test_recipe_dsl_helpers_available(self, repl: REPLEnvironment) -> None:
         result = repl.execute(

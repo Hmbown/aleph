@@ -450,6 +450,362 @@ function removePunctuationImpl(value) {
   return toText(value).replace(/[^\w\s]/g, "");
 }
 
+function buildBigrams(text) {
+  const normalized = String(text);
+  if (normalized.length < 2) {
+    return normalized ? [normalized] : [];
+  }
+  const grams = [];
+  for (let i = 0; i < normalized.length - 1; i += 1) {
+    grams.push(normalized.slice(i, i + 2));
+  }
+  return grams;
+}
+
+function similarityImpl(leftValue, rightValue) {
+  const left = toText(leftValue);
+  const right = toText(rightValue);
+  if (left === right) {
+    return 1.0;
+  }
+  if (!left || !right) {
+    return 0.0;
+  }
+
+  const leftCounts = new Map();
+  for (const gram of buildBigrams(left)) {
+    leftCounts.set(gram, (leftCounts.get(gram) || 0) + 1);
+  }
+
+  let overlap = 0;
+  for (const gram of buildBigrams(right)) {
+    const remaining = leftCounts.get(gram) || 0;
+    if (remaining > 0) {
+      overlap += 1;
+      leftCounts.set(gram, remaining - 1);
+    }
+  }
+
+  const total = Math.max(1, buildBigrams(left).length + buildBigrams(right).length);
+  return (2 * overlap) / total;
+}
+
+function buildLineDiffOps(leftLines, rightLines) {
+  const rows = Array.from({ length: leftLines.length + 1 }, () => Array(rightLines.length + 1).fill(0));
+
+  for (let i = leftLines.length - 1; i >= 0; i -= 1) {
+    for (let j = rightLines.length - 1; j >= 0; j -= 1) {
+      rows[i][j] = leftLines[i] === rightLines[j]
+        ? rows[i + 1][j + 1] + 1
+        : Math.max(rows[i + 1][j], rows[i][j + 1]);
+    }
+  }
+
+  const ops = [];
+  let i = 0;
+  let j = 0;
+  while (i < leftLines.length && j < rightLines.length) {
+    if (leftLines[i] === rightLines[j]) {
+      ops.push({ type: "equal", line: leftLines[i] });
+      i += 1;
+      j += 1;
+      continue;
+    }
+    if (rows[i + 1][j] >= rows[i][j + 1]) {
+      ops.push({ type: "delete", line: leftLines[i] });
+      i += 1;
+      continue;
+    }
+    ops.push({ type: "insert", line: rightLines[j] });
+    j += 1;
+  }
+
+  while (i < leftLines.length) {
+    ops.push({ type: "delete", line: leftLines[i] });
+    i += 1;
+  }
+  while (j < rightLines.length) {
+    ops.push({ type: "insert", line: rightLines[j] });
+    j += 1;
+  }
+
+  return ops;
+}
+
+function diffImpl(leftValue, rightValue, contextLines = 3) {
+  const leftLines = splitLines(leftValue);
+  const rightLines = splitLines(rightValue);
+  const ops = buildLineDiffOps(leftLines, rightLines);
+  if (!ops.some((op) => op.type !== "equal")) {
+    return "";
+  }
+
+  const expanded = [];
+  let leftLine = 1;
+  let rightLine = 1;
+  for (const op of ops) {
+    expanded.push({
+      ...op,
+      leftLine,
+      rightLine,
+    });
+    if (op.type !== "insert") {
+      leftLine += 1;
+    }
+    if (op.type !== "delete") {
+      rightLine += 1;
+    }
+  }
+
+  const changed = expanded
+    .map((op, index) => ({ op, index }))
+    .filter(({ op }) => op.type !== "equal")
+    .map(({ index }) => index);
+  const ranges = [];
+  for (const index of changed) {
+    const start = Math.max(0, index - Math.max(0, contextLines));
+    const end = Math.min(expanded.length, index + Math.max(0, contextLines) + 1);
+    const last = ranges[ranges.length - 1];
+    if (last && start <= last.end) {
+      last.end = Math.max(last.end, end);
+    } else {
+      ranges.push({ start, end });
+    }
+  }
+
+  const chunks = ["--- a", "+++ b"];
+  for (const range of ranges) {
+    const slice = expanded.slice(range.start, range.end);
+    const oldStart = slice.find((op) => op.type !== "insert")?.leftLine || slice[0]?.leftLine || 1;
+    const newStart = slice.find((op) => op.type !== "delete")?.rightLine || slice[0]?.rightLine || 1;
+    const oldCount = slice.filter((op) => op.type !== "insert").length;
+    const newCount = slice.filter((op) => op.type !== "delete").length;
+    chunks.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`);
+    for (const op of slice) {
+      const prefix = op.type === "equal" ? " " : op.type === "delete" ? "-" : "+";
+      chunks.push(`${prefix}${op.line}`);
+    }
+  }
+
+  return chunks.join("\n");
+}
+
+function commonLinesImpl(leftValue, rightValue) {
+  const seen = new Set(splitLines(rightValue));
+  return splitLines(leftValue).filter((line, index, array) => seen.has(line) && array.indexOf(line) === index);
+}
+
+function diffLinesImpl(leftValue, rightValue) {
+  const left = splitLines(leftValue);
+  const right = splitLines(rightValue);
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  return {
+    only_in_first: left.filter((line, index, array) => !rightSet.has(line) && array.indexOf(line) === index),
+    only_in_second: right.filter((line, index, array) => !leftSet.has(line) && array.indexOf(line) === index),
+  };
+}
+
+function flattenImpl(nested, depth = -1) {
+  const out = [];
+  const inner = (value, remaining) => {
+    if (Array.isArray(value) && remaining !== 0) {
+      const nextDepth = remaining > 0 ? remaining - 1 : -1;
+      for (const item of value) {
+        inner(item, nextDepth);
+      }
+      return;
+    }
+    out.push(value);
+  };
+  inner(nested, depth);
+  return out;
+}
+
+function firstImpl(items, defaultValue = null) {
+  const values = Array.from(items || []);
+  return values.length > 0 ? values[0] : defaultValue;
+}
+
+function lastImpl(items, defaultValue = null) {
+  const values = Array.from(items || []);
+  return values.length > 0 ? values[values.length - 1] : defaultValue;
+}
+
+function takeImpl(count, items) {
+  return Array.from(items || []).slice(0, Math.max(0, count));
+}
+
+function dropImpl(count, items) {
+  return Array.from(items || []).slice(Math.max(0, count));
+}
+
+function partitionImpl(items, predicate) {
+  if (typeof predicate !== "function") {
+    throw new Error("partition requires a predicate function");
+  }
+  const matches = [];
+  const nonMatches = [];
+  for (const item of Array.from(items || [])) {
+    if (predicate(item)) {
+      matches.push(item);
+    } else {
+      nonMatches.push(item);
+    }
+  }
+  return [matches, nonMatches];
+}
+
+function groupKeyFor(item, keyFn) {
+  if (typeof keyFn === "function") {
+    return keyFn(item);
+  }
+  if (typeof keyFn === "string" && item && typeof item === "object") {
+    return item[keyFn];
+  }
+  return item;
+}
+
+function groupByImpl(items, keyFn) {
+  const out = {};
+  for (const item of Array.from(items || [])) {
+    const key = String(groupKeyFor(item, keyFn));
+    if (!Object.prototype.hasOwnProperty.call(out, key)) {
+      out[key] = [];
+    }
+    out[key].push(item);
+  }
+  return out;
+}
+
+function frequencyImpl(items, topN = null) {
+  const counts = new Map();
+  for (const item of Array.from(items || [])) {
+    const key = item && typeof item === "object" ? JSON.stringify(item) : String(item);
+    const current = counts.get(key);
+    if (current) {
+      current[1] += 1;
+    } else {
+      counts.set(key, [item, 1]);
+    }
+  }
+  const ranked = Array.from(counts.values()).sort((left, right) => right[1] - left[1]);
+  return topN == null ? ranked : ranked.slice(0, Math.max(0, topN));
+}
+
+function createSeededRng(seed = null) {
+  if (seed == null) {
+    return Math.random;
+  }
+  let state = Number(seed) >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function sampleItemsImpl(items, count, seed = null) {
+  const values = Array.from(items || []);
+  const shuffled = shuffleItemsImpl(values, seed);
+  return shuffled.slice(0, Math.max(0, count));
+}
+
+function shuffleItemsImpl(items, seed = null) {
+  const values = Array.from(items || []);
+  const rng = createSeededRng(seed);
+  for (let i = values.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rng() * (i + 1));
+    [values[i], values[j]] = [values[j], values[i]];
+  }
+  return values;
+}
+
+function isNumericImpl(text) {
+  const normalized = String(text ?? "").replace(/,/g, "").trim();
+  if (!normalized) {
+    return false;
+  }
+  return Number.isFinite(Number(normalized));
+}
+
+function isEmailImpl(text) {
+  return /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(String(text ?? "").trim());
+}
+
+function isUrlImpl(text) {
+  return /^https?:\/\/[^\s<>"']+$/.test(String(text ?? "").trim());
+}
+
+function isIpImpl(text) {
+  const parts = String(text ?? "").trim().split(".");
+  if (parts.length !== 4) {
+    return false;
+  }
+  return parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+}
+
+function isUuidImpl(text) {
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(String(text ?? "").trim());
+}
+
+function isJsonImpl(text) {
+  try {
+    JSON.parse(String(text ?? ""));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isBlankImpl(text) {
+  return !String(text ?? "").trim();
+}
+
+function toCsvRowImpl(items, delim = ",") {
+  return Array.from(items || []).map((item) => {
+    const text = String(item ?? "");
+    if (text.includes('"') || text.includes("\n") || text.includes("\r") || text.includes(delim)) {
+      return `"${text.replace(/"/g, '""')}"`;
+    }
+    return text;
+  }).join(delim);
+}
+
+function fromCsvRowImpl(text, delim = ",") {
+  const input = String(text ?? "");
+  const out = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
+    if (inQuotes) {
+      if (char === '"' && input[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else if (char === '"') {
+        inQuotes = false;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inQuotes = true;
+      continue;
+    }
+    if (char === delim) {
+      out.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  out.push(current);
+  return out;
+}
+
 function toLowerImpl(value) {
   return toText(value).toLowerCase();
 }
@@ -1020,9 +1376,33 @@ sandbox.ctx_set = (text) => {
 };
 sandbox.cite = citeImpl;
 sandbox.blocked_names = () => Array.from(blockedNames);
+sandbox.diff = (left, right, contextLines = 3) => diffImpl(left, right, contextLines);
+sandbox.similarity = (left, right) => similarityImpl(left, right);
+sandbox.common_lines = (left, right) => commonLinesImpl(left, right);
+sandbox.diff_lines = (left, right) => diffLinesImpl(left, right);
+sandbox.embed_text = (text, dim = 256) => embedTextImpl(text, dim);
 sandbox.dedupe = (items) => dedupeImpl(items);
+sandbox.flatten = (nested, depth = -1) => flattenImpl(nested, depth);
+sandbox.first = (items, defaultValue = null) => firstImpl(items, defaultValue);
+sandbox.last = (items, defaultValue = null) => lastImpl(items, defaultValue);
+sandbox.take = (count, items) => takeImpl(count, items);
+sandbox.drop = (count, items) => dropImpl(count, items);
+sandbox.partition = (items, predicate) => partitionImpl(items, predicate);
+sandbox.group_by = (items, keyFn) => groupByImpl(items, keyFn);
+sandbox.frequency = (items, topN = null) => frequencyImpl(items, topN);
+sandbox.sample_items = (items, count, seed = null) => sampleItemsImpl(items, count, seed);
+sandbox.shuffle_items = (items, seed = null) => shuffleItemsImpl(items, seed);
+sandbox.is_numeric = (text) => isNumericImpl(text);
+sandbox.is_email = (text) => isEmailImpl(text);
+sandbox.is_url = (text) => isUrlImpl(text);
+sandbox.is_ip = (text) => isIpImpl(text);
+sandbox.is_uuid = (text) => isUuidImpl(text);
+sandbox.is_json = (text) => isJsonImpl(text);
+sandbox.is_blank = (text) => isBlankImpl(text);
 sandbox.to_json = (value, indent = 2) => toJsonImpl(value, indent);
 sandbox.from_json = (text) => fromJsonImpl(text);
+sandbox.to_csv_row = (items, delim = ",") => toCsvRowImpl(items, delim);
+sandbox.from_csv_row = (text, delim = ",") => fromCsvRowImpl(text, delim);
 sandbox.to_int = (text, defaultValue = 0) => toIntImpl(text, defaultValue);
 sandbox.to_float = (text, defaultValue = 0.0) => toFloatImpl(text, defaultValue);
 sandbox.to_snake_case = (text) => toSnakeCaseImpl(text);

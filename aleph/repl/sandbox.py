@@ -41,6 +41,7 @@ DEFAULT_ALLOWED_IMPORTS: list[str] = [
     "json",
     "csv",
     "math",
+    "cmath",
     "mpmath",
     "decimal",
     "fractions",

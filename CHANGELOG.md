@@ -14,6 +14,17 @@
 - Added: Top-level `await` support in the Node.js REPL path and a larger
   built-in JS/TS helper surface for extraction, text transforms, and semantic
   search.
+- Added: High-value standalone JS/TS helper parity for text comparison,
+  collection shaping, validation, and CSV / JSON conversion helpers
+  (`diff`, `group_by`, `frequency`, `is_json`, `to_csv_row`, etc.).
+- Added: Regression coverage for callback bridge failures, worker restart /
+  reconnect behavior, Python <-> Node `ctx` sync, top-level await composition,
+  and realistic JS/TS recursive analysis snippets.
+- Added: `cmath` to the Python REPL allowlist alongside the existing serious
+  math stack (`math`, `mpmath`, `numpy`, `scipy`, `sympy`, etc.).
+- Docs: Clarified when to use `exec_python` versus `exec_javascript` /
+  `exec_typescript`, what the JS/TS runtime supports now, and what remains
+  intentionally Python-only.
 
 ## 0.9.1
 

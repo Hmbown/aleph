@@ -175,6 +175,14 @@ variables.
 Aleph's **primary control layer is still Python**. `exec_python` remains the
 default REPL for general-purpose analysis, recipes, and orchestration.
 
+- Use `exec_python` when you need the full Aleph surface area: recipe DSL,
+  `run_recipe_code` compatibility, Python-first prompts, or Python's numeric /
+  symbolic stack (`cmath`, `mpmath`, `decimal`, `fractions`, `statistics`,
+  `numpy`, `scipy`, `sympy`, `networkx`).
+- Use `exec_javascript` / `exec_typescript` when the target repo or analysis is
+  naturally JS/TS-shaped and you want persistent Node state, JS-native array /
+  object manipulation, or async recursion with `await`.
+
 - `exec_python`
   Full Aleph helper surface, including recipe DSL helpers, synchronous
   `sub_query(...)` / `sub_aleph(...)`, and the widest compatibility with
@@ -189,22 +197,39 @@ default REPL for general-purpose analysis, recipes, and orchestration.
 The JS/TS runtime also ships with a broader local helper set than the first
 handoff slice: search/peek/lines/chunk, extraction helpers (`extract_emails`,
 `extract_todos`, `extract_routes`, etc.), text utilities (`number_lines`,
-`grep_v`, `sort_lines`, `normalize_whitespace`, etc.), and `semantic_search`.
+`grep_v`, `sort_lines`, `normalize_whitespace`, etc.), text comparison helpers
+(`diff`, `similarity`, `common_lines`, `diff_lines`), collection helpers
+(`flatten`, `group_by`, `frequency`, `sample_items`, `shuffle_items`, etc.),
+validation helpers (`is_json`, `is_email`, `is_uuid`, etc.), CSV / JSON
+converters, and `semantic_search`.
 
 What still differs from Python:
 
 - Python is still the default and best-supported Aleph REPL.
 - JS/TS recursion helpers are async and require `await`.
-- JS/TS does not yet expose the full Python standalone/helper surface or recipe
-  DSL parity.
+- Recipe DSL helpers and `run_recipe_code` remain Python-only.
+- Python's import ecosystem remains Python-only. The Node runtime is helper-led:
+  no `require`, no `process`, no `module`, and no npm package loading inside
+  the sandbox.
+- `exec_typescript` strips type syntax for execution; it is not a full TS
+  compiler, typechecker, or `ts-node` environment.
+- Regex flag behavior follows each runtime: Python helpers use Python `re`
+  flags, while JS/TS helpers use JavaScript regex flag strings.
 
 Example JS/TS workflow:
 
 ```python
-exec_javascript(code=`
-const todos = extract_todos().map((item) => item.value).join("\\n");
-const summary = await sub_query("Summarize the TODO backlog", todos);
-summary
+exec_typescript(code=`
+const routes: string[] = extract_routes('javascript').map((item) => item.value);
+const routeKinds = frequency(
+  routes.map((route) => (route.includes('.post(') ? 'write' : 'read')),
+  2,
+);
+const notes = await sub_query_map(
+  routes.map((route) => `Explain ${route}`),
+  routes,
+);
+({ routeCount: routes.length, routeKinds, notes })
 `, context_id="repo")
 ```
 
