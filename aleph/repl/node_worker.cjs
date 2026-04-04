@@ -882,6 +882,264 @@ function slugifyImpl(text) {
     .replace(/^-+|-+$/g, "");
 }
 
+// =============================================================================
+// Recipe DSL (mirrors Python RecipeStep / RecipeBuilder)
+// =============================================================================
+
+const RECIPE_DSL_VERSION = "aleph.recipe.v1";
+
+class RecipeStep {
+  constructor(op, params = {}) {
+    this._payload = { op };
+    for (const [key, value] of Object.entries(params)) {
+      if (value != null) {
+        this._payload[key] = value;
+      }
+    }
+  }
+
+  toDict() {
+    return { ...this._payload };
+  }
+
+  toJSON() {
+    return this.toDict();
+  }
+
+  toString() {
+    return `RecipeStep(${JSON.stringify(this._payload)})`;
+  }
+}
+
+class RecipeBuilder {
+  constructor(contextId = "default", { version = RECIPE_DSL_VERSION, steps = null, budget = null } = {}) {
+    this.version = version;
+    this.contextId = contextId;
+    this._steps = (steps || []).map((s) => ({ ...s }));
+    this._budget = budget ? { ...budget } : {};
+  }
+
+  get steps() {
+    return this._steps.map((s) => ({ ...s }));
+  }
+
+  _clone() {
+    return new RecipeBuilder(this.contextId, {
+      version: this.version,
+      steps: this._steps,
+      budget: this._budget,
+    });
+  }
+
+  _append(step) {
+    const payload = step instanceof RecipeStep ? step.toDict() : { ...step };
+    const next = this._clone();
+    next._steps.push(payload);
+    return next;
+  }
+
+  pipe(step) {
+    return this._append(step);
+  }
+
+  withBudget({ maxSteps = null, maxSubQueries = null } = {}) {
+    const next = this._clone();
+    if (maxSteps != null) next._budget.max_steps = maxSteps;
+    if (maxSubQueries != null) next._budget.max_sub_queries = maxSubQueries;
+    return next;
+  }
+
+  toDict() {
+    const payload = {
+      version: this.version,
+      context_id: this.contextId,
+      steps: this._steps.map((s) => ({ ...s })),
+    };
+    if (Object.keys(this._budget).length > 0) {
+      payload.budget = { ...this._budget };
+    }
+    return payload;
+  }
+
+  compile() {
+    return this.toDict();
+  }
+
+  toJSON() {
+    return this.toDict();
+  }
+
+  step(op, params = {}) {
+    return this.pipe(new RecipeStep(op, params));
+  }
+
+  search(pattern, { contextLines = 2, maxResults = 20, input = null, store = null } = {}) {
+    return this.pipe(
+      new RecipeStep("search", {
+        pattern,
+        context_lines: contextLines,
+        max_results: maxResults,
+        input,
+        store,
+      })
+    );
+  }
+
+  peek({ start = 0, end = null, input = null, store = null } = {}) {
+    return this.pipe(new RecipeStep("peek", { start, end, input, store }));
+  }
+
+  lines({ start = 0, end = null, input = null, store = null } = {}) {
+    return this.pipe(new RecipeStep("lines", { start, end, input, store }));
+  }
+
+  take(count, { input = null, store = null } = {}) {
+    return this.pipe(new RecipeStep("take", { count, input, store }));
+  }
+
+  chunk(chunkSize, { overlap = 0, input = null, store = null } = {}) {
+    return this.pipe(new RecipeStep("chunk", { chunk_size: chunkSize, overlap, input, store }));
+  }
+
+  filter({ pattern = null, contains = null, field = null, input = null, store = null } = {}) {
+    return this.pipe(new RecipeStep("filter", { pattern, contains, field, input, store }));
+  }
+
+  mapSubQuery(prompt, {
+    backend = "auto",
+    contextField = null,
+    limit = null,
+    continueOnError = false,
+    input = null,
+    store = null,
+  } = {}) {
+    return this.pipe(
+      new RecipeStep("map_sub_query", {
+        prompt,
+        backend,
+        context_field: contextField,
+        limit,
+        continue_on_error: continueOnError,
+        input,
+        store,
+      })
+    );
+  }
+
+  subQuery(prompt, { backend = "auto", contextField = null, input = null, store = null } = {}) {
+    return this.pipe(
+      new RecipeStep("sub_query", { prompt, backend, context_field: contextField, input, store })
+    );
+  }
+
+  aggregate(prompt, { backend = "auto", contextField = null, input = null, store = null } = {}) {
+    return this.pipe(
+      new RecipeStep("aggregate", { prompt, backend, context_field: contextField, input, store })
+    );
+  }
+
+  assign(name, { input = null } = {}) {
+    return this.pipe(new RecipeStep("assign", { name, input }));
+  }
+
+  load(name, { store = null } = {}) {
+    return this.pipe(new RecipeStep("load", { name, store }));
+  }
+
+  finalize() {
+    return this.pipe(new RecipeStep("finalize"));
+  }
+
+  toString() {
+    return `RecipeBuilder(contextId=${JSON.stringify(this.contextId)}, steps=${JSON.stringify(this._steps)})`;
+  }
+}
+
+function Recipe(contextId = "default", { maxSteps = null, maxSubQueries = null } = {}) {
+  return new RecipeBuilder(contextId).withBudget({ maxSteps, maxSubQueries });
+}
+
+function Step(op, params = {}) {
+  return new RecipeStep(op, params);
+}
+
+function Search(pattern, { contextLines = 2, maxResults = 20, input = null, store = null } = {}) {
+  return new RecipeStep("search", {
+    pattern,
+    context_lines: contextLines,
+    max_results: maxResults,
+    input,
+    store,
+  });
+}
+
+function Peek({ start = 0, end = null, input = null, store = null } = {}) {
+  return new RecipeStep("peek", { start, end, input, store });
+}
+
+function Lines({ start = 0, end = null, input = null, store = null } = {}) {
+  return new RecipeStep("lines", { start, end, input, store });
+}
+
+function Take(count, { input = null, store = null } = {}) {
+  return new RecipeStep("take", { count, input, store });
+}
+
+function Chunk(chunkSize, { overlap = 0, input = null, store = null } = {}) {
+  return new RecipeStep("chunk", { chunk_size: chunkSize, overlap, input, store });
+}
+
+function Filter({ pattern = null, contains = null, field = null, input = null, store = null } = {}) {
+  return new RecipeStep("filter", { pattern, contains, field, input, store });
+}
+
+function MapSubQuery(prompt, {
+  backend = "auto",
+  contextField = null,
+  limit = null,
+  continueOnError = false,
+  input = null,
+  store = null,
+} = {}) {
+  return new RecipeStep("map_sub_query", {
+    prompt,
+    backend,
+    context_field: contextField,
+    limit,
+    continue_on_error: continueOnError,
+    input,
+    store,
+  });
+}
+
+function SubQuery(prompt, { backend = "auto", contextField = null, input = null, store = null } = {}) {
+  return new RecipeStep("sub_query", { prompt, backend, context_field: contextField, input, store });
+}
+
+function Aggregate(prompt, { backend = "auto", contextField = null, input = null, store = null } = {}) {
+  return new RecipeStep("aggregate", { prompt, backend, context_field: contextField, input, store });
+}
+
+function Assign(name, { input = null } = {}) {
+  return new RecipeStep("assign", { name, input });
+}
+
+function Load(name, { store = null } = {}) {
+  return new RecipeStep("load", { name, store });
+}
+
+function Finalize() {
+  return new RecipeStep("finalize");
+}
+
+function asRecipe(value) {
+  if (value instanceof RecipeBuilder) return value.toDict();
+  if (value && typeof value === "object" && !Array.isArray(value)) return { ...value };
+  throw new TypeError("as_recipe expects RecipeBuilder or object");
+}
+
+// =============================================================================
+
 function embedTextImpl(text, dim = 256) {
   if (!(dim > 0)) {
     throw new Error("dim must be > 0");
@@ -1156,6 +1414,9 @@ function serialize(value, seen = new WeakSet()) {
     if (Array.isArray(value)) {
       return { kind: "json", value: value.map((item) => serialize(item, seen).value) };
     }
+    if (typeof value.toJSON === "function") {
+      return serialize(value.toJSON(), seen);
+    }
     const proto = Object.getPrototypeOf(value);
     const tag = Object.prototype.toString.call(value);
     if (proto === Object.prototype || proto === null || tag === "[object Object]") {
@@ -1410,6 +1671,24 @@ sandbox.to_camel_case = (text) => toCamelCaseImpl(text);
 sandbox.to_pascal_case = (text) => toPascalCaseImpl(text);
 sandbox.to_kebab_case = (text) => toKebabCaseImpl(text);
 sandbox.slugify = (text) => slugifyImpl(text);
+sandbox.RecipeStep = RecipeStep;
+sandbox.RecipeBuilder = RecipeBuilder;
+sandbox.Recipe = Recipe;
+sandbox.Step = Step;
+sandbox.Search = Search;
+sandbox.Peek = Peek;
+sandbox.Lines = Lines;
+sandbox.Take = Take;
+sandbox.Chunk = Chunk;
+sandbox.Filter = Filter;
+sandbox.MapSubQuery = MapSubQuery;
+sandbox.SubQuery = SubQuery;
+sandbox.Aggregate = Aggregate;
+sandbox.Assign = Assign;
+sandbox.Load = Load;
+sandbox.Finalize = Finalize;
+sandbox.as_recipe = asRecipe;
+sandbox.RECIPE_DSL_VERSION = RECIPE_DSL_VERSION;
 sandbox.sub_query = (prompt, contextSlice = null) => callHost("sub_query", [prompt, contextSlice]);
 sandbox.sub_query_map = (prompts, contextSlices = null, limit = null, parallel = true) =>
   callHost("sub_query_map", [prompts], { context_slices: contextSlices, limit, parallel });

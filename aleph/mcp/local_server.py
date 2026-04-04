@@ -1707,13 +1707,22 @@ class AlephMCPServerLocal:
         *,
         code: str,
         context_id: str = "default",
+        language: str = "python",
     ) -> tuple[bool, dict[str, Any]]:
         if context_id not in self._sessions:
             return False, {"error": f"No context loaded with ID '{context_id}'."}
 
         session = self._sessions[context_id]
         session.iterations += 1
-        result = await session.repl.execute_async(code)
+
+        if language in ("javascript", "typescript"):
+            node_repl = self._get_or_create_node_repl(context_id)
+            result = await node_repl.execute_async(
+                code, language=language,  # type: ignore[arg-type]
+            )
+        else:
+            result = await session.repl.execute_async(code)
+
         if result.error:
             return False, {
                 "error": f"Recipe code execution failed: {result.error}",
@@ -1723,9 +1732,17 @@ class AlephMCPServerLocal:
                 },
             }
 
-        candidate = result.return_value
-        if candidate is None:
-            candidate = session.repl.get_variable("recipe")
+        if language in ("javascript", "typescript"):
+            candidate = result.return_value
+            if candidate is None:
+                node_repl = self._node_repls.get(context_id)
+                if node_repl is not None:
+                    candidate = node_repl.get_variable("recipe")
+            self._sync_session_from_node_repl(context_id)
+        else:
+            candidate = result.return_value
+            if candidate is None:
+                candidate = session.repl.get_variable("recipe")
 
         if candidate is None:
             return False, {

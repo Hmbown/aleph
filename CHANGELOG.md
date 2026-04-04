@@ -17,6 +17,18 @@
 - Added: High-value standalone JS/TS helper parity for text comparison,
   collection shaping, validation, and CSV / JSON conversion helpers
   (`diff`, `group_by`, `frequency`, `is_json`, `to_csv_row`, etc.).
+- Added: Recipe DSL parity for JS/TS — `RecipeStep`, `RecipeBuilder`,
+  and all step constructors (`Recipe`, `Search`, `Peek`, `Lines`, `Take`,
+  `Chunk`, `Filter`, `MapSubQuery`, `SubQuery`, `Aggregate`, `Assign`,
+  `Load`, `Finalize`, `as_recipe`) are now available in the Node sandbox.
+  Fluent chaining (`Recipe().search("x").take(5).compile()`) and pipe-style
+  (`Recipe().pipe(Search("x")).pipe(Take(5))`) both work.
+- Added: `compile_recipe` and `run_recipe_code` MCP tools now accept a
+  `language` parameter (`"python"`, `"javascript"`, `"typescript"`) to
+  compile recipe DSL code in the Node.js runtime instead of the Python REPL.
+- Fixed: Node worker `serialize` function now calls `toJSON()` on custom
+  class instances (like `RecipeBuilder`), ensuring proper serialization
+  across the worker boundary.
 - Added: Regression coverage for callback bridge failures, worker restart /
   reconnect behavior, Python <-> Node `ctx` sync, top-level await composition,
   and realistic JS/TS recursive analysis snippets.

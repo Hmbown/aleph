@@ -141,10 +141,17 @@ def register_recipe_tools(
     async def compile_recipe(
         code: str,
         context_id: str = "default",
+        language: Literal["python", "javascript", "typescript"] = "python",
         output: Literal["markdown", "json", "object"] = "markdown",
     ) -> str | dict[str, Any]:
-        """Compile Recipe DSL code into a validated recipe payload."""
-        ok, payload = await owner._compile_recipe_code(code=code, context_id=context_id)
+        """Compile Recipe DSL code into a validated recipe payload.
+
+        Use ``language="javascript"`` or ``language="typescript"`` to write
+        recipe DSL code in JS/TS instead of the default Python.
+        """
+        ok, payload = await owner._compile_recipe_code(
+            code=code, context_id=context_id, language=language,
+        )
         full_payload: dict[str, Any] = {"success": ok, **payload}
         if output == "object":
             return full_payload
@@ -173,14 +180,20 @@ def register_recipe_tools(
     async def run_recipe_code(
         code: str,
         context_id: str = "default",
+        language: Literal["python", "javascript", "typescript"] = "python",
         dry_run: bool = False,
         output: Literal["markdown", "json", "object"] = "markdown",
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str | dict[str, Any]:
-        """Compile Recipe DSL code and execute it."""
+        """Compile Recipe DSL code and execute it.
+
+        Use ``language="javascript"`` or ``language="typescript"`` to write
+        recipe DSL code in JS/TS instead of the default Python.
+        """
         ok_compile, compile_payload = await owner._compile_recipe_code(
             code=code,
             context_id=context_id,
+            language=language,
         )
         if not ok_compile:
             if output == "object":

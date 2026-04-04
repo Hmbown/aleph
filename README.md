@@ -175,10 +175,10 @@ variables.
 Aleph's **primary control layer is still Python**. `exec_python` remains the
 default REPL for general-purpose analysis, recipes, and orchestration.
 
-- Use `exec_python` when you need the full Aleph surface area: recipe DSL,
-  `run_recipe_code` compatibility, Python-first prompts, or Python's numeric /
-  symbolic stack (`cmath`, `mpmath`, `decimal`, `fractions`, `statistics`,
-  `numpy`, `scipy`, `sympy`, `networkx`).
+- Use `exec_python` when you need the full Aleph surface area: Python-first
+  prompts, Python's numeric / symbolic stack (`cmath`, `mpmath`, `decimal`,
+  `fractions`, `statistics`, `numpy`, `scipy`, `sympy`, `networkx`), or
+  recipe execution via `run_recipe_code`.
 - Use `exec_javascript` / `exec_typescript` when the target repo or analysis is
   naturally JS/TS-shaped and you want persistent Node state, JS-native array /
   object manipulation, or async recursion with `await`.
@@ -192,7 +192,8 @@ default REPL for general-purpose analysis, recipes, and orchestration.
   `ctx`, supports top-level `await`, and can recurse with async
   `await sub_query(...)`, `await sub_query_batch(...)`,
   `await sub_query_map(...)`, `await sub_query_strict(...)`, and
-  `await sub_aleph(...)`.
+  `await sub_aleph(...)`. Also includes the recipe DSL (`Recipe`, `Search`,
+  `Take`, etc.) for building recipe payloads in JS/TS.
 
 The JS/TS runtime also ships with a broader local helper set than the first
 handoff slice: search/peek/lines/chunk, extraction helpers (`extract_emails`,
@@ -203,11 +204,32 @@ handoff slice: search/peek/lines/chunk, extraction helpers (`extract_emails`,
 validation helpers (`is_json`, `is_email`, `is_uuid`, etc.), CSV / JSON
 converters, and `semantic_search`.
 
+The JS/TS runtime now also includes the Recipe DSL: `RecipeStep`,
+`RecipeBuilder`, and all step constructors (`Recipe`, `Search`, `Peek`,
+`Lines`, `Take`, `Chunk`, `Filter`, `MapSubQuery`, `SubQuery`, `Aggregate`,
+`Assign`, `Load`, `Finalize`, `as_recipe`). You can build recipes with
+fluent chaining or pipe-style:
+
+```javascript
+// Fluent style
+Recipe("doc").search("ERROR").take(5).finalize().compile()
+
+// Pipe style
+Recipe("doc").pipe(Search("ERROR")).pipe(Take(5)).pipe(Finalize()).compile()
+```
+
+The `compile_recipe` and `run_recipe_code` MCP tools accept a `language`
+parameter (`"python"`, `"javascript"`, `"typescript"`) to compile recipe DSL
+code in the corresponding runtime.
+
 What still differs from Python:
 
 - Python is still the default and best-supported Aleph REPL.
 - JS/TS recursion helpers are async and require `await`.
-- Recipe DSL helpers and `run_recipe_code` remain Python-only.
+- Recipe *execution* (`run_recipe`) always uses the Python runtime. The JS/TS
+  path covers recipe *building and compilation* only.
+- JS uses `RecipeBuilder.pipe()` / fluent methods instead of Python's `|`
+  operator (JS `|` is bitwise OR, not overloadable for this purpose).
 - Python's import ecosystem remains Python-only. The Node runtime is helper-led:
   no `require`, no `process`, no `module`, and no npm package loading inside
   the sandbox.

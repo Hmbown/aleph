@@ -217,3 +217,185 @@ ctx_set(merged);
             }
         finally:
             repl.close()
+
+
+@pytest.mark.skipif(not NODE_AVAILABLE, reason="Node.js is required for JS/TS REPL tests")
+class TestNodeRecipeDSL:
+    """Test Recipe DSL helpers exposed in the Node sandbox."""
+
+    def test_recipe_step_to_dict(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute(
+                'const s = new RecipeStep("search", { pattern: "error" }); s.toDict()'
+            )
+            assert result.error is None
+            assert result.return_value == {"op": "search", "pattern": "error"}
+        finally:
+            repl.close()
+
+    def test_recipe_builder_fluent_chain(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute(
+                'Recipe("myctx").search("error").take(5).finalize().compile()'
+            )
+            assert result.error is None
+            recipe = result.return_value
+            assert recipe["version"] == "aleph.recipe.v1"
+            assert recipe["context_id"] == "myctx"
+            assert len(recipe["steps"]) == 3
+            assert recipe["steps"][0]["op"] == "search"
+            assert recipe["steps"][0]["pattern"] == "error"
+            assert recipe["steps"][1]["op"] == "take"
+            assert recipe["steps"][1]["count"] == 5
+            assert recipe["steps"][2]["op"] == "finalize"
+        finally:
+            repl.close()
+
+    def test_recipe_builder_pipe_method(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute(
+                'Recipe().pipe(Search("warn")).pipe(Take(3)).compile()'
+            )
+            assert result.error is None
+            recipe = result.return_value
+            assert len(recipe["steps"]) == 2
+            assert recipe["steps"][0]["pattern"] == "warn"
+            assert recipe["steps"][1]["count"] == 3
+        finally:
+            repl.close()
+
+    def test_recipe_builder_immutability(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute("""
+                const base = Recipe("ctx1");
+                const a = base.search("alpha");
+                const b = base.search("beta");
+                ({ aSteps: a.steps.length, bSteps: b.steps.length, baseSteps: base.steps.length })
+            """)
+            assert result.error is None
+            assert result.return_value == {"aSteps": 1, "bSteps": 1, "baseSteps": 0}
+        finally:
+            repl.close()
+
+    def test_recipe_builder_with_budget(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute(
+                'Recipe().withBudget({ maxSteps: 10, maxSubQueries: 3 }).search("x").compile()'
+            )
+            assert result.error is None
+            recipe = result.return_value
+            assert recipe["budget"]["max_steps"] == 10
+            assert recipe["budget"]["max_sub_queries"] == 3
+        finally:
+            repl.close()
+
+    def test_all_step_constructors(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute("""
+                Recipe("doc")
+                  .pipe(Search("err", { maxResults: 10 }))
+                  .pipe(Peek({ start: 0, end: 100 }))
+                  .pipe(Lines({ start: 5, end: 20 }))
+                  .pipe(Take(3))
+                  .pipe(Chunk(500, { overlap: 50 }))
+                  .pipe(Filter({ contains: "ERROR" }))
+                  .pipe(MapSubQuery("Summarize this", { backend: "codex", limit: 5 }))
+                  .pipe(SubQuery("What is the root cause?"))
+                  .pipe(Aggregate("Combine findings"))
+                  .pipe(Assign("results"))
+                  .pipe(Load("results"))
+                  .pipe(Finalize())
+                  .compile()
+            """)
+            assert result.error is None
+            recipe = result.return_value
+            ops = [s["op"] for s in recipe["steps"]]
+            assert ops == [
+                "search", "peek", "lines", "take", "chunk", "filter",
+                "map_sub_query", "sub_query", "aggregate", "assign", "load", "finalize",
+            ]
+            assert recipe["steps"][0]["max_results"] == 10
+            assert recipe["steps"][4]["chunk_size"] == 500
+            assert recipe["steps"][4]["overlap"] == 50
+            assert recipe["steps"][6]["limit"] == 5
+            assert recipe["steps"][6]["backend"] == "codex"
+        finally:
+            repl.close()
+
+    def test_as_recipe_from_builder(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute(
+                'as_recipe(Recipe("doc").search("x").finalize())'
+            )
+            assert result.error is None
+            assert result.return_value["context_id"] == "doc"
+            assert len(result.return_value["steps"]) == 2
+        finally:
+            repl.close()
+
+    def test_as_recipe_from_plain_object(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute(
+                'as_recipe({ version: "aleph.recipe.v1", context_id: "x", steps: [{ op: "search", pattern: "y" }] })'
+            )
+            assert result.error is None
+            assert result.return_value["context_id"] == "x"
+        finally:
+            repl.close()
+
+    def test_recipe_null_params_omitted(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute(
+                'Search("test").toDict()'
+            )
+            assert result.error is None
+            payload = result.return_value
+            assert "input" not in payload
+            assert "store" not in payload
+        finally:
+            repl.close()
+
+    def test_recipe_typescript_compilation(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute(
+                'const r: object = Recipe("ts").search("err").take(2).compile(); r',
+                language="typescript",
+            )
+            assert result.error is None
+            assert result.return_value["steps"][0]["op"] == "search"
+            assert result.return_value["steps"][1]["count"] == 2
+        finally:
+            repl.close()
+
+    def test_recipe_json_serialization(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute(
+                'JSON.stringify(Recipe("doc").search("x").compile())'
+            )
+            assert result.error is None
+            import json
+            parsed = json.loads(result.return_value)
+            assert parsed["version"] == "aleph.recipe.v1"
+            assert parsed["steps"][0]["op"] == "search"
+        finally:
+            repl.close()
+
+    def test_recipe_version_constant(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute("RECIPE_DSL_VERSION")
+            assert result.error is None
+            assert result.return_value == "aleph.recipe.v1"
+        finally:
+            repl.close()

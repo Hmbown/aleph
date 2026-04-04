@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -10,6 +11,8 @@ from aleph.mcp.local_server import AlephMCPServerLocal, _Session, _analyze_text_
 from aleph.mcp.recipes import estimate_recipe, validate_recipe
 from aleph.repl.sandbox import REPLEnvironment, SandboxConfig
 from aleph.types import ContentFormat
+
+NODE_AVAILABLE = shutil.which("node") is not None
 
 
 def _make_server() -> AlephMCPServerLocal:
@@ -380,3 +383,120 @@ def test_estimate_recipe_chunk_before_map_sub_query() -> None:
     estimate = estimate_recipe(normalized)
     # chunk of 50K on ~100K assumed context = ~2 chunks projected
     assert estimate["projected_sub_queries"] >= 1
+
+
+# ── JS/TS recipe compilation via MCP ──────────────────────────────────────
+
+
+@pytest.mark.skipif(not NODE_AVAILABLE, reason="Node.js is required")
+@pytest.mark.asyncio
+async def test_compile_recipe_code_javascript() -> None:
+    server = _make_server()
+    await _load_context(server, "alpha\nerror here\nwarn there")
+
+    ok, payload = await server._compile_recipe_code(
+        code='Recipe().search("error").take(1).finalize()',
+        context_id="default",
+        language="javascript",
+    )
+
+    assert ok
+    recipe = payload["recipe"]
+    assert recipe["steps"][0]["op"] == "search"
+    assert recipe["steps"][0]["pattern"] == "error"
+    assert recipe["steps"][1]["op"] == "take"
+    assert recipe["steps"][-1]["op"] == "finalize"
+
+
+@pytest.mark.skipif(not NODE_AVAILABLE, reason="Node.js is required")
+@pytest.mark.asyncio
+async def test_compile_recipe_code_typescript() -> None:
+    server = _make_server()
+    await _load_context(server, "alpha\nbeta\ngamma")
+
+    ok, payload = await server._compile_recipe_code(
+        code='const r: object = Recipe("default").search("beta").take(2).compile(); r',
+        context_id="default",
+        language="typescript",
+    )
+
+    assert ok
+    recipe = payload["recipe"]
+    assert recipe["steps"][0]["op"] == "search"
+    assert recipe["steps"][1]["count"] == 2
+
+
+@pytest.mark.skipif(not NODE_AVAILABLE, reason="Node.js is required")
+@pytest.mark.asyncio
+async def test_compile_recipe_code_js_from_variable() -> None:
+    server = _make_server()
+    await _load_context(server, "alpha\nerror here")
+
+    ok, payload = await server._compile_recipe_code(
+        code='const recipe = Recipe().search("error").finalize().compile()',
+        context_id="default",
+        language="javascript",
+    )
+
+    assert ok
+    assert payload["recipe"]["steps"][0]["op"] == "search"
+
+
+@pytest.mark.skipif(not NODE_AVAILABLE, reason="Node.js is required")
+@pytest.mark.asyncio
+async def test_compile_recipe_code_js_invalid_returns_error() -> None:
+    server = _make_server()
+    await _load_context(server, "alpha")
+
+    ok, payload = await server._compile_recipe_code(
+        code='"not a recipe"',
+        context_id="default",
+        language="javascript",
+    )
+    assert not ok
+    assert "unsupported type" in payload["error"].lower()
+
+
+@pytest.mark.skipif(not NODE_AVAILABLE, reason="Node.js is required")
+@pytest.mark.asyncio
+async def test_compile_recipe_code_js_pipe_constructors() -> None:
+    server = _make_server()
+    await _load_context(server, "test data\nerror found\nwarning issued")
+
+    ok, payload = await server._compile_recipe_code(
+        code=(
+            'Recipe("default")'
+            '.pipe(Search("error", { maxResults: 5 }))'
+            '.pipe(Filter({ contains: "found" }))'
+            '.pipe(Take(1))'
+            '.compile()'
+        ),
+        context_id="default",
+        language="javascript",
+    )
+
+    assert ok
+    recipe = payload["recipe"]
+    assert len(recipe["steps"]) == 3
+    assert recipe["steps"][0]["max_results"] == 5
+    assert recipe["steps"][1]["contains"] == "found"
+
+
+@pytest.mark.skipif(not NODE_AVAILABLE, reason="Node.js is required")
+@pytest.mark.asyncio
+async def test_compile_recipe_tool_with_language_param() -> None:
+    server = _make_server()
+    await _load_context(server, "test content")
+
+    result = await _call_tool(
+        server,
+        "compile_recipe",
+        code='Recipe().search("test").take(3).compile()',
+        context_id="default",
+        language="javascript",
+        output="object",
+    )
+
+    assert result["success"] is True
+    assert result["recipe"]["steps"][0]["op"] == "search"
+    assert result["recipe"]["steps"][1]["count"] == 3
