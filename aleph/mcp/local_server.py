@@ -63,7 +63,6 @@ from ..types import (
     AlephResponse,
     ContentFormat,
     ContextMetadata,
-    ContextType,
     ExecutionResult,
 )
 from ..sub_query import SubQueryConfig
@@ -100,6 +99,12 @@ from .node_bridge import (
     sync_session_from_node_repl as _sync_session_from_node_repl_impl,
 )
 from .query_tools import register_query_tools as _register_query_tools_module
+from .repl_injection import (
+    configure_session as _configure_session_impl,
+    inject_repl_config_helpers as _inject_repl_config_helpers_impl,
+    inject_repl_sub_aleph as _inject_repl_sub_aleph_impl,
+    inject_repl_sub_query as _inject_repl_sub_query_impl,
+)
 from .recipe_runtime import (
     compile_recipe_code as _compile_recipe_code_impl,
     execute_recipe as _execute_recipe_impl,
@@ -154,7 +159,6 @@ from .session import (
     MEMORY_PACK_RELATIVE_PATH,
     _Evidence,  # noqa: F401 - compatibility for external imports
     _Session,
-    _coerce_context_to_text,
     _resolve_session_payload_id,  # noqa: F401
     build_memory_pack_payload as _build_memory_pack_payload_impl,
     create_session as _create_session_impl,
@@ -565,58 +569,13 @@ class AlephMCPServerLocal:
         )
 
     def _inject_repl_config_helpers(self, session: _Session) -> None:
-        def set_backend(backend: str) -> str:
-            ok, message = self._apply_sub_query_runtime_config(
-                sub_query_backend=backend
-            )
-            if not ok:
-                raise ValueError(message)
-            snapshot = self._get_sub_query_config_snapshot()
-            return (
-                "sub_query_backend set to "
-                f"{snapshot['sub_query_backend']!r} "
-                f"(resolved: {snapshot['sub_query_backend_resolved']!r})"
-            )
-
-        def get_config() -> dict[str, Any]:
-            return self._get_sub_query_config_snapshot()
-
-        session.repl.set_variable("set_backend", set_backend)
-        session.repl.set_variable("get_config", get_config)
+        _inject_repl_config_helpers_impl(self, session)
 
     def _inject_repl_sub_query(self, session: _Session, context_id: str) -> None:
-        async def sub_query(prompt: str, context_slice: str | None = None) -> str:
-            success, output, _truncated, _backend = await self._run_sub_query(
-                prompt=prompt,
-                context_slice=context_slice,
-                context_id=context_id,
-                backend="auto",
-            )
-            if not success:
-                return f"[ERROR: sub_query failed: {output}]"
-            return output
-
-        session.repl.inject_sub_query(sub_query)
+        _inject_repl_sub_query_impl(self, session, context_id)
 
     def _inject_repl_sub_aleph(self, session: _Session, context_id: str) -> None:
-        async def sub_aleph(
-            query: str, context: ContextType | None = None
-        ) -> AlephResponse:
-            context_slice: str | None
-            if context is None:
-                context_slice = None
-            elif isinstance(context, str):
-                context_slice = context
-            else:
-                context_slice = _coerce_context_to_text(context)
-            response, _meta = await self._run_sub_aleph(
-                query=query,
-                context_slice=context_slice,
-                context_id=context_id,
-            )
-            return response
-
-        session.repl.inject_sub_aleph(sub_aleph)
+        _inject_repl_sub_aleph_impl(self, session, context_id)
 
     def _configure_session(
         self,
@@ -624,11 +583,7 @@ class AlephMCPServerLocal:
         context_id: str,
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
-        if loop is not None:
-            session.repl.set_loop(loop)
-        self._inject_repl_sub_query(session, context_id)
-        self._inject_repl_sub_aleph(session, context_id)
-        self._inject_repl_config_helpers(session)
+        _configure_session_impl(self, session, context_id, loop=loop)
 
     async def _ensure_remote_server(
         self, server_id: str
