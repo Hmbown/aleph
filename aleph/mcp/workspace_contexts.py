@@ -286,7 +286,19 @@ def binding_status(binding: WorkspaceBinding | None) -> dict[str, Any] | None:
                 "reason": "invalid persisted file metadata",
                 "last_refreshed_at": binding.get("refreshed_at"),
             }
-        stat = path.stat()
+        try:
+            stat = path.stat()
+        except OSError:
+            return {
+                "kind": "file",
+                "path": path_text,
+                "display_path": binding.get("display_path"),
+                "exists": True,
+                "refreshable": True,
+                "stale": True,
+                "reason": "unable to stat file",
+                "last_refreshed_at": binding.get("refreshed_at"),
+            }
         stale = (
             stat.st_size != expected_size
             or stat.st_mtime_ns != expected_mtime_ns
