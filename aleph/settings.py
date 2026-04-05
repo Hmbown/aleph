@@ -245,6 +245,10 @@ class SubQueryEnvSettings(_AlephBaseSettings):
 class MCPServerEnvSettings(_AlephBaseSettings):
     tool_docs: Literal["concise", "full"] = Field(default="concise", validation_alias="ALEPH_TOOL_DOCS")
     context_policy: str | None = Field(default=None, validation_alias="ALEPH_CONTEXT_POLICY")
+    action_policy: Literal["read-write", "read-only"] = Field(
+        default="read-write",
+        validation_alias="ALEPH_ACTION_POLICY",
+    )
     workspace_root: str | None = Field(default=None, validation_alias="ALEPH_WORKSPACE_ROOT")
     remote_tool_timeout_seconds: float = Field(
         default=120.0,
@@ -263,6 +267,16 @@ class MCPServerEnvSettings(_AlephBaseSettings):
         if text in {"concise", "full"}:
             return text  # type: ignore[return-value]
         return "concise"
+
+    @field_validator("action_policy", mode="before")
+    @classmethod
+    def _coerce_action_policy(cls, value: object) -> Literal["read-write", "read-only"]:
+        text = (_strip_optional_text(value) or "read-write").lower()
+        if text in {"read-write", "workspace-write", "write"}:
+            return "read-write"
+        if text in {"read-only", "readonly", "safe"}:
+            return "read-only"
+        return "read-write"
 
     @field_validator("context_policy", "workspace_root", "swarm_name", "swarm_context_prefix", mode="before")
     @classmethod

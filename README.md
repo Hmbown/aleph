@@ -7,8 +7,8 @@
 Aleph is an [MCP server](https://modelcontextprotocol.io/) and skill for
 **Recursive Language Models** (RLMs). It keeps working state — search indexes,
 code execution, evidence, recursion — in a Python process outside the prompt
-window, so the LLM reasons iteratively over repos, logs, documents, and data
-without burning context on raw content.
+window, so the LLM reasons iteratively over large codebases, long-lived
+projects, logs, documents, and data without burning context on raw content.
 
 ```text
 +-----------------+    tool calls     +-----------------------------+
@@ -25,7 +25,8 @@ Why Aleph:
   `exec_typescript` provide a persistent Node.js runtime over the same `ctx`.
 - **Recurse.** Sub-queries and recipes split complex work across multiple
   reasoning passes.
-- **Persist.** Save sessions and resume long investigations later.
+- **Keep workspaces warm.** Bind contexts back to files or generated workspace
+  manifests, refresh them, and resume long investigations later.
 
 ## Quick Start
 
@@ -46,6 +47,12 @@ The optional `/aleph` (Claude Code) or `$aleph` (Codex) skill shortcut starts
 a structured RLM workflow. Install
 [`docs/prompts/aleph.md`](docs/prompts/aleph.md) into your client's
 command/skill folder — see [MCP_SETUP.md](MCP_SETUP.md) for exact paths.
+
+If you are using action tools on a real repo, the safest default is:
+
+```bash
+aleph --enable-actions --action-policy read-only
+```
 
 ### Cursor
 
@@ -83,10 +90,37 @@ aleph-rlm configure --profile codex   # overwrite existing config
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all env vars, CLI
 flags, and runtime `configure(...)` options.
 
-## First Workflow
+## Large Codebase Workflow
 
-Aleph is best when you load data once, do the heavy work inside Aleph, and only
-pull back compact answers.
+If your main use case is a repo or multi-folder project, start by loading a
+compact workspace manifest instead of throwing raw source files into the model
+window. That gives the model a map of the project, lets it search aggressively,
+and keeps the session refreshable as the repo changes.
+
+```python
+load_workspace_manifest(paths=["src", "tests"], context_id="repo")
+rg_search(pattern="FastAPI|APIRouter|router\\.", paths=["src", "tests"], load_context_id="routes")
+load_file(path="pyproject.toml", context_id="pyproject")
+exec_python(code="""
+files = [line for line in ctx.splitlines() if line.startswith("- ")]
+summary = {
+    "indexed_entries": len(files),
+    "top_python_files": [line for line in files if "| python |" in line][:10],
+}
+""", context_id="repo")
+get_variable(name="summary", context_id="repo")
+refresh_context(context_id="repo")
+```
+
+Use `load_workspace_manifest` as the default front door for large codebases and
+projects. Then pull in specific files with `load_file`, search the repo with
+`rg_search`, and refresh the bound context when the workspace changes. Refreshes
+preserve the session's reasoning state, evidence log, and tracked tasks.
+
+### Single File Workflow
+
+Aleph is also strong when you load one large file once, do the heavy work
+inside Aleph, and only pull back compact answers.
 
 ```python
 load_file(path="/absolute/path/to/large_file.log", context_id="doc")
@@ -160,6 +194,7 @@ variables.
 
 | Scenario | What Aleph Is Good At |
 |---|---|
+| Large codebase / project analysis | Build a workspace map, search quickly, load only the files that matter, and keep the session refreshable |
 | Large log analysis | Load big files, trace patterns, correlate events |
 | Codebase navigation | Search symbols, inspect routes, trace behavior |
 | Data exploration | Analyze JSON, CSV, and mixed text with Python helpers |
@@ -171,7 +206,7 @@ variables.
 
 | Category | Primary tools | What they do |
 |---|---|---|
-| Load context | `load_context`, `load_file`, `list_contexts`, `diff_contexts` | Put data into Aleph memory and inspect what is loaded |
+| Load context | `load_context`, `load_file`, `load_workspace_manifest`, `refresh_context`, `list_contexts`, `diff_contexts` | Put data into Aleph memory, bind it back to workspace assets, and inspect what is loaded |
 | Navigate | `search_context`, `semantic_search`, `peek_context`, `chunk_context`, `rg_search` | Find the relevant slice before asking for an answer |
 | Compute | `exec_python`, `exec_javascript`, `exec_typescript`, `get_variable` | Run Python or JS/TS over the full context and retrieve only the derived result |
 | Reason | `think`, `evaluate_progress`, `get_evidence`, `finalize` | Structure progress and close out with evidence |
@@ -273,6 +308,9 @@ explicitly pull it back:
 - `exec_python` stdout, stderr, and return values are bounded independently.
 - `ALEPH_CONTEXT_POLICY=isolated` adds stricter session export/import rules and
   more defensive defaults.
+- `ALEPH_ACTION_POLICY=read-only` (or `--action-policy read-only`) keeps action
+  tools in read-only mode: search and file loading still work, but writes and
+  subprocess execution are blocked.
 
 The safest pattern is always:
 

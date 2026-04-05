@@ -83,6 +83,13 @@ def build_server_argument_parser(
         help="Path scope for action tools: fixed (workspace root only), git (any git repo), any (no path restriction)",
     )
     parser.add_argument(
+        "--action-policy",
+        type=str,
+        choices=["read-write", "read-only"],
+        default=None,
+        help="Filesystem/process policy for action tools: read-write (default) or read-only.",
+    )
+    parser.add_argument(
         "--require-confirmation",
         action="store_true",
         help="Require confirm=true for action tools",
@@ -243,6 +250,8 @@ def apply_server_env_overrides(args: argparse.Namespace) -> None:
 
     if args.swarm_mode:
         os.environ["ALEPH_SWARM_MODE"] = "true"
+    if getattr(args, "action_policy", None) is not None:
+        os.environ["ALEPH_ACTION_POLICY"] = args.action_policy
     if args.swarm_name is not None:
         os.environ["ALEPH_SWARM_NAME"] = args.swarm_name
     if args.enable_session_sharing:
@@ -258,7 +267,9 @@ def build_runtime_configs(
     *,
     detect_workspace_root: Callable[[], Path],
     normalize_context_policy: Callable[[str | None, str], str],
+    normalize_action_policy: Callable[[str | None, str], str],
     default_context_policy: str,
+    default_action_policy: str,
     sandbox_config_factory: Callable[..., Any],
     action_config_factory: Callable[..., Any],
 ) -> tuple[Any, Any, str]:
@@ -281,6 +292,10 @@ def build_runtime_configs(
         context_policy=normalize_context_policy(
             env_settings.context_policy,
             default_context_policy,
+        ),
+        action_policy=normalize_action_policy(
+            getattr(args, "action_policy", None) or env_settings.action_policy,
+            default_action_policy,
         ),
         require_confirmation=bool(args.require_confirmation),
         max_read_bytes=args.max_file_size,

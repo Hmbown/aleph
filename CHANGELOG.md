@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Added: `load_workspace_manifest` and `refresh_context` MCP tools for
+  workspace-first analysis. Aleph can now bind contexts to refreshable
+  workspace files or generated manifests, which is a better default for large
+  codebases and long-lived projects than loading raw files ad hoc.
+- Added: Workspace bindings now persist through memory-pack save/load, and
+  `get_status` / `list_contexts` expose binding metadata for MCP clients.
+- Added: `ALEPH_ACTION_POLICY` / `--action-policy` with `read-write` and
+  `read-only` modes. Read-only mode keeps repo search and file loading
+  available while blocking writes and subprocess execution.
+- Refactored: Workspace-oriented MCP behavior extracted into
+  `mcp/workspace_contexts.py` and `mcp/workspace_tools.py`, plus
+  `mcp/context_tools.py` for session/context MCP behavior, continuing the
+  modularization of `mcp/local_server.py`.
+- Docs: README and DEVELOPMENT now lead with the large-codebase workflow and
+  document refreshable workspaces plus the read-only action policy.
+- Tests: Added MCP contract coverage for workspace manifests, refreshable
+  file-backed contexts, action-policy enforcement, and bootstrap env handling.
+
 ## 0.9.2
 
 - Refactored: Centralized Aleph, MCP, and sub-query env parsing through typed

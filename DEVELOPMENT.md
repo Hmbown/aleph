@@ -8,9 +8,9 @@ Architecture and development workflow for Aleph.
 
 Aleph is an MCP server implementing the
 [Recursive Language Model](https://arxiv.org/abs/2512.24601) (RLM) paradigm for
-document analysis. Instead of stuffing context into prompts, Aleph stores
-documents in a sandboxed Python REPL and provides tools for iterative
-exploration.
+large-codebase, project, and document analysis. Instead of stuffing context
+into prompts, Aleph stores working data in a sandboxed Python REPL and
+provides tools for iterative exploration.
 
 ---
 
@@ -24,11 +24,17 @@ aleph/
 ├── cli.py               # CLI entry points (aleph-rlm install/doctor)
 ├── mcp/
 │   ├── local_server.py  # MCP server (main entry point)
-│   ├── tool_registry.py # Tool registration helpers
+│   ├── admin_tools.py   # Runtime configure / remote-server MCP tools
 │   ├── actions.py       # Action tools (read/write/run)
+│   ├── context_tools.py # Context load/list/diff/save/load MCP tools
+│   ├── query_tools.py   # Search / peek / semantic-search MCP tools
 │   ├── recipes.py       # Recipe schema validation
+│   ├── reasoning_tools.py # Status / evidence / finalize MCP tools
+│   ├── workspace_contexts.py # Refreshable file / manifest bindings
+│   ├── workspace_tools.py # Workspace-manifest and refresh MCP tools
 │   ├── session.py       # Session serialization
 │   ├── workspace.py     # Workspace root detection
+│   ├── server_bootstrap.py # CLI/env bootstrap for MCP server runtime
 │   └── server.py        # Compatibility entry point (aliases local_server)
 ├── repl/
 │   ├── sandbox.py       # REPLEnvironment -- sandboxed code execution
@@ -65,8 +71,8 @@ pip install -e ".[dev,mcp]"
 # Run tests
 python3 -m pytest -q
 
-# Run MCP server locally (with action tools enabled)
-aleph --enable-actions --tool-docs concise
+# Run MCP server locally (action tools enabled, but kept read-only)
+aleph --enable-actions --action-policy read-only --tool-docs concise
 ```
 
 ---
@@ -90,12 +96,12 @@ The primary entry point for IDE integration. Exposes tools:
 
 | Category            | Tools                                                             |
 |---------------------|-------------------------------------------------------------------|
-| **Context**         | `load_context`, `peek_context`, `search_context`                  |
+| **Context**         | `load_context`, `load_file`, `load_workspace_manifest`, `refresh_context` |
 | **Compute**         | `exec_python`, `get_variable`                                     |
 | **Recursion**       | `sub_query` (RLM-style recursive calls)                           |
 | **Reasoning**       | `think`, `evaluate_progress`, `summarize_so_far`                  |
 | **Output**          | `finalize`, `get_evidence`, `get_status`                          |
-| **Actions**         | `run_command`, `read_file`, `write_file`, `run_tests`             |
+| **Actions**         | `rg_search`, `read_file`, `run_command`, `write_file`, `run_tests` |
 
 ### Sandbox (`repl/sandbox.py`)
 
@@ -109,7 +115,8 @@ The `REPLEnvironment` provides a sandboxed Python execution environment:
 - **Helper injection:** 100+ functions for document analysis
 
 The sandbox is best-effort, not hardened. For untrusted input, use container
-isolation.
+isolation and keep MCP action tools in `--action-policy read-only` unless you
+explicitly need writes or subprocess execution.
 
 ### Sub-Query System (`sub_query/`)
 
@@ -192,11 +199,14 @@ ruff check aleph tests
 
 ## Adding a New Tool
 
-1. Add the tool function in `mcp/local_server.py` inside `_register_tools()`
-2. Decorate with `@self.server.tool()`
-3. Include comprehensive docstring (shown to AI users)
-4. Update `_Session` if tool needs state tracking
-5. Add tests in `tests/`
+1. Prefer a dedicated module under `aleph/mcp/` (for example
+   `workspace_tools.py`, `reasoning_tools.py`) instead of adding more inline
+   closures to `local_server.py`.
+2. Register the module from `AlephMCPServerLocal._register_tools()`
+3. Decorate with `@self.server.tool()`
+4. Include comprehensive docstring (shown to AI users)
+5. Update `_Session` if the tool needs state tracking
+6. Add tests in `tests/`
 
 Example:
 

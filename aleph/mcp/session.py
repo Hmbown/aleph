@@ -11,7 +11,7 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from ..repl.sandbox import REPLEnvironment, SandboxConfig
 from ..types import ContentFormat, ContextMetadata
@@ -114,6 +114,8 @@ class _Session:
     information_gain: list[int] = field(default_factory=list)
     # Chunk metadata for navigation
     chunks: list[dict] | None = None
+    # Optional binding back to a workspace asset (file or generated manifest)
+    workspace_binding: dict[str, Any] | None = None
     # Lightweight task tracking
     tasks: list[dict[str, Any]] = field(default_factory=list)
     task_counter: int = 0
@@ -196,6 +198,7 @@ def _session_to_payload(
         "confidence_history": list(session.confidence_history),
         "information_gain": list(session.information_gain),
         "chunks": session.chunks,
+        "workspace_binding": session.workspace_binding,
         "tasks": tasks_payload,
         "task_counter": session.task_counter,
         "evidence": [
@@ -216,6 +219,243 @@ def _session_to_payload(
         payload["ctx_redacted"] = True
         payload["ctx_chars"] = len(ctx_text)
     return payload
+
+
+def snapshot_session_state(session: _Session) -> dict[str, Any]:
+    """Capture the mutable reasoning/task state for a session."""
+    reasoning_trace = session.repl._namespace.get("_reasoning_trace")
+    if not isinstance(reasoning_trace, list):
+        reasoning_trace = []
+    return {
+        "created_at": session.created_at,
+        "iterations": session.iterations,
+        "think_history": list(session.think_history),
+        "evidence": list(session.evidence),
+        "confidence_history": list(session.confidence_history),
+        "information_gain": list(session.information_gain),
+        "chunks": list(session.chunks) if isinstance(session.chunks, list) else session.chunks,
+        "workspace_binding": (
+            dict(session.workspace_binding)
+            if isinstance(session.workspace_binding, dict)
+            else None
+        ),
+        "tasks": [dict(task) for task in session.tasks if isinstance(task, dict)],
+        "task_counter": session.task_counter,
+        "max_depth_seen": session.max_depth_seen,
+        "reasoning_trace": list(reasoning_trace),
+    }
+
+
+def restore_session_state(session: _Session, state: dict[str, Any]) -> None:
+    """Restore mutable reasoning/task state onto an existing session."""
+    session.created_at = state["created_at"]
+    session.iterations = int(state["iterations"])
+    session.think_history = list(state["think_history"])
+    session.evidence = list(state["evidence"])
+    session.confidence_history = list(state["confidence_history"])
+    session.information_gain = list(state["information_gain"])
+    chunks = state["chunks"]
+    session.chunks = list(chunks) if isinstance(chunks, list) else chunks
+    binding = state["workspace_binding"]
+    session.workspace_binding = dict(binding) if isinstance(binding, dict) else None
+    session.tasks = [dict(task) for task in state["tasks"] if isinstance(task, dict)]
+    session.task_counter = int(state["task_counter"])
+    session.max_depth_seen = int(state["max_depth_seen"])
+    session.repl._namespace["_tasks"] = session.tasks
+    reasoning_trace = state["reasoning_trace"]
+    if reasoning_trace:
+        session.repl._namespace["_reasoning_trace"] = list(reasoning_trace)
+    else:
+        session.repl._namespace.pop("_reasoning_trace", None)
+
+
+def create_session(
+    *,
+    sessions: dict[str, _Session],
+    context: str,
+    context_id: str,
+    fmt: ContentFormat,
+    line_number_base: LineNumberBase,
+    sandbox_config: SandboxConfig,
+    analyze_text_context: Callable[[str, ContentFormat], ContextMetadata],
+    configure_session: Callable[[_Session, str, asyncio.AbstractEventLoop | None], None],
+    close_node_repl: Callable[[str], None] | None = None,
+) -> ContextMetadata:
+    """Create or replace a session for a context id."""
+    if close_node_repl is not None:
+        close_node_repl(context_id)
+
+    meta = analyze_text_context(context, fmt)
+    repl = REPLEnvironment(
+        context=context,
+        context_var_name="ctx",
+        config=sandbox_config,
+        loop=asyncio.get_running_loop(),
+    )
+    repl.set_variable("line_number_base", line_number_base)
+    sessions[context_id] = _Session(
+        repl=repl,
+        meta=meta,
+        line_number_base=line_number_base,
+    )
+    configure_session(sessions[context_id], context_id, asyncio.get_running_loop())
+    return meta
+
+
+def get_or_create_session(
+    *,
+    sessions: dict[str, _Session],
+    context_id: str,
+    line_number_base: LineNumberBase | None,
+    sandbox_config: SandboxConfig,
+    analyze_text_context: Callable[[str, ContentFormat], ContextMetadata],
+    configure_session: Callable[[_Session, str, asyncio.AbstractEventLoop | None], None],
+) -> _Session:
+    """Get an existing session or create an empty one."""
+    session = sessions.get(context_id)
+    if session is not None:
+        configure_session(session, context_id, asyncio.get_running_loop())
+        return session
+
+    base = (
+        line_number_base
+        if line_number_base is not None
+        else DEFAULT_LINE_NUMBER_BASE
+    )
+    meta = analyze_text_context("", ContentFormat.TEXT)
+    repl = REPLEnvironment(
+        context="",
+        context_var_name="ctx",
+        config=sandbox_config,
+        loop=asyncio.get_running_loop(),
+    )
+    repl.set_variable("line_number_base", base)
+    session = _Session(repl=repl, meta=meta, line_number_base=base)
+    sessions[context_id] = session
+    configure_session(session, context_id, asyncio.get_running_loop())
+    return session
+
+
+def replace_session_context(
+    *,
+    sessions: dict[str, _Session],
+    context: str,
+    context_id: str,
+    fmt: ContentFormat,
+    line_number_base: LineNumberBase,
+    sandbox_config: SandboxConfig,
+    analyze_text_context: Callable[[str, ContentFormat], ContextMetadata],
+    configure_session: Callable[[_Session, str, asyncio.AbstractEventLoop | None], None],
+    close_node_repl: Callable[[str], None] | None = None,
+    preserve_state: bool = False,
+) -> ContextMetadata:
+    """Replace the session context, optionally preserving reasoning/task state."""
+    previous_state = None
+    if preserve_state and context_id in sessions:
+        previous_state = snapshot_session_state(sessions[context_id])
+
+    meta = create_session(
+        sessions=sessions,
+        context=context,
+        context_id=context_id,
+        fmt=fmt,
+        line_number_base=line_number_base,
+        sandbox_config=sandbox_config,
+        analyze_text_context=analyze_text_context,
+        configure_session=configure_session,
+        close_node_repl=close_node_repl,
+    )
+    if previous_state is not None:
+        restore_session_state(sessions[context_id], previous_state)
+    return meta
+
+
+def build_memory_pack_payload(
+    sessions: dict[str, _Session],
+    *,
+    include_ctx: bool = True,
+) -> tuple[dict[str, Any], list[str]]:
+    """Serialize all known sessions into a memory-pack payload."""
+    sessions_payload: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    for sid, sess in sessions.items():
+        try:
+            sessions_payload.append(
+                _session_to_payload(sid, sess, include_ctx=include_ctx)
+            )
+        except Exception:
+            skipped.append(sid)
+    payload = {
+        "schema": "aleph.memory_pack.v1",
+        "created_at": datetime.now().isoformat(),
+        "sessions": sessions_payload,
+        "skipped": skipped,
+    }
+    return payload, skipped
+
+
+def _resolve_session_payload_id(session_payload: Any) -> str | None:
+    if not isinstance(session_payload, dict):
+        return None
+
+    raw_id = session_payload.get("id")
+    if isinstance(raw_id, str) and raw_id.strip():
+        return raw_id.strip()
+
+    raw_session_id = session_payload.get("session_id")
+    if isinstance(raw_session_id, str) and raw_session_id.strip():
+        return raw_session_id.strip()
+
+    raw_context_id = session_payload.get("context_id")
+    if isinstance(raw_context_id, str) and raw_context_id.strip():
+        return raw_context_id.strip()
+
+    return None
+
+
+def load_memory_pack_payload(
+    payload: dict[str, Any],
+    *,
+    sessions: dict[str, _Session],
+    sandbox_config: SandboxConfig,
+    configure_session: Callable[[_Session, str, asyncio.AbstractEventLoop | None], None],
+    loop: asyncio.AbstractEventLoop | None,
+    close_node_repl: Callable[[str], None] | None = None,
+    skip_existing: bool = False,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Load sessions from a memory-pack payload into the session registry."""
+    if payload.get("schema") != "aleph.memory_pack.v1":
+        raise ValueError("Invalid memory pack schema")
+
+    session_payloads = payload.get("sessions")
+    if not isinstance(session_payloads, list):
+        raise ValueError("Invalid memory pack payload: sessions must be a list")
+
+    loaded: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for session_payload in session_payloads:
+        resolved_id = _resolve_session_payload_id(session_payload)
+        if not resolved_id:
+            skipped.append({"id": "<missing>", "error": "missing session identifier"})
+            continue
+        if skip_existing and resolved_id in sessions:
+            continue
+        try:
+            if close_node_repl is not None:
+                close_node_repl(resolved_id)
+            session = _session_from_payload(
+                session_payload,
+                resolved_id,
+                sandbox_config,
+                loop,
+            )
+            configure_session(session, resolved_id, loop)
+            sessions[resolved_id] = session
+            loaded.append(resolved_id)
+        except Exception as exc:
+            skipped.append({"id": resolved_id, "error": str(exc)})
+
+    return loaded, skipped
 
 
 def _session_from_payload(
@@ -279,32 +519,32 @@ def _session_from_payload(
         for task in tasks_payload:
             if not isinstance(task, dict):
                 continue
-            if "id" not in task or "title" not in task:
-                continue
+            tasks.append(dict(task))
+
+    def _task_counter_seed(items: list[dict[str, Any]]) -> int:
+        best = 0
+        for task in items:
             raw_id = task.get("id")
-            if raw_id is None:
+            if isinstance(raw_id, int):
+                best = max(best, raw_id)
                 continue
-            try:
-                task_id = int(raw_id)
-            except (TypeError, ValueError):
-                continue
-            tasks.append({
-                "id": task_id,
-                "title": str(task.get("title")),
-                "status": str(task.get("status") or "todo"),
-                "note": task.get("note"),
-                "created_at": task.get("created_at"),
-                "updated_at": task.get("updated_at"),
-            })
+            if isinstance(raw_id, str):
+                digits = "".join(ch for ch in raw_id if ch.isdigit())
+                if digits:
+                    try:
+                        best = max(best, int(digits))
+                    except ValueError:
+                        continue
+        return best
 
     raw_task_counter = obj.get("task_counter")
     if isinstance(raw_task_counter, (int, str)):
         try:
             task_counter = int(raw_task_counter)
         except (TypeError, ValueError):
-            task_counter = max((t["id"] for t in tasks), default=0)
+            task_counter = _task_counter_seed(tasks)
     else:
-        task_counter = max((t["id"] for t in tasks), default=0)
+        task_counter = _task_counter_seed(tasks)
 
     session = _Session(
         repl=repl,
@@ -316,9 +556,15 @@ def _session_from_payload(
         confidence_history=list(obj.get("confidence_history") or []),
         information_gain=list(obj.get("information_gain") or []),
         chunks=obj.get("chunks"),
+        workspace_binding=(
+            dict(obj["workspace_binding"])
+            if isinstance(obj.get("workspace_binding"), dict)
+            else None
+        ),
         tasks=tasks,
         task_counter=task_counter,
     )
+    repl._namespace["_tasks"] = session.tasks
 
     ev_list = obj.get("evidence")
     if isinstance(ev_list, list):
