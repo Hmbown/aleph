@@ -43,24 +43,17 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import bz2
 from collections import OrderedDict
 import difflib
 import fnmatch
-import gzip
-import importlib
 import inspect
-import io
 import json
-import lzma
 import os
 import re
 import shutil
 import shlex
-import subprocess
 import sys
 import time
-import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -68,12 +61,11 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, cast
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
-import xml.etree.ElementTree as ET
-from html.parser import HTMLParser
 
 from ..compat import normalize_content_format, normalize_output_feedback
 from ..config import AlephConfig
 from ..core import Aleph
+from ..observability import traced_span
 from ..prompts.system import DEFAULT_SYSTEM_PROMPT
 from ..providers.registry import get_provider
 from ..repl import helpers as repl_helpers
@@ -99,6 +91,8 @@ from ..sub_query.codex_mcp_backend import (
 )
 from ..sub_query.api_backend import run_api_sub_query
 from .admin_tools import register_admin_tools
+from .env_utils import DEFAULT_REMOTE_TOOL_TIMEOUT_SECONDS, _get_env_bool, _get_env_int
+from .io_utils import _detect_format, _load_text_from_path
 from .query_tools import register_query_tools as _register_query_tools_module
 from .recipes import estimate_recipe as _estimate_recipe
 from .recipes import validate_recipe as _validate_recipe
@@ -148,230 +142,20 @@ DEFAULT_TOOL_RESPONSE_MAX_CHARS = 10_000
 _TOOL_TRUNCATION_SUFFIX = "\n... [TRUNCATED]"
 
 
-def _get_env_float(name: str, default: float) -> float:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        return default
-    try:
-        return float(value)
-    except ValueError:
-        return default
-
-
-def _get_env_int(name: str, default: int) -> int:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
-
-
-def _get_env_bool(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    value = value.strip().lower()
-    if value in {"1", "true", "yes", "y", "on"}:
-        return True
-    if value in {"0", "false", "no", "n", "off"}:
-        return False
-    return default
-
-
 def _normalize_context_policy(
     value: str | None,
-    default: ContextPolicy = DEFAULT_CONTEXT_POLICY,
+    default: str = DEFAULT_CONTEXT_POLICY,
 ) -> ContextPolicy:
     if value is None:
-        return default
+        return cast(ContextPolicy, default)
     normalized = value.strip().lower()
     if normalized in {"trusted", "isolated"}:
         return cast(ContextPolicy, normalized)
     if normalized in {"strict", "untrusted", "shared"}:
         return "isolated"
-    return default
+    return cast(ContextPolicy, default)
 
 
-DEFAULT_REMOTE_TOOL_TIMEOUT_SECONDS = _get_env_float(
-    "ALEPH_REMOTE_TOOL_TIMEOUT",
-    120.0,
-)
-
-
-def _detect_format(text: str) -> ContentFormat:
-    """Detect content format from text."""
-    t = text.lstrip()
-    if t.startswith("{") or t.startswith("["):
-        try:
-            json.loads(text)
-            return ContentFormat.JSON
-        except Exception:
-            return ContentFormat.TEXT
-    return ContentFormat.TEXT
-
-
-def _detect_format_for_suffix(text: str, suffix: str) -> ContentFormat:
-    ext = suffix.lower()
-    if ext in {".jsonl", ".ndjson"}:
-        return ContentFormat.JSONL
-    if ext == ".csv":
-        return ContentFormat.CSV
-    if ext == ".json":
-        return ContentFormat.JSON if _detect_format(text) == ContentFormat.JSON else ContentFormat.TEXT
-    if ext in {
-        ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".rb", ".php", ".cs",
-        ".c", ".h", ".cpp", ".hpp",
-    }:
-        return ContentFormat.CODE
-    return _detect_format(text)
-
-
-def _effective_suffix(path: Path) -> str:
-    suffixes = [s.lower() for s in path.suffixes]
-    if suffixes and suffixes[-1] in {".gz", ".bz2", ".xz"}:
-        return suffixes[-2] if len(suffixes) > 1 else ""
-    return path.suffix.lower()
-
-
-def _decompress_bytes(path: Path, data: bytes) -> tuple[bytes, str | None]:
-    ext = path.suffix.lower()
-    if ext == ".gz":
-        return gzip.decompress(data), "gzip"
-    if ext == ".bz2":
-        return bz2.decompress(data), "bzip2"
-    if ext == ".xz":
-        return lzma.decompress(data), "xz"
-    return data, None
-
-
-class _HTMLTextExtractor(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self._chunks: list[str] = []
-        self._skip = False
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"script", "style"}:
-            self._skip = True
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in {"script", "style"}:
-            self._skip = False
-
-    def handle_data(self, data: str) -> None:
-        if self._skip:
-            return
-        stripped = data.strip()
-        if stripped:
-            self._chunks.append(stripped)
-
-    def text(self) -> str:
-        return "\n".join(self._chunks)
-
-
-def _extract_text_from_html(text: str) -> str:
-    parser = _HTMLTextExtractor()
-    parser.feed(text)
-    return parser.text()
-
-
-def _extract_text_from_docx(data: bytes) -> str:
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        xml_bytes = zf.read("word/document.xml")
-    root = ET.fromstring(xml_bytes)
-    paragraphs: list[str] = []
-    for para in root.iter():
-        if not para.tag.endswith("}p"):
-            continue
-        parts: list[str] = []
-        for node in para.iter():
-            if node.tag.endswith("}t") and node.text:
-                parts.append(node.text)
-        if parts:
-            paragraphs.append("".join(parts))
-    return "\n".join(paragraphs)
-
-
-def _extract_text_from_pdf(
-    data: bytes,
-    path: Path | None,
-    timeout_seconds: float,
-) -> tuple[str, str | None]:
-    for module_name in ("pypdf", "PyPDF2"):
-        try:
-            module = importlib.import_module(module_name)
-            reader = module.PdfReader(io.BytesIO(data))
-            pages: list[str] = []
-            for page in reader.pages:
-                try:
-                    page_text = page.extract_text() or ""
-                except Exception:
-                    page_text = ""
-                if page_text:
-                    pages.append(page_text)
-            text = "\n".join(pages).strip()
-            if text:
-                return text, None
-        except Exception:
-            continue
-
-    if path is not None:
-        pdf_tool = shutil.which("pdftotext")
-        if pdf_tool:
-            try:
-                result = subprocess.run(
-                    [pdf_tool, "-layout", str(path), "-"],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_seconds,
-                )
-            except Exception as e:
-                return "", f"pdftotext failed: {e}"
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout, None
-            stderr = result.stderr.strip()
-            if stderr:
-                return "", f"pdftotext error: {stderr}"
-
-    return "", "PDF extraction unavailable. Install `pypdf` or `pdftotext` for best results."
-
-
-def _load_text_from_path(
-    path: Path,
-    max_bytes: int,
-    timeout_seconds: float,
-) -> tuple[str, ContentFormat, str | None]:
-    data = path.read_bytes()
-    if len(data) > max_bytes:
-        raise ValueError(f"File too large to read (>{max_bytes} bytes): {path}")
-
-    data, compression = _decompress_bytes(path, data)
-    if compression and len(data) > max_bytes:
-        raise ValueError(f"Decompressed file too large (>{max_bytes} bytes): {path}")
-
-    suffix = _effective_suffix(path)
-    warning: str | None = None
-
-    if suffix == ".pdf":
-        text, warning = _extract_text_from_pdf(data, path, timeout_seconds)
-        if not text.strip():
-            raise ValueError(warning or "Failed to extract PDF text")
-    elif suffix == ".docx":
-        try:
-            text = _extract_text_from_docx(data)
-        except Exception as e:
-            raise ValueError(f"Failed to extract DOCX text: {e}") from e
-        if not text.strip():
-            warning = "DOCX extraction produced empty text"
-    elif suffix in {".html", ".htm"}:
-        text = _extract_text_from_html(data.decode("utf-8", errors="replace"))
-    else:
-        text = data.decode("utf-8", errors="replace")
-
-    fmt = _detect_format_for_suffix(text, suffix)
-    return text, fmt, warning
 
 
 _ANALYZE_CACHE_MAX = 64
@@ -604,12 +388,13 @@ def _resolve_line_number_base(
     return _validate_line_number_base(value)
 
 
-def _to_internal_line_index(index: int | None, base: LineNumberBase) -> int | None:
+def _to_internal_line_index(index: int | None, base: int) -> int | None:
     """Convert external line indices (line_number_base) to internal 0-based indices."""
 
     if index is None or index < 0:
         return index
-    if base == 0:
+    resolved_base = _validate_line_number_base(base)
+    if resolved_base == 0:
         return index
     if index == 0:
         # Backward-compatible handling for older callers that still pass 0-based values.
@@ -636,8 +421,8 @@ def _get_repl_helper(repl: REPLEnvironment, name: str) -> object | None:
     if callable(get_helper):
         helper = get_helper(name)
         if helper is not None:
-            return helper
-    return repl.get_variable(name)
+            return cast(object, helper)
+    return cast(object | None, repl.get_variable(name))
 
 
 def _to_jsonable(obj: Any) -> Any:
@@ -1028,118 +813,135 @@ class AlephMCPServerLocal:
         base_prompt = prompt
         prompt_for_attempt = base_prompt
         codex_thread_id: str | None = None
-
-        try:
-            while True:
-                run_prompt = prompt_for_attempt
-                if resolved_backend in CLI_BACKENDS:
-                    mcp_server_url = None
-                    server_name = "aleph_shared"
-                    share_session = _get_env_bool("ALEPH_SUB_QUERY_SHARE_SESSION", False)
-                    if share_session and resolved_backend in {"claude", "codex", "gemini", "kimi"}:
-                        host = os.environ.get("ALEPH_SUB_QUERY_HTTP_HOST", "127.0.0.1")
-                        port = _get_env_int("ALEPH_SUB_QUERY_HTTP_PORT", 8765)
-                        path = os.environ.get("ALEPH_SUB_QUERY_HTTP_PATH", "/mcp")
-                        server_name = os.environ.get(
-                            "ALEPH_SUB_QUERY_MCP_SERVER_NAME",
-                            "aleph_shared",
-                        ).strip() or "aleph_shared"
-                        ok, url_or_err = await self._ensure_streamable_http_server(host, port, path)
-                        if not ok:
-                            return False, f"Failed to start streamable HTTP server: {url_or_err}", truncated, resolved_backend
-                        mcp_server_url = url_or_err
-                        run_prompt = (
-                            f"{run_prompt}\n\n"
-                            f"[MCP tools are available via the live Aleph server. "
-                            f"Use context_id={context_id!r} when calling tools. "
-                            f"Tools are prefixed with `mcp__{server_name}__`.]"
-                        )
-                    cwd = self.action_config.workspace_root if self.action_config.enabled else None
-                    if resolved_backend == "codex" and resolve_codex_mode(
-                        self.sub_query_config.codex_mode
-                    ) == "mcp":
-                        success, output, codex_thread_id = await self._run_internal_codex_mcp_query(
-                            prompt=run_prompt,
-                            context_slice=context_slice,
-                            cwd=cwd,
-                            mcp_server_url=mcp_server_url,
-                            mcp_server_name=server_name,
-                            thread_id=codex_thread_id,
-                        )
-                    else:
-                        success, output = await run_cli_sub_query(
-                            prompt=run_prompt,
-                            context_slice=context_slice,
-                            backend=resolved_backend,  # type: ignore[arg-type]
-                            timeout=self.sub_query_config.cli_timeout_seconds,
-                            cwd=cwd,
-                            max_output_chars=self.sub_query_config.cli_max_output_chars,
-                            max_context_chars=self.sub_query_config.max_context_chars,
-                            mcp_server_url=mcp_server_url,
-                            mcp_server_name=server_name,
-                            trust_mcp_server=True,
-                            claude_model=self.sub_query_config.claude_model,
-                            claude_effort=self.sub_query_config.claude_effort,
-                            codex_mode=self.sub_query_config.codex_mode,
-                            codex_model=self.sub_query_config.codex_model,
-                            codex_reasoning_effort=self.sub_query_config.codex_reasoning_effort,
-                            codex_profile=self.sub_query_config.codex_profile,
-                        )
-                else:
-                    success, output = await run_api_sub_query(
-                        prompt=run_prompt,
-                        context_slice=context_slice,
-                        model=self.sub_query_config.api_model,
-                        api_key_env=self.sub_query_config.api_key_env,
-                        api_base_url_env=self.sub_query_config.api_base_url_env,
-                        api_model_env=self.sub_query_config.api_model_env,
-                        timeout=self.sub_query_config.api_timeout_seconds,
-                        system_prompt=self.sub_query_config.system_prompt if self.sub_query_config.include_system_prompt else None,
-                        max_context_chars=self.sub_query_config.max_context_chars,
-                    )
-
-                if not success:
-                    break
-
-                if validation_re and not validation_re.search(output):
-                    if attempt >= resolved_max_retries:
-                        success = False
-                        output = (
-                            f"Output failed validation regex {resolved_validation_regex!r} "
-                            f"after {attempt + 1} attempt(s). Last output: {output}"
-                        )
-                        break
-                    attempt += 1
-                    prompt_for_attempt = (
-                        f"{base_prompt}\n\n"
-                        f"{resolved_retry_prompt}\n"
-                        f"Required format regex: {resolved_validation_regex}"
-                    )
-                    continue
-
-                break
-        except Exception as e:
+        with traced_span(
+            "aleph.sub_query",
+            {
+                "aleph.context_id": context_id,
+                "aleph.sub_query.backend.requested": backend,
+                "aleph.sub_query.backend.resolved": resolved_backend,
+                "aleph.sub_query.context_chars": len(context_slice or ""),
+                "aleph.sub_query.context_truncated": truncated,
+                "aleph.sub_query.validation_enabled": bool(resolved_validation_regex),
+            },
+        ) as span:
             success = False
-            output = f"{type(e).__name__}: {e}"
+            output = ""
+            try:
+                while True:
+                    run_prompt = prompt_for_attempt
+                    if resolved_backend in CLI_BACKENDS:
+                        mcp_server_url = None
+                        server_name = "aleph_shared"
+                        share_session = _get_env_bool("ALEPH_SUB_QUERY_SHARE_SESSION", False)
+                        if share_session and resolved_backend in {"claude", "codex", "gemini", "kimi"}:
+                            host = os.environ.get("ALEPH_SUB_QUERY_HTTP_HOST", "127.0.0.1")
+                            port = _get_env_int("ALEPH_SUB_QUERY_HTTP_PORT", 8765)
+                            path = os.environ.get("ALEPH_SUB_QUERY_HTTP_PATH", "/mcp")
+                            server_name = os.environ.get(
+                                "ALEPH_SUB_QUERY_MCP_SERVER_NAME",
+                                "aleph_shared",
+                            ).strip() or "aleph_shared"
+                            ok, url_or_err = await self._ensure_streamable_http_server(host, port, path)
+                            if not ok:
+                                return False, f"Failed to start streamable HTTP server: {url_or_err}", truncated, resolved_backend
+                            mcp_server_url = url_or_err
+                            run_prompt = (
+                                f"{run_prompt}\n\n"
+                                f"[MCP tools are available via the live Aleph server. "
+                                f"Use context_id={context_id!r} when calling tools. "
+                                f"Tools are prefixed with `mcp__{server_name}__`.]"
+                            )
+                        cwd = self.action_config.workspace_root if self.action_config.enabled else None
+                        if resolved_backend == "codex" and resolve_codex_mode(
+                            self.sub_query_config.codex_mode
+                        ) == "mcp":
+                            success, output, codex_thread_id = await self._run_internal_codex_mcp_query(
+                                prompt=run_prompt,
+                                context_slice=context_slice,
+                                cwd=cwd,
+                                mcp_server_url=mcp_server_url,
+                                mcp_server_name=server_name,
+                                thread_id=codex_thread_id,
+                            )
+                        else:
+                            success, output = await run_cli_sub_query(
+                                prompt=run_prompt,
+                                context_slice=context_slice,
+                                backend=resolved_backend,  # type: ignore[arg-type]
+                                timeout=self.sub_query_config.cli_timeout_seconds,
+                                cwd=cwd,
+                                max_output_chars=self.sub_query_config.cli_max_output_chars,
+                                max_context_chars=self.sub_query_config.max_context_chars,
+                                mcp_server_url=mcp_server_url,
+                                mcp_server_name=server_name,
+                                trust_mcp_server=True,
+                                claude_model=self.sub_query_config.claude_model,
+                                claude_effort=self.sub_query_config.claude_effort,
+                                codex_mode=self.sub_query_config.codex_mode,
+                                codex_model=self.sub_query_config.codex_model,
+                                codex_reasoning_effort=self.sub_query_config.codex_reasoning_effort,
+                                codex_profile=self.sub_query_config.codex_profile,
+                            )
+                    else:
+                        success, output = await run_api_sub_query(
+                            prompt=run_prompt,
+                            context_slice=context_slice,
+                            model=self.sub_query_config.api_model,
+                            api_key_env=self.sub_query_config.api_key_env,
+                            api_base_url_env=self.sub_query_config.api_base_url_env,
+                            api_model_env=self.sub_query_config.api_model_env,
+                            timeout=self.sub_query_config.api_timeout_seconds,
+                            system_prompt=self.sub_query_config.system_prompt if self.sub_query_config.include_system_prompt else None,
+                            max_context_chars=self.sub_query_config.max_context_chars,
+                        )
 
-        if session:
-            note_parts = [f"backend={resolved_backend}"]
-            if resolved_validation_regex:
-                note_parts.append(f"validation={resolved_validation_regex!r}")
-                if attempt:
-                    note_parts.append(f"retries={attempt}")
-            if truncated:
-                note_parts.append("truncated_context")
-            session.evidence.append(_Evidence(
-                source="sub_query",
-                line_range=None,
-                pattern=None,
-                snippet=output[:200] if success else f"[ERROR] {output[:150]}",
-                note=" ".join(note_parts),
-            ))
-            session.information_gain.append(1 if success else 0)
+                    if not success:
+                        break
 
-        return success, output, truncated, resolved_backend
+                    if validation_re and not validation_re.search(output):
+                        if attempt >= resolved_max_retries:
+                            success = False
+                            output = (
+                                f"Output failed validation regex {resolved_validation_regex!r} "
+                                f"after {attempt + 1} attempt(s). Last output: {output}"
+                            )
+                            break
+                        attempt += 1
+                        prompt_for_attempt = (
+                            f"{base_prompt}\n\n"
+                            f"{resolved_retry_prompt}\n"
+                            f"Required format regex: {resolved_validation_regex}"
+                        )
+                        continue
+
+                    break
+            except Exception as e:
+                span.record_exception(e)
+                success = False
+                output = f"{type(e).__name__}: {e}"
+
+            span.set_attribute("aleph.sub_query.success", success)
+            span.set_attribute("aleph.sub_query.attempts", attempt + 1)
+            span.set_attribute("aleph.sub_query.output_chars", len(output))
+
+            if session:
+                note_parts = [f"backend={resolved_backend}"]
+                if resolved_validation_regex:
+                    note_parts.append(f"validation={resolved_validation_regex!r}")
+                    if attempt:
+                        note_parts.append(f"retries={attempt}")
+                if truncated:
+                    note_parts.append("truncated_context")
+                session.evidence.append(_Evidence(
+                    source="sub_query",
+                    line_range=None,
+                    pattern=None,
+                    snippet=output[:200] if success else f"[ERROR] {output[:150]}",
+                    note=" ".join(note_parts),
+                ))
+                session.information_gain.append(1 if success else 0)
+
+            return success, output, truncated, resolved_backend
 
     async def _run_sub_aleph(
         self,
@@ -1583,10 +1385,10 @@ class AlephMCPServerLocal:
                                     raise RuntimeError(f"sub_query failed: {r}")
                                 outputs[0] = f"[ERROR] {r}"  # placeholder
                             else:
-                                idx, ok, out = r
+                                idx, ok, item_output = r
                                 if not ok and not continue_on_error:
-                                    raise RuntimeError(f"sub_query failed: {out}")
-                                outputs[idx] = out if ok else f"[ERROR] {out}"
+                                    raise RuntimeError(f"sub_query failed: {item_output}")
+                                outputs[idx] = item_output if ok else f"[ERROR] {item_output}"
                         sub_queries_used += len(items)
                     else:
                         # Sequential fallback
@@ -1735,9 +1537,9 @@ class AlephMCPServerLocal:
         if language in ("javascript", "typescript"):
             candidate = result.return_value
             if candidate is None:
-                node_repl = self._node_repls.get(context_id)
-                if node_repl is not None:
-                    candidate = node_repl.get_variable("recipe")
+                maybe_node_repl = self._node_repls.get(context_id)
+                if maybe_node_repl is not None:
+                    candidate = maybe_node_repl.get_variable("recipe")
             self._sync_session_from_node_repl(context_id)
         else:
             candidate = result.return_value
@@ -1756,9 +1558,9 @@ class AlephMCPServerLocal:
         if isinstance(candidate, dict):
             compiled = dict(candidate)
         elif hasattr(candidate, "compile") and callable(getattr(candidate, "compile")):
-            compiled = candidate.compile()  # type: ignore[call-arg]
+            compiled = candidate.compile()
         elif hasattr(candidate, "to_dict") and callable(getattr(candidate, "to_dict")):
-            compiled = candidate.to_dict()  # type: ignore[call-arg]
+            compiled = candidate.to_dict()
         else:
             return False, {
                 "error": (
@@ -2334,7 +2136,10 @@ class AlephMCPServerLocal:
                 return f"Error: {e}"
 
             normalized_format = normalize_content_format(format, allow_auto=True)
-            fmt = _detect_format(text) if normalized_format == "auto" else normalized_format
+            fmt = cast(
+                ContentFormat,
+                _detect_format(text) if normalized_format == "auto" else normalized_format,
+            )
             meta = self._create_session(text, context_id, fmt, base)
             return self._format_context_loaded(context_id, meta, base)
 
@@ -2780,7 +2585,10 @@ class AlephMCPServerLocal:
                 return f"Error: {e}"
             try:
                 normalized_format = normalize_content_format(format, allow_auto=True)
-                fmt = detected_fmt if normalized_format == "auto" else normalized_format
+                fmt = cast(
+                    ContentFormat,
+                    detected_fmt if normalized_format == "auto" else normalized_format,
+                )
             except Exception as e:
                 return f"Error: {e}"
             meta = self._create_session(text, context_id, fmt, base)

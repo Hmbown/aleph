@@ -10,7 +10,6 @@ instance.
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +19,7 @@ from .types import Budget
 from .repl.sandbox import DEFAULT_ALLOWED_IMPORTS, SandboxConfig
 from .providers.registry import get_provider
 from .core import Aleph
+from .settings import AlephEnvSettings
 
 
 @dataclass(slots=True)
@@ -102,33 +102,27 @@ class AlephConfig:
     @classmethod
     def from_env(cls) -> "AlephConfig":
         """Load config from environment variables."""
-
-        def getenv_int(name: str, default: int | None) -> int | None:
-            v = os.getenv(name)
-            if v is None or v == "":
-                return default
-            return int(v)
-
+        settings = AlephEnvSettings()
         return cls(
-            provider=os.getenv("ALEPH_PROVIDER", os.getenv("RLM_PROVIDER", "anthropic")),
-            root_model=os.getenv("ALEPH_MODEL", os.getenv("RLM_MODEL", "claude-sonnet-4-20250514")),
-            sub_model=os.getenv("ALEPH_SUB_MODEL", os.getenv("RLM_SUB_MODEL")),
-            api_key=os.getenv("ALEPH_API_KEY", os.getenv("RLM_API_KEY")),
-            base_url=os.getenv("ALEPH_BASE_URL"),
-            max_tokens=getenv_int("ALEPH_MAX_TOKENS", None),
-            max_iterations=int(os.getenv("ALEPH_MAX_ITERATIONS", "100")),
-            max_depth=int(os.getenv("ALEPH_MAX_DEPTH", "2")),
-            max_wall_time_seconds=float(os.getenv("ALEPH_MAX_WALL_TIME", "300")),
-            max_sub_queries=int(os.getenv("ALEPH_MAX_SUB_QUERIES", "100")),
-            enable_caching=os.getenv("ALEPH_ENABLE_CACHING", "true").lower() in {"1", "true", "yes"},
-            log_trajectory=os.getenv("ALEPH_LOG_TRAJECTORY", "true").lower() in {"1", "true", "yes"},
-            # Swarm mode env vars
-            swarm_mode=os.getenv("ALEPH_SWARM_MODE", "false").lower() in {"1", "true", "yes"},
-            swarm_session_sharing=os.getenv("ALEPH_SWARM_SESSION_SHARING", "true").lower() in {"1", "true", "yes"},
-            swarm_max_agents=int(os.getenv("ALEPH_SWARM_MAX_AGENTS", "10")),
-            swarm_context_prefix=os.getenv("ALEPH_SWARM_CONTEXT_PREFIX", "swarm"),
-            swarm_name=os.getenv("ALEPH_SWARM_NAME"),
-            unrestricted_sandbox=os.getenv("ALEPH_UNRESTRICTED_SANDBOX", "false").lower() in {"1", "true", "yes"},
+            provider=settings.provider,
+            root_model=settings.root_model,
+            sub_model=settings.sub_model,
+            api_key=settings.api_key,
+            base_url=settings.base_url,
+            max_tokens=settings.max_tokens,
+            max_iterations=settings.max_iterations,
+            max_depth=settings.max_depth,
+            max_wall_time_seconds=settings.max_wall_time_seconds,
+            max_sub_queries=settings.max_sub_queries,
+            enable_caching=settings.enable_caching,
+            log_trajectory=settings.log_trajectory,
+            output_feedback=settings.output_feedback,
+            swarm_mode=settings.swarm_mode,
+            swarm_session_sharing=settings.swarm_session_sharing,
+            swarm_max_agents=settings.swarm_max_agents,
+            swarm_context_prefix=settings.swarm_context_prefix,
+            swarm_name=settings.swarm_name,
+            unrestricted_sandbox=settings.unrestricted_sandbox,
         )
 
     def to_budget(self) -> Budget:

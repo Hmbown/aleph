@@ -14,10 +14,12 @@ from aleph.cli import (
     _default_install_profile_choice,
     _default_mcp_config,
     _find_claude_cli,
+    _json_config_issues,
     is_client_installed,
     CLIENTS,
     MCPServerConfig,
 )
+from aleph.install_config import mcp_server_config_for_client
 from aleph.sub_query import (
     DEFAULT_CLAUDE_EFFORT,
     DEFAULT_CLAUDE_MODEL,
@@ -225,8 +227,70 @@ class TestInstallProfiles:
             command="aleph",
             args=["--enable-actions", "--sub-query-backend", "claude"],
             env={"KEEP": "1"},
+            transport="stdio",
         )
         config = _apply_client_mcp_defaults(CLIENTS["codex"], original)
         assert config.command == original.command
         assert config.args == original.args
         assert config.env == original.env
+        assert config.transport == original.transport
+
+
+class TestMcpServerConfigForClient:
+    def test_cursor_project_uses_workspace_folder_and_fixed(self) -> None:
+        cfg = mcp_server_config_for_client("cursor-project", "portable")
+        assert cfg.transport == "stdio"
+        assert cfg.args[cfg.args.index("--workspace-root") + 1] == "${workspaceFolder}"
+        assert cfg.args[cfg.args.index("--workspace-mode") + 1] == "fixed"
+
+    def test_cursor_global_keeps_any_workspace_and_sets_stdio(self) -> None:
+        cfg = mcp_server_config_for_client("cursor", "portable")
+        assert cfg.transport == "stdio"
+        assert cfg.args[cfg.args.index("--workspace-mode") + 1] == "any"
+
+    def test_non_cursor_clients_omit_transport(self) -> None:
+        assert mcp_server_config_for_client("claude-desktop", "portable").transport is None
+
+    def test_cursor_project_json_includes_type_stdio(self) -> None:
+        payload = mcp_server_config_for_client("cursor-project", "portable").to_json()
+        assert payload.get("type") == "stdio"
+
+
+class TestJsonConfigIssues:
+    def test_cursor_requires_stdio_type(self) -> None:
+        issues = _json_config_issues(
+            CLIENTS["cursor"],
+            {
+                "command": "aleph",
+                "args": ["--enable-actions", "--workspace-mode", "any"],
+            },
+        )
+        assert issues == ['expected `type: "stdio"` for Cursor MCP.']
+
+    def test_cursor_project_requires_fixed_workspace_mode(self) -> None:
+        issues = _json_config_issues(
+            CLIENTS["cursor-project"],
+            {
+                "type": "stdio",
+                "command": "aleph",
+                "args": ["--enable-actions", "--workspace-mode", "any"],
+            },
+        )
+        assert issues == ["expected `--workspace-mode fixed` for project-scoped Cursor MCP."]
+
+    def test_cursor_project_accepts_stdio_and_fixed_mode(self) -> None:
+        issues = _json_config_issues(
+            CLIENTS["cursor-project"],
+            {
+                "type": "stdio",
+                "command": "aleph",
+                "args": [
+                    "--enable-actions",
+                    "--workspace-root",
+                    "${workspaceFolder}",
+                    "--workspace-mode",
+                    "fixed",
+                ],
+            },
+        )
+        assert issues == []

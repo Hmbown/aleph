@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+from ..settings import MCPServerEnvSettings
+
 
 def _get_env_float(name: str, default: float) -> float:
     value = os.environ.get(name, "").strip()
@@ -37,7 +39,4 @@ def _get_env_bool(name: str, default: bool) -> bool:
     return default
 
 
-DEFAULT_REMOTE_TOOL_TIMEOUT_SECONDS = _get_env_float(
-    "ALEPH_REMOTE_TOOL_TIMEOUT",
-    120.0,
-)
+DEFAULT_REMOTE_TOOL_TIMEOUT_SECONDS = MCPServerEnvSettings().remote_tool_timeout_seconds

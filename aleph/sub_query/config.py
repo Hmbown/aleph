@@ -7,6 +7,8 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Literal
 
+from ..settings import SubQueryEnvSettings
+
 BackendType = Literal["claude", "codex", "gemini", "kimi", "api", "auto"]
 CodexMode = Literal["exec", "mcp"]
 
@@ -21,44 +23,28 @@ DEFAULT_CODEX_MODE: CodexMode = "mcp"
 DEFAULT_CODEX_MODEL = "gpt-5.4"
 DEFAULT_CODEX_REASONING_EFFORT = "low"
 
-_CLAUDE_MODEL_ENV = "ALEPH_SUB_QUERY_CLAUDE_MODEL"
-_CLAUDE_EFFORT_ENV = "ALEPH_SUB_QUERY_CLAUDE_EFFORT"
-_CODEX_MODE_ENV = "ALEPH_SUB_QUERY_CODEX_MODE"
-_CODEX_MODEL_ENV = "ALEPH_SUB_QUERY_CODEX_MODEL"
-_CODEX_REASONING_ENV = "ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT"
-_CODEX_PROFILE_ENV = "ALEPH_SUB_QUERY_CODEX_PROFILE"
-
-
-def _env_text(name: str) -> str | None:
-    value = os.environ.get(name)
-    if value is None:
-        return None
-    value = value.strip()
-    return value or None
-
-
 def default_claude_model() -> str:
-    return _env_text(_CLAUDE_MODEL_ENV) or DEFAULT_CLAUDE_MODEL
+    return SubQueryEnvSettings().claude_model or DEFAULT_CLAUDE_MODEL
 
 
 def default_claude_effort() -> str:
-    return _env_text(_CLAUDE_EFFORT_ENV) or DEFAULT_CLAUDE_EFFORT
+    return SubQueryEnvSettings().claude_effort or DEFAULT_CLAUDE_EFFORT
 
 
 def default_codex_mode() -> CodexMode:
-    return normalize_codex_mode(_env_text(_CODEX_MODE_ENV))
+    return normalize_codex_mode(SubQueryEnvSettings().codex_mode)
 
 
 def default_codex_model() -> str:
-    return _env_text(_CODEX_MODEL_ENV) or DEFAULT_CODEX_MODEL
+    return SubQueryEnvSettings().codex_model or DEFAULT_CODEX_MODEL
 
 
 def default_codex_reasoning_effort() -> str:
-    return _env_text(_CODEX_REASONING_ENV) or DEFAULT_CODEX_REASONING_EFFORT
+    return SubQueryEnvSettings().codex_reasoning_effort or DEFAULT_CODEX_REASONING_EFFORT
 
 
 def default_codex_profile() -> str | None:
-    return _env_text(_CODEX_PROFILE_ENV)
+    return SubQueryEnvSettings().codex_profile
 
 
 def resolve_claude_model(value: str | None) -> str:
@@ -77,7 +63,7 @@ def normalize_codex_mode(value: str | None) -> CodexMode:
 
 
 def resolve_codex_mode(value: str | None) -> CodexMode:
-    return normalize_codex_mode(value or _env_text(_CODEX_MODE_ENV))
+    return normalize_codex_mode(value or SubQueryEnvSettings().codex_mode)
 
 
 def resolve_codex_model(value: str | None) -> str | None:
@@ -148,32 +134,30 @@ OUTPUT FORMAT:
     )
 
     def __post_init__(self) -> None:
+        env = SubQueryEnvSettings()
+
         if self.claude_model is None:
-            self.claude_model = default_claude_model()
+            self.claude_model = env.claude_model or DEFAULT_CLAUDE_MODEL
 
         if self.claude_effort is None:
-            self.claude_effort = default_claude_effort()
+            self.claude_effort = env.claude_effort or DEFAULT_CLAUDE_EFFORT
 
         if self.codex_mode is None:
-            self.codex_mode = default_codex_mode()
+            self.codex_mode = normalize_codex_mode(env.codex_mode)
 
         if self.codex_model is None:
-            self.codex_model = default_codex_model()
+            self.codex_model = env.codex_model or DEFAULT_CODEX_MODEL
 
         if self.codex_reasoning_effort is None:
-            self.codex_reasoning_effort = default_codex_reasoning_effort()
+            self.codex_reasoning_effort = (
+                env.codex_reasoning_effort or DEFAULT_CODEX_REASONING_EFFORT
+            )
 
         if self.codex_profile is None:
-            self.codex_profile = default_codex_profile()
+            self.codex_profile = env.codex_profile
 
-        timeout_env = _env_text(DEFAULT_TIMEOUT_ENV)
-        if timeout_env is None:
-            return
-        try:
-            timeout_val = float(timeout_env)
-        except ValueError:
-            return
-        if timeout_val <= 0:
+        timeout_val = env.timeout_seconds
+        if timeout_val is None or timeout_val <= 0:
             return
         self.cli_timeout_seconds = timeout_val
         self.api_timeout_seconds = timeout_val
@@ -197,7 +181,7 @@ def detect_backend(config: SubQueryConfig | None = None) -> BackendType:
     if cfg.backend != "auto":
         return cfg.backend
 
-    explicit_backend = os.environ.get("ALEPH_SUB_QUERY_BACKEND", "").lower().strip()
+    explicit_backend = (SubQueryEnvSettings().backend or "").lower().strip()
     if explicit_backend in ("api", "claude", "codex", "gemini", "kimi"):
         return explicit_backend  # type: ignore[return-value]
 

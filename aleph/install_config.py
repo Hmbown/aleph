@@ -23,6 +23,8 @@ class MCPServerConfig:
     command: str
     args: list[str]
     env: dict[str, str]
+    # Cursor / VS Code MCP configs accept an explicit transport key ("type": "stdio").
+    transport: str | None = None
 
     def to_json(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -31,6 +33,8 @@ class MCPServerConfig:
         }
         if self.env:
             payload["env"] = self.env
+        if self.transport:
+            payload["type"] = self.transport
         return payload
 
 
@@ -131,6 +135,44 @@ def default_mcp_config(profile: str = "portable") -> MCPServerConfig:
         ],
         env={},
     )
+
+
+def default_mcp_config_cursor_project(profile: str = "portable") -> MCPServerConfig:
+    """Defaults for Cursor project-scoped `.cursor/mcp.json`.
+
+    Uses ``${workspaceFolder}`` so action tools resolve to the opened folder and
+    ``--workspace-mode fixed`` matches that root (see Cursor MCP variable docs).
+    """
+    return MCPServerConfig(
+        command="aleph",
+        args=[
+            "--enable-actions",
+            "--workspace-root",
+            "${workspaceFolder}",
+            "--workspace-mode",
+            "fixed",
+            "--tool-docs",
+            "concise",
+            *profile_args(profile),
+        ],
+        env={},
+        transport="stdio",
+    )
+
+
+def mcp_server_config_for_client(client_key: str, profile: str = "portable") -> MCPServerConfig:
+    """Pick installer defaults that fit each MCP client's config scope."""
+    if client_key == "cursor-project":
+        return default_mcp_config_cursor_project(profile)
+    if client_key == "cursor":
+        base = default_mcp_config(profile)
+        return MCPServerConfig(
+            command=base.command,
+            args=list(base.args),
+            env=dict(base.env),
+            transport="stdio",
+        )
+    return default_mcp_config(profile)
 
 
 def build_mcp_config(

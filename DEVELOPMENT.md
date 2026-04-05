@@ -58,6 +58,9 @@ aleph/
 git clone https://github.com/Hmbown/aleph.git
 cd aleph
 pip install -e ".[dev,mcp]"
+# Optional extras:
+#   .[docs]           -> MarkItDown-backed document conversion
+#   .[observability]  -> OpenTelemetry spans
 
 # Run tests
 python3 -m pytest -q

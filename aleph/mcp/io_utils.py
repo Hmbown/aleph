@@ -13,10 +13,13 @@ import subprocess
 import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Any
 
 import xml.etree.ElementTree as ET
 
 from ..types import ContentFormat
+
+_MARKITDOWN_SUFFIXES = {".pdf", ".docx", ".html", ".htm", ".pptx", ".xlsx", ".xls"}
 
 
 def _detect_format(text: str) -> ContentFormat:
@@ -157,6 +160,37 @@ def _extract_text_from_pdf(
     return "", "PDF extraction unavailable. Install `pypdf` or `pdftotext` for best results."
 
 
+def _get_markitdown_converter() -> Any | None:
+    try:
+        from markitdown import MarkItDown
+    except Exception:
+        return None
+
+    try:
+        return MarkItDown(enable_plugins=False)
+    except TypeError:
+        return MarkItDown()
+    except Exception:
+        return None
+
+
+def _extract_text_with_markitdown(data: bytes, suffix: str) -> tuple[str, str | None]:
+    converter = _get_markitdown_converter()
+    if converter is None:
+        return "", "Install `markitdown` for richer document conversion."
+
+    try:
+        result = converter.convert_stream(io.BytesIO(data), file_extension=suffix)
+    except Exception as e:
+        return "", f"MarkItDown extraction failed: {e}"
+
+    text = getattr(result, "text_content", None) or getattr(result, "markdown", None) or ""
+    text = text.strip()
+    if text:
+        return text, None
+    return "", "MarkItDown extraction produced empty text."
+
+
 def _load_text_from_path(
     path: Path,
     max_bytes: int,
@@ -173,21 +207,29 @@ def _load_text_from_path(
     suffix = _effective_suffix(path)
     warning: str | None = None
 
-    if suffix == ".pdf":
-        text, warning = _extract_text_from_pdf(data, path, timeout_seconds)
-        if not text.strip():
-            raise ValueError(warning or "Failed to extract PDF text")
-    elif suffix == ".docx":
-        try:
-            text = _extract_text_from_docx(data)
-        except Exception as e:
-            raise ValueError(f"Failed to extract DOCX text: {e}") from e
-        if not text.strip():
-            warning = "DOCX extraction produced empty text"
-    elif suffix in {".html", ".htm"}:
-        text = _extract_text_from_html(data.decode("utf-8", errors="replace"))
-    else:
-        text = data.decode("utf-8", errors="replace")
+    text = ""
+    if suffix in _MARKITDOWN_SUFFIXES:
+        text, warning = _extract_text_with_markitdown(data, suffix)
+        if suffix in {".pptx", ".xlsx", ".xls"} and not text.strip():
+            raise ValueError(warning or f"Failed to extract text from {suffix} file")
+
+    if not text.strip():
+        warning = None
+        if suffix == ".pdf":
+            text, warning = _extract_text_from_pdf(data, path, timeout_seconds)
+            if not text.strip():
+                raise ValueError(warning or "Failed to extract PDF text")
+        elif suffix == ".docx":
+            try:
+                text = _extract_text_from_docx(data)
+            except Exception as e:
+                raise ValueError(f"Failed to extract DOCX text: {e}") from e
+            if not text.strip():
+                warning = "DOCX extraction produced empty text"
+        elif suffix in {".html", ".htm"}:
+            text = _extract_text_from_html(data.decode("utf-8", errors="replace"))
+        else:
+            text = data.decode("utf-8", errors="replace")
 
     fmt = _detect_format_for_suffix(text, suffix)
     return text, fmt, warning

@@ -48,6 +48,7 @@ from .install_config import (
     default_install_profile_choice as _default_install_profile_choice_impl,
     format_toml_mcp_config as _format_toml_mcp_config,
     install_profile_options as _install_profile_options,
+    mcp_server_config_for_client as _mcp_server_config_for_client,
     normalize_install_profile as _normalize_install_profile,
 )
 
@@ -259,6 +260,7 @@ def _apply_client_mcp_defaults(client: ClientConfig, config: MCPServerConfig) ->
         command=config.command,
         args=list(config.args),
         env=dict(config.env),
+        transport=config.transport,
     )
 
 
@@ -515,6 +517,51 @@ def is_aleph_configured(client: ClientConfig) -> bool:
         return "aleph" in config.get("mcpServers", {})
     except (json.JSONDecodeError, OSError):
         return False
+
+
+def _json_arg_value(args: object, flag: str) -> str | None:
+    if not isinstance(args, list):
+        return None
+    for idx, value in enumerate(args[:-1]):
+        if value == flag:
+            next_value = args[idx + 1]
+            return next_value if isinstance(next_value, str) else None
+    return None
+
+
+def _json_config_issues(client: ClientConfig, aleph_entry: object) -> list[str]:
+    """Return config issues that matter for specific JSON-based clients."""
+    if not isinstance(aleph_entry, dict):
+        return ["Aleph config entry is not a JSON object."]
+
+    issues: list[str] = []
+    if client.name in {"cursor", "cursor-project"} and aleph_entry.get("type") != "stdio":
+        issues.append("expected `type: \"stdio\"` for Cursor MCP.")
+
+    if client.name == "cursor-project":
+        workspace_mode = _json_arg_value(aleph_entry.get("args"), "--workspace-mode")
+        if workspace_mode != "fixed":
+            issues.append("expected `--workspace-mode fixed` for project-scoped Cursor MCP.")
+
+    return issues
+
+
+def validate_client_config(client: ClientConfig) -> list[str]:
+    """Validate client-specific Aleph config details after basic detection succeeds."""
+    if client.is_cli or client.config_format == "toml":
+        return []
+
+    path = client.get_path()
+    if path is None or not path.exists():
+        return []
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return ["Config file is unreadable JSON."]
+
+    return _json_config_issues(client, config.get("mcpServers", {}).get("aleph"))
 
 
 def backup_config(path: Path) -> Path | None:
@@ -983,6 +1030,7 @@ def doctor() -> bool:
     print_header("Aleph Doctor")
 
     all_ok = True
+    config_issues: list[tuple[str, list[str]]] = []
 
     # Check if aleph is available
     print_info("Checking aleph command...")
@@ -1028,7 +1076,13 @@ def doctor() -> bool:
                 status = "Not installed"
                 path_str = str(path)
             elif is_aleph_configured(client):
-                status = "Configured"
+                issues = validate_client_config(client)
+                if issues:
+                    status = "Needs update"
+                    config_issues.append((client.display_name, issues))
+                    all_ok = False
+                else:
+                    status = "Configured"
                 path_str = str(path)
             else:
                 status = "Not configured"
@@ -1037,6 +1091,11 @@ def doctor() -> bool:
         rows.append((client.display_name, status, path_str))
 
     print_table("MCP Client Status", rows)
+    if config_issues:
+        print_info("")
+        for display_name, issues in config_issues:
+            for issue in issues:
+                print_warning(f"{display_name}: {issue}")
 
     # Test MCP server startup
     print_info("Testing MCP server startup...")
@@ -1118,14 +1177,17 @@ def interactive_install(dry_run: bool = False, profile: str | None = None) -> No
         "Customize server settings beyond this profile?",
         default=False,
     )
-    mcp_config = (
-        _collect_install_config(selected_profile)
-        if use_custom
-        else _default_mcp_config(selected_profile)
+    shared_config: MCPServerConfig | None = (
+        _collect_install_config(selected_profile) if use_custom else None
     )
 
     print()
     for client in to_configure:
+        mcp_config = (
+            shared_config
+            if shared_config is not None
+            else _mcp_server_config_for_client(client.name, selected_profile)
+        )
         install_client(client, dry_run, mcp_config=mcp_config)
         print()
 
@@ -1139,10 +1201,8 @@ def install_all(dry_run: bool = False, profile: str | None = None) -> None:
         "Customize server settings beyond this profile?",
         default=False,
     )
-    mcp_config = (
-        _collect_install_config(selected_profile)
-        if use_custom
-        else _default_mcp_config(selected_profile)
+    shared_config: MCPServerConfig | None = (
+        _collect_install_config(selected_profile) if use_custom else None
     )
 
     for name, client in CLIENTS.items():
@@ -1154,6 +1214,11 @@ def install_all(dry_run: bool = False, profile: str | None = None) -> None:
             print_info(f"Skipping {client.display_name} (already configured)")
             continue
 
+        mcp_config = (
+            shared_config
+            if shared_config is not None
+            else _mcp_server_config_for_client(client.name, selected_profile)
+        )
         install_client(client, dry_run, mcp_config=mcp_config)
         print()
 
@@ -1226,8 +1291,8 @@ Usage:
 
 Clients:
     claude-desktop     Claude Desktop app
-    cursor             Cursor editor (global config)
-    cursor-project     Cursor editor (project config)
+    cursor             Cursor (~/.cursor/mcp.json; workspace-mode any)
+    cursor-project     Cursor (.cursor/mcp.json; fixed + ${workspaceFolder})
     windsurf           Windsurf editor
     vscode             VSCode (project config)
     claude-code        Claude Code CLI
@@ -1320,10 +1385,11 @@ def main() -> None:
             install_all(dry_run, profile=profile)
         elif args[1] in CLIENTS:
             client = CLIENTS[args[1]]
+            prof = profile or "portable"
             success = install_client(
                 client,
                 dry_run,
-                mcp_config=_default_mcp_config(profile or "portable"),
+                mcp_config=_mcp_server_config_for_client(client.name, prof),
             )
             sys.exit(0 if success else 1)
         else:

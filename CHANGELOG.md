@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.9.2
+
+- Refactored: Centralized Aleph, MCP, and sub-query env parsing through typed
+  `pydantic-settings` models, removing more hand-rolled coercion while keeping
+  Aleph's forgiving env behavior.
+- Refactored: `mcp/local_server.py` now uses `mcp/io_utils.py` as the
+  canonical document-ingestion path instead of carrying a second copy of the
+  PDF / DOCX / HTML loader stack.
+- Added: Optional `markitdown`-backed document conversion for richer PDF,
+  DOCX, and HTML ingestion, plus first-class PPTX / XLSX / XLS support through
+  the same pipeline when the `docs` extra is installed.
+- Added: Optional OpenTelemetry spans around sub-query execution via the new
+  `aleph.observability` helper.
+- Added: Regression coverage for sub-query timeout env parsing and
+  MarkItDown-backed document loading.
+- Dev: Added `ruff` to the `dev` extra, plus `docs` and `observability` extras
+  for richer local installs.
+
 - Added: Persistent Node.js execution alongside the Python REPL via
   `exec_javascript` and `exec_typescript`.
 - Added: Shared-context JS/TS runtime per Aleph context with `ctx` sync back

@@ -111,25 +111,78 @@ differ. Replace `/path/to/your-project` with your actual project root.
 
 ### Cursor
 
-Config file:
+Cursor loads MCP servers from JSON. **Chat, Composer, and the Cursor CLI agent**
+use the same MCP list for a workspace; you do not need a separate VS Code–style
+extension unless you are shipping a marketplace extension that registers a
+server via `vscode.cursor.mcp.registerServer` ([MCP extension API](https://docs.cursor.com/context/mcp-extension-api)).
+For Aleph, **stdio MCP via `mcp.json` is sufficient**.
 
-- **macOS / Linux:** `~/.cursor/mcp.json`
-- **Windows:** `%USERPROFILE%\.cursor\mcp.json`
+**Scopes**
+
+| Scope | Path | Typical use |
+|-------|------|-------------|
+| Global | macOS/Linux `~/.cursor/mcp.json`, Windows `%USERPROFILE%\.cursor\mcp.json` | Same tools in every folder |
+| Project | `<repo>/.cursor/mcp.json` | Team-shared, per-repo roots |
+
+**Installer**
+
+```bash
+# Global (~/.cursor/mcp.json): broad workspace (--workspace-mode any)
+aleph-rlm install cursor --profile portable
+
+# Project (.cursor/mcp.json in cwd): fixed root = opened folder
+cd /path/to/your-repo
+aleph-rlm install cursor-project --profile portable
+```
+
+`aleph-rlm install cursor-project` writes `"type": "stdio"`, `--workspace-root`
+`${workspaceFolder}`, and `--workspace-mode fixed` so action tools stay scoped
+to the workspace Cursor opened ([MCP variables](https://docs.cursor.com/context/mcp)).
+
+**Global example** (multi-repo / no single root; same as generic quick start):
 
 ```json
 {
   "mcpServers": {
     "aleph": {
+      "type": "stdio",
       "command": "aleph",
       "args": [
-        "--workspace-root", "/path/to/your-project",
         "--enable-actions",
+        "--workspace-mode", "any",
         "--tool-docs", "concise"
       ]
     }
   }
 }
 ```
+
+**Project example** (recommended when you commit `.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "aleph": {
+      "type": "stdio",
+      "command": "aleph",
+      "args": [
+        "--enable-actions",
+        "--workspace-root", "${workspaceFolder}",
+        "--workspace-mode", "fixed",
+        "--tool-docs", "concise"
+      ]
+    }
+  }
+}
+```
+
+Optional: set `"env": { "PYTHONPATH": "${workspaceFolder}" }` only if you are
+developing Aleph from source inside the repo and need local imports; omit for
+normal `pip install` setups.
+
+**stdio transport:** Cursor expects the server to speak MCP over stdin/stdout
+(no TTY). Run `aleph` (or `python -m aleph.mcp.local_server`) with no extra
+wrappers that attach a terminal to the child process.
 
 ### VS Code
 

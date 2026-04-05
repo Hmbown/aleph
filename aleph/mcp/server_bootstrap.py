@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import io
 import os
 import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from ..settings import MCPServerEnvSettings
 from ..sub_query import (
     DEFAULT_CLAUDE_EFFORT,
     DEFAULT_CLAUDE_MODEL,
@@ -29,18 +29,17 @@ def parse_bool_flag(value: str) -> bool:
 
 
 def resolve_default_tool_docs(default_tool_docs_mode: str) -> str:
-    env_tool_docs = os.environ.get("ALEPH_TOOL_DOCS")
-    if env_tool_docs in {"concise", "full"}:
-        return env_tool_docs
+    if os.environ.get("ALEPH_TOOL_DOCS") is not None:
+        return MCPServerEnvSettings().tool_docs
     return default_tool_docs_mode
 
 
 class SafeArgumentParser(argparse.ArgumentParser):
-    def _print_message(self, message: str, file: io.TextIOBase | None = None) -> None:
+    def _print_message(self, message: str, file: Any = None) -> None:
         if message:
-            file = file or sys.stderr
+            target = file or sys.stderr
             try:
-                file.write(message)
+                target.write(message)
             except (AttributeError, OSError, ValueError):
                 pass
 
@@ -263,15 +262,14 @@ def build_runtime_configs(
     sandbox_config_factory: Callable[..., Any],
     action_config_factory: Callable[..., Any],
 ) -> tuple[Any, Any, str]:
+    env_settings = MCPServerEnvSettings()
     sandbox_config = sandbox_config_factory(
         timeout_seconds=args.timeout,
         max_output_chars=args.max_output,
         unrestricted=args.unrestricted,
     )
 
-    workspace_root_explicit = bool(args.workspace_root) or bool(
-        os.environ.get("ALEPH_WORKSPACE_ROOT", "").strip()
-    )
+    workspace_root_explicit = bool(args.workspace_root) or bool(env_settings.workspace_root)
     action_config = action_config_factory(
         enabled=bool(args.enable_actions),
         workspace_root=(
@@ -281,7 +279,7 @@ def build_runtime_configs(
         ),
         workspace_mode=args.workspace_mode,
         context_policy=normalize_context_policy(
-            os.environ.get("ALEPH_CONTEXT_POLICY"),
+            env_settings.context_policy,
             default_context_policy,
         ),
         require_confirmation=bool(args.require_confirmation),

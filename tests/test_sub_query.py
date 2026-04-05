@@ -134,6 +134,32 @@ class TestSubQueryConfig:
         assert config.codex_reasoning_effort == "medium"
         assert config.codex_profile == "custom-profile"
 
+    def test_timeout_config_from_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "ALEPH_SUB_QUERY_TIMEOUT": "42.5",
+            },
+            clear=True,
+        ):
+            config = SubQueryConfig()
+
+        assert config.cli_timeout_seconds == 42.5
+        assert config.api_timeout_seconds == 42.5
+
+    def test_invalid_timeout_env_is_ignored(self):
+        with patch.dict(
+            os.environ,
+            {
+                "ALEPH_SUB_QUERY_TIMEOUT": "not-a-number",
+            },
+            clear=True,
+        ):
+            config = SubQueryConfig()
+
+        assert config.cli_timeout_seconds == 180.0
+        assert config.api_timeout_seconds == 120.0
+
 
 class TestDetectBackend:
     """Tests for backend detection.

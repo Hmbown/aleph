@@ -47,6 +47,14 @@ a structured RLM workflow. Install
 [`docs/prompts/aleph.md`](docs/prompts/aleph.md) into your client's
 command/skill folder — see [MCP_SETUP.md](MCP_SETUP.md) for exact paths.
 
+### Cursor
+
+Use **global** MCP (`aleph-rlm install cursor`) for `--workspace-mode any`, or
+**project** MCP (`aleph-rlm install cursor-project` from the repo) for
+`${workspaceFolder}` + `--workspace-mode fixed`. Chat, Composer, and the Cursor
+CLI share that MCP config; a Cursor extension is optional and not required for
+Aleph — see [MCP_SETUP.md](MCP_SETUP.md#cursor).
+
 ## Entry Points
 
 | Command | Module | What it does |
@@ -292,6 +300,9 @@ The safest pattern is always:
 git clone https://github.com/Hmbown/aleph.git
 cd aleph
 pip install -e ".[dev,mcp]"
+# Optional extras:
+#   .[docs]           -> MarkItDown-backed document conversion
+#   .[observability]  -> OpenTelemetry spans
 pytest tests/ -v
 ruff check aleph/ tests/
 ```

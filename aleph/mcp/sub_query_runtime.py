@@ -6,6 +6,7 @@ import os
 from collections.abc import Iterable
 from typing import Any
 
+from ..settings import SubQueryEnvSettings
 from ..sub_query import SubQueryConfig, detect_backend
 from ..sub_query.config import (
     resolve_codex_mode,
@@ -20,7 +21,8 @@ def get_sub_query_config_snapshot(
     *,
     context_policy: str,
 ) -> dict[str, Any]:
-    backend_env = os.environ.get("ALEPH_SUB_QUERY_BACKEND", "").strip().lower()
+    env_settings = SubQueryEnvSettings()
+    backend_env = (env_settings.backend or "").strip().lower()
     configured_backend = getattr(config, "backend", "auto")
     if configured_backend and configured_backend != "auto":
         backend_display = configured_backend
@@ -33,7 +35,9 @@ def get_sub_query_config_snapshot(
             "cli": config.cli_timeout_seconds,
             "api": config.api_timeout_seconds,
         },
-        "sub_query_share_session": _env_bool("ALEPH_SUB_QUERY_SHARE_SESSION", default=False),
+        "sub_query_share_session": (
+            env_settings.share_session if env_settings.share_session is not None else False
+        ),
         "sub_query_claude": {
             "model": config.claude_model,
             "effort": config.claude_effort,
@@ -117,10 +121,3 @@ def apply_sub_query_cli_env_overrides(
     for name, value in overrides.items():
         if value is not None:
             os.environ[name] = value
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
