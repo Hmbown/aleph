@@ -124,8 +124,11 @@ def _iter_workspace_files(root: Path, include_hidden: bool) -> Iterable[Path]:
             if not include_hidden and filename.startswith("."):
                 continue
             path = current / filename
-            if path.is_file():
-                yield path
+            try:
+                if path.is_file():
+                    yield path
+            except (PermissionError, OSError):
+                continue
 
 
 def _language_for_path(path: Path) -> str:
@@ -269,10 +272,36 @@ def binding_status(binding: WorkspaceBinding | None) -> dict[str, Any] | None:
                 "stale": True,
                 "reason": "file missing",
             }
-        stat = path.stat()
+        try:
+            expected_size = int(binding.get("size_bytes") or 0)
+            expected_mtime_ns = int(binding.get("mtime_ns") or 0)
+        except (TypeError, ValueError):
+            return {
+                "kind": "file",
+                "path": path_text,
+                "display_path": binding.get("display_path"),
+                "exists": True,
+                "refreshable": True,
+                "stale": True,
+                "reason": "invalid persisted file metadata",
+                "last_refreshed_at": binding.get("refreshed_at"),
+            }
+        try:
+            stat = path.stat()
+        except OSError:
+            return {
+                "kind": "file",
+                "path": path_text,
+                "display_path": binding.get("display_path"),
+                "exists": True,
+                "refreshable": True,
+                "stale": True,
+                "reason": "unable to stat file",
+                "last_refreshed_at": binding.get("refreshed_at"),
+            }
         stale = (
-            stat.st_size != int(binding.get("size_bytes") or 0)
-            or stat.st_mtime_ns != int(binding.get("mtime_ns") or 0)
+            stat.st_size != expected_size
+            or stat.st_mtime_ns != expected_mtime_ns
         )
         reason = "file changed on disk" if stale else None
         return {

@@ -67,9 +67,12 @@ def _format_payload(
             return _truncate_inline(value, max_chars)
         return value
 
-    safe_payload = cast(dict[str, Any], _sanitize(payload))
+    # "object" mode returns the raw payload untouched — callers that request it
+    # expect the full, untruncated data (e.g. for programmatic consumption).
     if output == "object":
-        return safe_payload
+        return payload
+
+    safe_payload = cast(dict[str, Any], _sanitize(payload))
 
     rendered = json.dumps(safe_payload, ensure_ascii=False, indent=2)
     if output == "json":

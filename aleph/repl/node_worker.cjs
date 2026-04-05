@@ -1521,6 +1521,11 @@ function findTypeTerminator(source, startIndex, terminatorChar) {
       continue;
     }
     if (ch === terminatorChar && stack.length === 0) {
+      // When looking for '=', skip '=>' (arrow tokens) — they are part of the type.
+      if (terminatorChar === "=" && source[index + 1] === ">") {
+        index += 1; // skip past '>'
+        continue;
+      }
       return index;
     }
   }
@@ -1580,7 +1585,15 @@ function stripTypeAnnotationsFromParams(paramsSource) {
         else if (current === "}") braceDepth -= 1;
         else if (current === "<") angleDepth += 1;
         else if (current === ">") angleDepth -= 1;
-        else if (
+        else if (current === "=" && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0 && angleDepth === 0) {
+          // '=' at depth 0 starts a default value — stop stripping the type here.
+          // But skip '=>' which is part of arrow function types.
+          if (scan + 1 < paramsSource.length && paramsSource[scan + 1] === ">") {
+            scan += 1; // skip past '>'
+          } else {
+            break;
+          }
+        } else if (
           (current === "," || current === ")") &&
           parenDepth === 0 &&
           bracketDepth === 0 &&
