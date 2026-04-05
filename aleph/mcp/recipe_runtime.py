@@ -246,11 +246,11 @@ async def execute_recipe(
                     tasks = [_run_item(i, it) for i, it in enumerate(items)]
                     results = await asyncio.gather(*tasks, return_exceptions=True)
                     outputs: list[str] = [""] * len(items)
-                    for r in results:
+                    for task_idx, r in enumerate(results):
                         if isinstance(r, BaseException):
                             if not continue_on_error:
                                 raise RuntimeError(f"sub_query failed: {r}")
-                            outputs[0] = f"[ERROR] {r}"
+                            outputs[task_idx] = f"[ERROR] {r}"
                         else:
                             idx, ok, item_output = r
                             if not ok and not continue_on_error:

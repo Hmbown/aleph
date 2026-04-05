@@ -456,11 +456,14 @@ def register_action_tools(
         )
 
         # Heuristics for test runner
+        import sys as _sys
+
         runner_bin: str = str(runner)
         if runner == "auto":
             runner_bin = "pytest"
 
-        argv: list[str] = [runner_bin]
+        # Use sys.executable -m to ensure the correct interpreter in venvs
+        argv: list[str] = [_sys.executable, "-m", runner_bin, "-vv", "--tb=short", "--maxfail=20"]
         if args:
             argv.extend(args)
 
