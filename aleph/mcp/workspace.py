@@ -94,6 +94,19 @@ def _validate_line_number_base(value: int) -> LineNumberBase:
     return cast(LineNumberBase, value)
 
 
+def _resolve_line_number_base(session: Any | None, value: int | None) -> LineNumberBase:
+    if session is not None:
+        if value is None:
+            return cast(LineNumberBase, session.line_number_base)
+        base = _validate_line_number_base(value)
+        if base != session.line_number_base:
+            raise ValueError("line_number_base does not match existing session")
+        return base
+    if value is None:
+        return DEFAULT_LINE_NUMBER_BASE
+    return _validate_line_number_base(value)
+
+
 def _uri_to_path(uri: str) -> Path | None:
     """Convert a file:// URI to a Path, or return None for non-file URIs."""
     try:

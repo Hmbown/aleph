@@ -31,6 +31,27 @@ class TestNodeRuntime:
         finally:
             repl.close()
 
+    def test_exec_typescript_expression_with_fallback_strip(self, sandbox_config, monkeypatch) -> None:
+        monkeypatch.setenv("ALEPH_NODE_FORCE_TS_FALLBACK", "true")
+        repl = NodeREPLEnvironment(context="hello", config=sandbox_config)
+        try:
+            result = repl.execute(
+                """
+const routes: string[] = ["read", "write"];
+const mapped = routes.map((route: string) => route.toUpperCase());
+const report: { routeCount: number; first: string } = {
+  routeCount: mapped.length,
+  first: mapped[0],
+};
+report
+                """,
+                language="typescript",
+            )
+            assert result.error is None
+            assert result.return_value == {"routeCount": 2, "first": "READ"}
+        finally:
+            repl.close()
+
     def test_context_helpers_and_variable_lookup(self, sandbox_config) -> None:
         repl = NodeREPLEnvironment(context="Line 1: Hello World\nLine 2: Goodbye", config=sandbox_config)
         try:
@@ -365,6 +386,20 @@ class TestNodeRecipeDSL:
             repl.close()
 
     def test_recipe_typescript_compilation(self, sandbox_config) -> None:
+        repl = NodeREPLEnvironment(context="test", config=sandbox_config)
+        try:
+            result = repl.execute(
+                'const r: object = Recipe("ts").search("err").take(2).compile(); r',
+                language="typescript",
+            )
+            assert result.error is None
+            assert result.return_value["steps"][0]["op"] == "search"
+            assert result.return_value["steps"][1]["count"] == 2
+        finally:
+            repl.close()
+
+    def test_recipe_typescript_compilation_with_fallback_strip(self, sandbox_config, monkeypatch) -> None:
+        monkeypatch.setenv("ALEPH_NODE_FORCE_TS_FALLBACK", "true")
         repl = NodeREPLEnvironment(context="test", config=sandbox_config)
         try:
             result = repl.execute(

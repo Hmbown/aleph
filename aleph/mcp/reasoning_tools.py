@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from .recipe_tools import register_recipe_tools
+from .workspace_contexts import binding_status, binding_summary
 
 if TYPE_CHECKING:
     from .local_server import AlephMCPServerLocal
@@ -18,6 +19,15 @@ def register_reasoning_tools(
     format_error: Callable[[str, Literal["json", "markdown", "object"]], str | dict[str, Any]],
 ) -> None:
     _tool = owner._tool_decorator
+
+    def _task_store(session: Any) -> list[dict[str, Any]]:
+        namespace_tasks = session.repl._namespace.get("_tasks")  # type: ignore[attr-defined]
+        if isinstance(namespace_tasks, list):
+            if session.tasks is not namespace_tasks:
+                session.tasks = namespace_tasks
+            return namespace_tasks
+        session.repl._namespace["_tasks"] = session.tasks  # type: ignore[attr-defined]
+        return session.tasks
 
     @_tool()
     async def think(
@@ -31,6 +41,7 @@ def register_reasoning_tools(
 
         session = owner._sessions[context_id]
         session.iterations += 1
+        session.think_history.append(question)
 
         log_entry = {
             "iteration": session.iterations,
@@ -72,7 +83,7 @@ def register_reasoning_tools(
 
         session = owner._sessions[context_id]
         session.iterations += 1
-        tasks_list: list[dict[str, Any]] = session.repl._namespace.setdefault("_tasks", [])  # type: ignore
+        tasks_list = _task_store(session)
 
         if action == "add" and description:
             new_id = task_id or f"T{len(tasks_list) + 1}"
@@ -89,7 +100,7 @@ def register_reasoning_tools(
             return f"Error: Task {task_id} not found."
 
         if action == "clear":
-            session.repl._namespace["_tasks"] = []
+            tasks_list.clear()
             return "All tasks cleared."
 
         if not tasks_list:
@@ -111,7 +122,7 @@ def register_reasoning_tools(
             return f"Error: No context loaded with ID '{context_id}'."
 
         session = owner._sessions[context_id]
-        tasks_list: list[dict[str, Any]] = session.repl._namespace.get("_tasks", [])  # type: ignore
+        tasks_list = _task_store(session)
         status = {
             "context_id": context_id,
             "iterations": session.iterations,
@@ -123,7 +134,11 @@ def register_reasoning_tools(
             "workspace_root": str(owner.action_config.workspace_root),
             "workspace_root_source": owner._workspace_root_source,
             "context_policy": owner.context_policy,
+            "action_policy": owner.action_config.action_policy,
             "auto_memory_pack": owner.context_policy != "isolated",
+            "workspace_binding": session.workspace_binding,
+            "workspace_binding_summary": binding_summary(session.workspace_binding),
+            "workspace_binding_status": binding_status(session.workspace_binding),
         }
 
         if output == "object":
@@ -134,11 +149,14 @@ def register_reasoning_tools(
         res = [f"## Session Status: {context_id}\n"]
         res.append(f"- **Iterations**: {session.iterations}")
         res.append(f"- **Evidence Items**: {len(session.evidence)}")
-        res.append(f"- **Tracked Tasks**: {len(session.repl._namespace.get('_tasks', []))}")  # type: ignore
+        res.append(f"- **Tracked Tasks**: {len(tasks_list)}")
         res.append(f"- **User Variables**: {', '.join(status['variables']) or 'None'}")  # type: ignore
         res.append(f"- **Context Size**: {session.meta.size_chars:,} chars ({session.meta.size_lines:,} lines)")
         res.append(f"- **Workspace Root**: {owner.action_config.workspace_root} ({owner._workspace_root_source})")
         res.append(f"- **Context Policy**: {owner.context_policy}")
+        res.append(f"- **Action Policy**: {owner.action_config.action_policy}")
+        if status["workspace_binding_summary"]:
+            res.append(f"- **Workspace Binding**: {status['workspace_binding_summary']}")
         return "\n".join(res)
 
     @_tool()

@@ -6,11 +6,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from aleph.mcp.local_server import (
+    DEFAULT_ACTION_POLICY,
     DEFAULT_CONTEXT_POLICY,
     DEFAULT_TOOL_DOCS_MODE,
     DEFAULT_WORKSPACE_MODE,
     ActionConfig,
     SandboxConfig,
+    _normalize_action_policy,
     _normalize_context_policy,
 )
 from aleph.mcp.server_bootstrap import (
@@ -44,6 +46,7 @@ def test_apply_server_env_overrides_sets_sub_query_and_swarm_env():
         sub_query_codex_reasoning_effort="high",
         sub_query_codex_profile="subquery",
         context_policy="isolated",
+        action_policy="read-only",
         swarm_mode=True,
         swarm_name="release-cutover",
         enable_session_sharing=True,
@@ -65,6 +68,7 @@ def test_apply_server_env_overrides_sets_sub_query_and_swarm_env():
         assert os.environ["ALEPH_SUB_QUERY_CODEX_REASONING_EFFORT"] == "high"
         assert os.environ["ALEPH_SUB_QUERY_CODEX_PROFILE"] == "subquery"
         assert os.environ["ALEPH_CONTEXT_POLICY"] == "isolated"
+        assert os.environ["ALEPH_ACTION_POLICY"] == "read-only"
         assert os.environ["ALEPH_SWARM_MODE"] == "true"
         assert os.environ["ALEPH_SWARM_NAME"] == "release-cutover"
         assert os.environ["ALEPH_SWARM_SESSION_SHARING"] == "true"
@@ -89,6 +93,7 @@ def test_build_runtime_configs_uses_explicit_workspace_root(tmp_path: Path):
         max_file_size=456,
         max_write_bytes=789,
         tool_docs="full",
+        action_policy=None,
     )
 
     with patch.dict(os.environ, {}, clear=True):
@@ -96,7 +101,9 @@ def test_build_runtime_configs_uses_explicit_workspace_root(tmp_path: Path):
             args,
             detect_workspace_root=lambda: auto_root,
             normalize_context_policy=_normalize_context_policy,
+            normalize_action_policy=_normalize_action_policy,
             default_context_policy=DEFAULT_CONTEXT_POLICY,
+            default_action_policy=DEFAULT_ACTION_POLICY,
             sandbox_config_factory=SandboxConfig,
             action_config_factory=ActionConfig,
         )
@@ -108,6 +115,7 @@ def test_build_runtime_configs_uses_explicit_workspace_root(tmp_path: Path):
     assert action_config.workspace_root == workspace_root.resolve()
     assert action_config.workspace_mode == "git"
     assert action_config.context_policy == DEFAULT_CONTEXT_POLICY
+    assert action_config.action_policy == DEFAULT_ACTION_POLICY
     assert action_config.require_confirmation is True
     assert action_config.max_read_bytes == 456
     assert action_config.max_write_bytes == 789

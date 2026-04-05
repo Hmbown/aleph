@@ -31,6 +31,7 @@ def register_admin_tools(
         max_recipe_concurrency: int | None = None,
         tool_docs_mode: Literal["concise", "full"] | None = None,
         context_policy: Literal["trusted", "isolated"] | None = None,
+        action_policy: Literal["read-write", "read-only"] | None = None,
         workspace_root: str | None = None,
         output_feedback: str | None = None,
     ) -> str:
@@ -57,6 +58,9 @@ def register_admin_tools(
             os.environ["ALEPH_MAX_RECIPE_CONCURRENCY"] = str(max_recipe_concurrency)
         if tool_docs_mode:
             owner.tool_docs_mode = tool_docs_mode
+        if action_policy is not None:
+            owner.action_config.action_policy = action_policy
+            os.environ["ALEPH_ACTION_POLICY"] = action_policy
         if context_policy is not None:
             old_policy = owner.context_policy
             owner.context_policy = context_policy
