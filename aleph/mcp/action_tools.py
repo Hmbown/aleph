@@ -463,7 +463,7 @@ def register_action_tools(
             runner_bin = "pytest"
 
         # Use sys.executable -m to ensure the correct interpreter in venvs
-        argv: list[str] = [_sys.executable, "-m", runner_bin, "-vv", "--tb=short", "--maxfail=20"]
+        argv: list[str] = [_sys.executable, "-m", runner_bin]
         if args:
             argv.extend(args)
 
