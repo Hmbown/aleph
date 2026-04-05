@@ -3,6 +3,12 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to validate and publish (for manual reruns)
+        required: false
+        type: string
 
 jobs:
   publish:
@@ -25,6 +31,7 @@ jobs:
       - name: Validate release version
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
+          ALEPH_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || '' }}
         run: |
           python scripts/sync_versions.py
           python - <<'PY'
@@ -32,7 +39,7 @@ jobs:
           import pathlib
           import tomllib
 
-          tag = os.environ.get("GITHUB_REF_NAME", "")
+          tag = os.environ.get("ALEPH_RELEASE_TAG") or os.environ.get("GITHUB_REF_NAME", "")
           if tag.startswith("refs/tags/"):
               tag = tag.split("/", 2)[-1]
           if tag.startswith("v"):
