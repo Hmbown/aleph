@@ -1450,10 +1450,226 @@ function detectUpdatedVariables(code, previousCtx, nextCtx) {
   return Array.from(updated);
 }
 
+function findMatchingParenStart(source, closeIndex) {
+  let depth = 0;
+  let quote = null;
+  for (let index = closeIndex; index >= 0; index -= 1) {
+    const ch = source[index];
+    const prev = index > 0 ? source[index - 1] : "";
+    if (quote) {
+      if (ch === quote && prev !== "\\") {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === ")") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "(") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return -1;
+}
+
+function findTypeTerminator(source, startIndex, terminatorChar) {
+  let quote = null;
+  const stack = [];
+  for (let index = startIndex; index < source.length; index += 1) {
+    const ch = source[index];
+    const prev = index > startIndex ? source[index - 1] : "";
+    if (quote) {
+      if (ch === quote && prev !== "\\") {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "/" && source[index + 1] === "/") {
+      const newline = source.indexOf("\n", index + 2);
+      if (newline === -1) {
+        return -1;
+      }
+      index = newline;
+      continue;
+    }
+    if (ch === "/" && source[index + 1] === "*") {
+      const commentEnd = source.indexOf("*/", index + 2);
+      if (commentEnd === -1) {
+        return -1;
+      }
+      index = commentEnd + 1;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{" || ch === "<") {
+      stack.push(ch);
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}" || ch === ">") {
+      stack.pop();
+      continue;
+    }
+    if (ch === terminatorChar && stack.length === 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function stripTypeAnnotationsFromParams(paramsSource) {
+  let out = "";
+  let index = 0;
+  let quote = null;
+  while (index < paramsSource.length) {
+    const ch = paramsSource[index];
+    const prev = index > 0 ? paramsSource[index - 1] : "";
+    if (quote) {
+      out += ch;
+      if (ch === quote && prev !== "\\") {
+        quote = null;
+      }
+      index += 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      out += ch;
+      index += 1;
+      continue;
+    }
+    if (ch === ":") {
+      let scan = index + 1;
+      let nestedQuote = null;
+      let parenDepth = 0;
+      let bracketDepth = 0;
+      let braceDepth = 0;
+      let angleDepth = 0;
+      while (scan < paramsSource.length) {
+        const current = paramsSource[scan];
+        const currentPrev = scan > index + 1 ? paramsSource[scan - 1] : "";
+        if (nestedQuote) {
+          if (current === nestedQuote && currentPrev !== "\\") {
+            nestedQuote = null;
+          }
+          scan += 1;
+          continue;
+        }
+        if (current === "'" || current === '"' || current === "`") {
+          nestedQuote = current;
+          scan += 1;
+          continue;
+        }
+        if (current === "(") parenDepth += 1;
+        else if (current === ")") {
+          if (parenDepth === 0 && bracketDepth === 0 && braceDepth === 0 && angleDepth === 0) break;
+          parenDepth -= 1;
+        } else if (current === "[") bracketDepth += 1;
+        else if (current === "]") bracketDepth -= 1;
+        else if (current === "{") braceDepth += 1;
+        else if (current === "}") braceDepth -= 1;
+        else if (current === "<") angleDepth += 1;
+        else if (current === ">") angleDepth -= 1;
+        else if (
+          (current === "," || current === ")") &&
+          parenDepth === 0 &&
+          bracketDepth === 0 &&
+          braceDepth === 0 &&
+          angleDepth === 0
+        ) {
+          break;
+        }
+        scan += 1;
+      }
+      while (scan < paramsSource.length && /\s/.test(paramsSource[scan])) {
+        scan += 1;
+      }
+      index = scan;
+      continue;
+    }
+    out += ch;
+    index += 1;
+  }
+  return out;
+}
+
+function stripArrowFunctionTypes(source) {
+  let result = source;
+  let cursor = 0;
+  while (cursor < result.length) {
+    const arrowIndex = result.indexOf("=>", cursor);
+    if (arrowIndex === -1) {
+      break;
+    }
+    let paramEnd = arrowIndex - 1;
+    while (paramEnd >= 0 && /\s/.test(result[paramEnd])) {
+      paramEnd -= 1;
+    }
+    if (paramEnd < 0 || result[paramEnd] !== ")") {
+      cursor = arrowIndex + 2;
+      continue;
+    }
+    const paramStart = findMatchingParenStart(result, paramEnd);
+    if (paramStart === -1) {
+      cursor = arrowIndex + 2;
+      continue;
+    }
+    const params = result.slice(paramStart + 1, paramEnd);
+    const strippedParams = stripTypeAnnotationsFromParams(params);
+    result =
+      result.slice(0, paramStart + 1) +
+      strippedParams +
+      result.slice(paramEnd);
+    const nextArrow = result.indexOf("=>", paramStart);
+    cursor = nextArrow === -1 ? result.length : nextArrow + 2;
+  }
+  return result;
+}
+
+function stripVariableDeclarationTypes(source) {
+  const declarationPattern = /\b(const|let|var)\s+([A-Za-z_$][\w$]*)\s*:/g;
+  let result = "";
+  let lastIndex = 0;
+  let match;
+  while ((match = declarationPattern.exec(source)) !== null) {
+    const colonIndex = declarationPattern.lastIndex - 1;
+    const typeStart = colonIndex + 1;
+    const equalsIndex = findTypeTerminator(source, typeStart, "=");
+    if (equalsIndex === -1) {
+      continue;
+    }
+    result += source.slice(lastIndex, colonIndex);
+    lastIndex = equalsIndex;
+    declarationPattern.lastIndex = equalsIndex;
+  }
+  result += source.slice(lastIndex);
+  return result;
+}
+
+function stripTypeScriptFallback(code) {
+  let result = String(code);
+  result = stripArrowFunctionTypes(result);
+  result = stripVariableDeclarationTypes(result);
+  return result;
+}
+
 function normalizeCode(code, language) {
   if (language === "typescript") {
-    if (typeof stripTypeScriptTypes !== "function") {
-      throw new Error("TypeScript execution requires Node support for stripTypeScriptTypes");
+    if (
+      process.env.ALEPH_NODE_FORCE_TS_FALLBACK === "true" ||
+      typeof stripTypeScriptTypes !== "function"
+    ) {
+      return stripTypeScriptFallback(code);
     }
     return stripTypeScriptTypes(code);
   }
