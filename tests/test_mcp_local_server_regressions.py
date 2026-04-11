@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -118,6 +120,40 @@ async def test_reasoning_tools_public_status_and_finalize() -> None:
     assert "## Final Answer" in final
     assert "done" in final
     assert "**Confidence:** high" in final
+
+
+@pytest.mark.asyncio
+async def test_finalize_auto_saves_memory_pack_in_active_workspace_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "active-repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    server = AlephMCPServerLocal(
+        sandbox_config=SandboxConfig(timeout_seconds=5.0),
+        action_config=ActionConfig(
+            enabled=True,
+            workspace_root=Path("/"),
+            workspace_mode="any",
+        ),
+    )
+
+    mock_session = AsyncMock()
+    mock_session.list_roots.return_value = SimpleNamespace(
+        roots=[SimpleNamespace(uri=repo.as_uri(), name=None)]
+    )
+    ctx = AsyncMock()
+    ctx.request_context.session = mock_session
+
+    await server._maybe_resolve_workspace_from_roots(ctx)
+    await _call_tool(server, "load_context", context="alpha\nbeta", context_id="doc")
+    await _call_tool(server, "finalize", context_id="doc", answer="done", confidence="high")
+
+    assert server.action_config.workspace_root == repo
+    pack_path = repo / ".aleph" / "memory_pack.json"
+    assert pack_path.exists()
+    payload = json.loads(pack_path.read_text(encoding="utf-8"))
+    assert payload["schema"] == "aleph.memory_pack.v1"
+    assert any(session["context_id"] == "doc" for session in payload["sessions"])
 
 
 @pytest.mark.asyncio

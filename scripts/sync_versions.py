@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import pathlib
 import re
-import sys
 
 
 def _load_toml(path: pathlib.Path) -> dict:
@@ -58,6 +57,20 @@ def _sync_web(version: str, check: bool) -> bool:
     return _sync_file(path, new_text, check)
 
 
+def _sync_manifest(path_str: str, version: str, check: bool) -> bool:
+    path = pathlib.Path(path_str)
+    text = path.read_text()
+    new_text, count = re.subn(
+        r'("version"\s*:\s*")([^"]+)(")',
+        rf'\g<1>{version}\g<3>',
+        text,
+        count=1,
+    )
+    if count == 0:
+        raise SystemExit(f"Could not find version in {path_str}")
+    return _sync_file(path, new_text, check)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Sync version strings.")
     parser.add_argument(
@@ -73,6 +86,9 @@ def main() -> int:
     changed = False
     changed |= _sync_init(version, args.check)
     changed |= _sync_web(version, args.check)
+    changed |= _sync_manifest("plugins/.claude-plugin/marketplace.json", version, args.check)
+    changed |= _sync_manifest("plugins/aleph/.claude-plugin/plugin.json", version, args.check)
+    changed |= _sync_manifest("plugins/aleph/.codex-plugin/plugin.json", version, args.check)
 
     if not args.check and changed:
         print(f"Updated version strings to {version}")

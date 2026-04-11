@@ -1,7 +1,7 @@
 {
   "name": "aleph",
-  "version": "0.8.9",
-  "description": "MCP server for recursive LLM reasoning over large local data. Load files, repos, and logs into external memory, then search, peek, run code, and recurse without consuming the context window.",
+  "version": "0.9.4",
+  "description": "Recursive Language Model MCP server for large local data. Keep files, repos, logs, and documents in external memory; search, peek, compute, and recurse without dumping whole contexts into the prompt.",
   "author": {
     "name": "Hunter Bown",
     "url": "https://github.com/Hmbown"

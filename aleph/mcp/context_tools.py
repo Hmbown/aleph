@@ -15,7 +15,11 @@ from .workspace import LineNumberBase, _validate_line_number_base
 from .workspace_contexts import binding_summary
 
 if TYPE_CHECKING:
+    from mcp.server.fastmcp import Context
+
     from .local_server import AlephMCPServerLocal
+else:
+    Context = Any
 
 
 def register_context_tools(
@@ -32,6 +36,7 @@ def register_context_tools(
         format: str = "auto",
         line_number_base: LineNumberBase = 1,
         context: str | None = None,
+        ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
         """Load context into an in-memory REPL session."""
         text = content if content is not None else context
@@ -47,6 +52,8 @@ def register_context_tools(
             ContentFormat,
             _detect_format(text) if normalized_format == "auto" else normalized_format,
         )
+        if ctx is not None:
+            await owner._maybe_resolve_workspace_from_roots(ctx)
         meta = owner._create_session(text, context_id, fmt, base)
         return owner._format_context_loaded(context_id, meta, base)
 

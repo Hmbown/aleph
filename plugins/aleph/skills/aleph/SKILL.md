@@ -5,213 +5,155 @@ description: /aleph - External memory workflow for large local data.
 
 # /aleph - External Memory Workflow
 
-TL;DR: Load large data into external memory, search it, reason in loops, and
-persist across sessions.
+Core rule: keep whole contexts out of the prompt. Return only focused slices or
+compact derived results.
 
-This plugin bundles the Aleph MCP launcher and the Aleph skill. It assumes the
-`aleph` executable is already installed and available on `PATH`.
+This plugin bundles the Aleph MCP launcher, `/aleph` skill, `aleph-expert`
+agent, and an install-check hook. It assumes the `aleph` executable is already
+installed and available on `PATH`.
 
-## Quick Start
+Note: tool names may appear as `mcp__aleph__load_workspace_manifest` in some
+clients.
+
+## The 5-Phase Loop
+
+### 1. Load
+
+Pick the correct front door:
+
+- Large repo or codebase: `load_workspace_manifest(...)`
+- Single large file: `load_file(...)`
+- Inline or generated content: `load_context(...)`
+
+Repo-scale default:
 
 ```text
-# Test if Aleph is available
-list_contexts()
+load_workspace_manifest(paths=["src", "tests"], context_id="repo")
+rg_search(
+  pattern="FastAPI|APIRouter|router\\.",
+  paths=["src", "tests"],
+  load_context_id="routes"
+)
+load_file(path="pyproject.toml", context_id="pyproject")
 ```
 
-If that works, the MCP server is running.
-
-Instant pattern:
+Single-file default:
 
 ```text
-load_context(content="<paste huge content here>", context_id="doc")
-search_context(pattern="keyword", context_id="doc")
-finalize(answer="Found X at line Y", context_id="doc")
+load_file(path="/absolute/path/to/large.log", context_id="log")
+search_context(pattern="ERROR|WARN", context_id="log")
+peek_context(context_id="log", start=1, end=60, unit="lines")
 ```
 
-Note: tool names may appear as `mcp__aleph__load_context` in your MCP client.
+Do not start repo work by reading files one by one when
+`load_workspace_manifest(...)` is the right first move.
 
-## Instant RLM (Load File -> Work)
+### 2. Orient
 
-The most common pattern: point at a file, let Aleph load it, and immediately
-apply RLM reasoning.
+- Use `search_context(...)` to find relevant regions
+- Use `peek_context(...)` to inspect small ranges
+- Use `semantic_search(...)` for meaning-based lookup
+- Use `chunk_context(...)` when navigability matters
+- Use `rg_search(...)` to sweep repo trees quickly
+
+Search before peeking. Pull only the slices you need.
+
+### 3. Compute
+
+- Use `exec_python(...)` for heavier analysis with `ctx` bound in the sandbox
+- Aleph defaults to `output_feedback="full"`; `exec_python(...)` is not
+  print-only
+- In `full` mode Aleph can return stdout, stderr, error text, and a rendered
+  return value
+- If output volume becomes distracting, optionally use
+  `configure(output_feedback="metadata")`
+- Use built-in helpers such as `search`, `peek`, `lines`, `chunk`,
+  `extract_*`, `semantic_search`, and `cite`
+- Store compact derived values in variables like `summary`, `counts`,
+  `matches`, or `result`
+- Retrieve only those derived values with `get_variable(...)`
+- Treat `get_variable("ctx")` as blocked for plugin workflows; use bounded
+  slices or compact derived variables instead
+
+Example:
 
 ```text
-load_file(path="path/to/large_file.md", context_id="doc")
-search_context(pattern="relevant", context_id="doc")
 exec_python(code="""
-chunks = chunk(50000)
-summaries = sub_query_batch("Summarize:", chunks)
-print(summaries)
-""", context_id="doc")
-finalize(answer="...", context_id="doc")
+matches = search(r"ERROR|WARN")
+counts = {"matches": len(matches)}
+summary = f"{counts['matches']} matching lines"
+""", context_id="log")
+get_variable(name="summary", context_id="log")
 ```
 
-When a user says `/aleph myfile.py` or `$aleph myfile.py`, load it and
-immediately begin this pattern.
+### 4. Recurse
 
-### Depth Invocation
+Real recursion helper signatures:
 
-Users can request a specific recursion depth: `/aleph N file` where `N`
-controls strategy.
+```text
+sub_query(prompt, context_slice=None)
+sub_query_batch(prompt, context_slices, limit=None)
+sub_query_map(prompts, context_slices=None, limit=None, parallel=True)
+sub_aleph(query, context=None)
+```
+
+Runtime guidance:
+
+- Use `sub_query_batch(...)` for one prompt over many slices
+- Use `sub_query_map(...)` for distinct prompts, keeping `parallel=True` unless
+  you need sequential execution
+- Use `configure(sub_query_share_session=true)` when nested agents need access
+  to parent contexts
+- For depth 3+, use `configure(sub_query_timeout=300, sandbox_timeout=300)`
+
+### 5. Converge
+
+- Use `evaluate_progress(...)` when the answer is not yet stable
+- Loop back through orient and compute when confidence is low
+- Use `summarize_so_far(...)` if the trajectory is getting long
+- Use `finalize(answer=..., confidence=..., context_id=...)` when done
+
+## Depth Invocation
+
+Users can request a specific recursion depth with `/aleph N target`.
 
 | Invocation | Depth | Strategy |
 |-----------|-------|----------|
-| `/aleph file.py` | 1 | Direct analysis: search, peek, exec_python |
-| `/aleph 2 file.py` | 2 | Parallel fan-out with `sub_query_batch` or `sub_query_map` |
-| `/aleph 3 file.py` | 3 | Recursive `sub_aleph` usage |
-| `/aleph 4 file.py` | 4 | Deep recursion with longer timeouts |
+| `/aleph file.py` | 1 | Direct file analysis with `load_file`, `search_context`, `peek_context`, `exec_python` |
+| `/aleph repo/` | 1 | Repo analysis with `load_workspace_manifest`, `rg_search`, targeted `load_file`, `exec_python` |
+| `/aleph 2 file.py` | 2 | Fan-out with `sub_query_batch` or `sub_query_map` |
+| `/aleph 3 file.py` | 3 | Recursive `sub_aleph` with longer timeouts |
+| `/aleph 4 file.py` | 4 | Deep recursion with explicit timeout tuning |
 
-For depth 3+, bump timeouts:
+Escalation rule:
 
-```text
-configure(sub_query_timeout=300, sandbox_timeout=300)
-```
+- Start at depth 1
+- Move to depth 2 when the answer needs chunk-level fan-out
+- Move to depth 3 or 4 only when nested structure or recursive synthesis is
+  required
 
-Dynamic escalation rule:
+## Repo vs File Workflow
 
-- Start at depth 1.
-- Escalate to depth 2 when results are insufficient or the data is too large.
-- Escalate to depth 3 when sub-queries expose additional structure that needs
-  recursive reasoning.
+When the user points at a repo, codebase, or project tree:
 
-## Practical Defaults
+- Start with `load_workspace_manifest(...)`
+- Use `rg_search(...)` to locate candidate files
+- Load only the files you actually need with `load_file(...)`
+- Compute inside Aleph instead of pasting file contents into the prompt
 
-- Use `output="json"` for structured results and `output="markdown"` for
-  human-readable output.
-- For large docs, pair `chunk_context()` with `peek_context()` to navigate
-  quickly.
-- Use `rg_search()` for repo search and `semantic_search()` for meaning-based
-  lookup.
-- `load_file()` handles PDFs, Word docs, HTML, and compressed logs.
-- Save and resume long tasks with `save_session()` and `load_session()`.
-- Session paths should stay under Aleph's workspace root; `.aleph/` is a safe
-  default.
+When the user points at one large file:
 
-## Core Patterns
+- Start with `load_file(...)`
+- Search, peek, and compute inside Aleph
+- Pull back only the answer, a small slice, or a compact derived value
 
-### 1. Analyze Data
+## Anti-Patterns
 
-```text
-load_context(content=data_text, context_id="doc")
-search_context(pattern="important|keyword|pattern", context_id="doc")
-peek_context(start=100, end=150, unit="lines", context_id="doc")
-finalize(answer="Analysis complete: ...", confidence="high", context_id="doc")
-```
-
-### 2. Compare Contexts
-
-```text
-load_context(content=doc1, context_id="v1")
-load_context(content=doc2, context_id="v2")
-diff_contexts(a="v1", b="v2")
-finalize(answer="Key differences: ...", context_id="v1")
-```
-
-### 3. Deep Reasoning Loop
-
-```text
-load_context(content=problem, context_id="analysis")
-think(question="What is the core issue?", context_id="analysis")
-search_context(pattern="relevant", context_id="analysis")
-evaluate_progress(
-    current_understanding="I found X...",
-    remaining_questions=["What about Y?"],
-    confidence_score=0.7,
-    context_id="analysis"
-)
-finalize(answer="Conclusion: ...", confidence="high", context_id="analysis")
-```
-
-### 4. Fast Repo Search
-
-```text
-rg_search(pattern="TODO|FIXME", paths=["."], load_context_id="rg_hits", confirm=true)
-search_context(pattern="TODO", context_id="rg_hits")
-```
-
-### 5. Semantic Search
-
-```text
-semantic_search(query="login failure", context_id="doc", top_k=3)
-peek_context(start=1200, end=1600, unit="chars", context_id="doc")
-```
-
-### 6. Recursive Summarization
-
-```text
-exec_python(code="""
-chunks = chunk(200000)
-summaries = sub_query_batch("Summarize this section:", chunks)
-final = sub_query("Synthesize into five bullets:\\n" + "\\n".join(summaries))
-print(final)
-""", context_id="doc")
-```
-
-### 7. Shared Session Context
-
-When sub-agents need access to the parent's loaded contexts:
-
-```text
-configure(sub_query_share_session=true)
-exec_python(code="""
-result = sub_query("Search for TODOs in the parent context and summarize them")
-print(result)
-""", context_id="doc")
-```
-
-This is opt-in. Default is `false`.
-
-## Recipe Pipelines
-
-Use recipes when you want reusable, inspectable workflows.
-
-### JSON Recipe
-
-```text
-run_recipe(
-  recipe={
-    "version": "aleph.recipe.v1",
-    "context_id": "doc",
-    "budget": {"max_steps": 8, "max_sub_queries": 5},
-    "steps": [
-      {"op": "search", "pattern": "ERROR|WARN", "max_results": 10},
-      {"op": "map_sub_query", "prompt": "Root cause?", "context_field": "context"},
-      {"op": "aggregate", "prompt": "Synthesize causes"},
-      {"op": "finalize"}
-    ]
-  }
-)
-```
-
-### DSL Recipe
-
-```text
-run_recipe_code(
-  context_id="doc",
-  code="""
-recipe = (
-    Recipe(context_id='doc', max_sub_queries=5)
-    .search('ERROR|WARN', max_results=10)
-    .map_sub_query('Root cause?', context_field='context')
-    .aggregate('Synthesize causes')
-    .finalize()
-)
-"""
-)
-```
-
-## Safety Model
-
-The safest default pattern is:
-
-1. Load the large context into Aleph memory.
-2. Search or compute inside Aleph.
-3. Retrieve only the small result you need.
-
-Prefer server-side computation over pulling raw context back through the prompt.
-Do not treat `get_variable("ctx")` as the default path.
-
-## References
-
-- Repo: `https://github.com/Hmbown/aleph`
-- Main docs: `README.md`, `MCP_SETUP.md`, `docs/CONFIGURATION.md`
+- Using `read_file(...)` as the default entry point for large files or repos
+- Loading a whole repo file-by-file when `load_workspace_manifest(...)` is the
+  better first step
+- Treating `get_variable("ctx")` as a valid plugin workflow
+- Pasting raw file or repo content into the prompt when Aleph can search or
+  compute instead
+- Claiming that `exec_python(...)` only returns `print()` output
+- Pinning a nested API backend in the checked-in plugin wrapper

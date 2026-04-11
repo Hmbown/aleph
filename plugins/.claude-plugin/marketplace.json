@@ -1,0 +1,20 @@
+{
+  "name": "aleph-marketplace",
+  "owner": {
+    "name": "Hmbown"
+  },
+  "metadata": {
+    "description": "Claude Code marketplace for the Aleph RLM plugin."
+  },
+  "plugins": [
+    {
+      "name": "aleph",
+      "source": "./aleph",
+      "description": "Recursive Language Model MCP server for large local data.",
+      "version": "0.9.4",
+      "author": {
+        "name": "Hunter Bown"
+      }
+    }
+  ]
+}

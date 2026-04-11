@@ -1,7 +1,7 @@
 {
   "name": "aleph",
-  "version": "0.8.9",
-  "description": "MCP server for recursive LLM reasoning over large local data.",
+  "version": "0.9.4",
+  "description": "Recursive Language Model MCP server for large local data. Keep files, repos, logs, and documents in external memory; search, peek, compute, and recurse without dumping whole contexts into the prompt.",
   "author": {
     "name": "Hunter Bown",
     "url": "https://github.com/Hmbown"
@@ -14,13 +14,15 @@
     "rlm",
     "external-memory",
     "search",
-    "reasoning"
+    "reasoning",
+    "recursive",
+    "large-data"
   ],
   "interface": {
     "displayName": "Aleph",
     "developerName": "Hunter Bown",
     "shortDescription": "External memory workflow for large local data.",
-    "longDescription": "Aleph keeps large files, repos, logs, and documents in an MCP-backed Python process so Codex can search, peek, run code, recurse, and return compact results instead of stuffing raw data into the prompt.",
+    "longDescription": "Aleph keeps large files, repos, logs, and documents in an MCP-backed process so Codex can search, peek, compute, and recurse, returning compact results instead of dumping raw contexts into the prompt.",
     "capabilities": [
       "MCP server",
       "Skill",
@@ -29,7 +31,7 @@
     "screenshots": [],
     "category": "Productivity",
     "brandColor": "#0f766e",
-    "defaultPrompt": "$aleph /absolute/path/to/file.log",
+    "defaultPrompt": "$aleph /absolute/path/to/repo",
     "websiteUrl": "https://github.com/Hmbown/aleph",
     "privacyPolicyUrl": null,
     "termsOfServiceUrl": null,

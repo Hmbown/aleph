@@ -764,6 +764,7 @@ class AlephMCPServerLocal:
         if self._mcp_roots_resolved or self.action_config.workspace_root_explicit:
             return
         self._mcp_roots_resolved = True
+        previous_root = self.action_config.workspace_root
         try:
             session = ctx.request_context.session
             roots = await session.list_roots()
@@ -775,6 +776,11 @@ class AlephMCPServerLocal:
         if result is not None:
             self.action_config.workspace_root = result
             self._workspace_root_source = "mcp-roots"
+            if result != previous_root and self.action_config.enabled:
+                # Re-attempt memory-pack auto-load after swapping from an
+                # invocation cwd (for example `/`) to the actual MCP workspace.
+                self._auto_pack_loaded = False
+                self._auto_load_memory_pack()
             try:
                 await ctx.info(f"Workspace root resolved from MCP roots: {result}")
             except Exception:
@@ -839,6 +845,12 @@ class AlephMCPServerLocal:
         if self.action_config.action_policy == "read-only":
             return
         if not self.action_config.enabled or not self._sessions:
+            return
+        try:
+            workspace_root = self.action_config.workspace_root.resolve()
+        except Exception:
+            workspace_root = self.action_config.workspace_root
+        if workspace_root == Path("/"):
             return
         payload, _ = self._build_memory_pack_payload(include_ctx=True)
         out_bytes = json.dumps(payload, ensure_ascii=False, indent=2).encode(

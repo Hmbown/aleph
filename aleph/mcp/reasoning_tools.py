@@ -10,7 +10,11 @@ from .recipe_tools import register_recipe_tools
 from .workspace_contexts import binding_status, binding_summary
 
 if TYPE_CHECKING:
+    from mcp.server.fastmcp import Context
+
     from .local_server import AlephMCPServerLocal
+else:
+    Context = Any
 
 
 def register_reasoning_tools(
@@ -218,8 +222,12 @@ def register_reasoning_tools(
         confidence: Literal["high", "medium", "low"] = "medium",
         reasoning_summary: str | None = None,
         context_id: str = "default",
+        ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
         """Mark the task complete with your final answer."""
+        if ctx is not None:
+            await owner._maybe_resolve_workspace_from_roots(ctx)
+
         parts = ["## Final Answer", "", answer]
         if reasoning_summary:
             parts.extend(["", "---", "", f"**Reasoning:** {reasoning_summary}"])

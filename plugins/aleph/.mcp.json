@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "aleph": {
-      "command": "/Users/hunterbown/.local/bin/aleph",
+      "command": "aleph",
       "args": [
         "--enable-actions",
         "--workspace-mode",
